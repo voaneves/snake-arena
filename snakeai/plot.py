@@ -1,0 +1,381 @@
+"""O gráfico da arena — onde os algoritmos finalmente ficam lado a lado.
+
+Regras de leitura que este módulo impõe, e o porquê de cada uma:
+
+* **Um eixo só.** Score de avaliação contra passos de ambiente. Nada de segundo eixo y:
+  duas escalas empilhadas inventam correlação que não existe nos dados.
+* **Cor é identidade, não posição.** Cada algoritmo recebe um slot fixo da paleta, sempre
+  o mesmo. Filtrar a arena não repinta os sobreviventes — quem aprendeu que "PPO é azul"
+  continua certo no gráfico seguinte.
+* **Mediana com faixa interquartil**, nunca uma semente só. Uma curva de RL de execução
+  única não é resultado, é anedota.
+* **Curvas legadas em painel próprio.** Elas vêm de `comparable=False` e são medidas em
+  *episódios*, não em passos de ambiente. Plotá-las no mesmo eixo x seria fabricar um eixo
+  comum que não existe — o mesmo pecado do gráfico de dois eixos y, com outra roupa. Elas
+  ganham um painel ao lado, com o próprio eixo rotulado, em cinza tracejado.
+* **Piso e teto sempre visíveis.** Sem o piso aleatório de 1,21 desenhado, qualquer curva
+  parece aprendizado; com ele, dá para ver quem só está tendo sorte.
+* **Rótulo direto no fim de cada curva**, além da legenda. Três das cores da paleta clara
+  ficam abaixo de 3:1 de contraste com o fundo, e a regra é que nesse caso a identidade
+  não pode depender só da cor.
+
+A paleta é a de referência do sistema de dataviz, validada para daltonismo nos dois modos
+(pior par adjacente ΔE 9,1 no claro e 8,4 no escuro).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+__all__ = ["PALETA", "cores_por_algoritmo", "arena_figure", "arena_table", "plot_run"]
+
+# ---------------------------------------------------------------------- paleta
+PALETA = {
+    "light": {
+        "surface": "#fcfcfb",
+        "plane": "#f9f9f7",
+        "ink": "#0b0b0b",
+        "ink2": "#52514e",
+        "muted": "#898781",
+        "grid": "#e1e0d9",
+        "axis": "#c3c2b7",
+        "series": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4",
+                   "#008300", "#4a3aa7", "#e34948"],
+        "legado": "#898781",
+    },
+    "dark": {
+        "surface": "#1a1a19",
+        "plane": "#0d0d0d",
+        "ink": "#ffffff",
+        "ink2": "#c3c2b7",
+        "muted": "#898781",
+        "grid": "#2c2c2a",
+        "axis": "#383835",
+        "series": ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181",
+                   "#008300", "#9085e9", "#e66767"],
+        "legado": "#898781",
+    },
+}
+
+#: Ordem fixa dos slots. Um algoritmo novo entra no fim; ninguém troca de cor por isso.
+ORDEM_ALGORITMOS = ["ppo", "dqn", "rainbow", "a2c", "acer", "dqn-legacy"]
+
+PISO_ALEATORIO = 1.21
+SCORE_PERFEITO = 97
+
+
+def cores_por_algoritmo(algoritmos, mode="light"):
+    """Mapeia algoritmo -> cor, em ordem fixa. Nunca cicla nem gera hue nova.
+
+    Passar do oitavo algoritmo é um erro deliberado: a nona cor seria
+    indistinguível de alguma das oito sob daltonismo. Nesse ponto o gráfico
+    precisa virar *small multiples*, não ganhar mais uma cor.
+    """
+    p = PALETA[mode]["series"]
+    conhecidos = [a for a in ORDEM_ALGORITMOS if a in algoritmos]
+    novos = sorted(a for a in algoritmos if a not in ORDEM_ALGORITMOS)
+    ordenados = conhecidos + novos
+    if len(ordenados) > len(p):
+        raise ValueError(
+            f"{len(ordenados)} algoritmos para {len(p)} slots de cor. "
+            "Use small multiples ou agrupe a cauda em 'outros' — não gere cor nova."
+        )
+    return {a: p[i] for i, a in enumerate(ordenados)}
+
+
+# ------------------------------------------------------------------ agregação
+def agrega_sementes(registros, pontos=60):
+    """Junta as sementes de uma mesma `(algo, variante)` numa mediana com faixa IQR.
+
+    As sementes raramente avaliam nos mesmos passos, então interpolamos todas numa
+    grade log-espaçada comum antes de tirar os quantis. A grade para no menor
+    `max(step)` entre as sementes — extrapolar seria inventar dado.
+    """
+    curvas = []
+    for r in registros:
+        x, y = r.eval_curve()
+        if x.size >= 2:
+            curvas.append((x, y))
+    if not curvas:
+        return None
+
+    x_min = max(1, max(c[0][0] for c in curvas))
+    x_max = min(c[0][-1] for c in curvas)
+    if x_max <= x_min:
+        return None
+
+    grade = np.unique(np.geomspace(x_min, x_max, pontos).astype(np.int64))
+    empilhado = np.stack([np.interp(grade, x, y) for x, y in curvas])
+    return {
+        "x": grade,
+        "mediana": np.median(empilhado, axis=0),
+        "q1": np.percentile(empilhado, 25, axis=0),
+        "q3": np.percentile(empilhado, 75, axis=0),
+        "n_sementes": len(curvas),
+    }
+
+
+def _agrupa(registros):
+    grupos = {}
+    for r in registros:
+        grupos.setdefault((r.algo, r.variant), []).append(r)
+    return grupos
+
+
+# -------------------------------------------------------------------- figuras
+def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
+                 mostrar_legado=True, x_log=True):
+    """A figura principal do benchmark. Devolve `(fig, (ax, ax_legado))`.
+
+    `registros` é uma lista de `snakeai.record.RunRecord` — tipicamente
+    `record.load_all("runs")` mais as curvas legadas convertidas.
+
+    O painel grande tem só as execuções `comparable=True`, no eixo oficial de passos de
+    ambiente. As legadas, quando existem, vão para um painel estreito à direita com o
+    **próprio eixo em episódios** — porque é isso que elas medem, e fingir o contrário
+    seria exatamente o erro que este repositório foi criado para consertar.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    p = PALETA[mode]
+    comparaveis = [r for r in registros if r.comparable]
+    legado = [r for r in registros if not r.comparable] if mostrar_legado else []
+
+    cores = cores_por_algoritmo({r.algo for r in comparaveis}, mode)
+
+    fig = plt.figure(figsize=figsize, facecolor=p["plane"])
+    if legado:
+        gs = fig.add_gridspec(1, 2, width_ratios=(3.4, 1), wspace=.22)
+        ax = fig.add_subplot(gs[0])
+        ax_leg = fig.add_subplot(gs[1])
+    else:
+        ax = fig.add_subplot(1, 1, 1)
+        ax_leg = None
+    ax.set_facecolor(p["surface"])
+
+    # --- referências primeiro, para ficarem atrás dos dados
+    ax.axhline(PISO_ALEATORIO, color=p["muted"], lw=1.0, zorder=1)
+    ax.annotate(f"piso aleatório com máscara · {PISO_ALEATORIO:.2f}".replace(".", ","),
+                xy=(0.995, PISO_ALEATORIO), xycoords=("axes fraction", "data"),
+                xytext=(0, 5), textcoords="offset points",
+                color=p["muted"], fontsize=8.5, va="bottom", ha="right")
+
+    # --- as curvas que competem
+    rotulos = []
+    for (algo, variante), rs in sorted(_agrupa(comparaveis).items()):
+        ag = agrega_sementes(rs)
+        if ag is None:
+            continue
+        cor = cores[algo]
+        nome = algo if variante in ("default", "") else f"{algo} · {variante}"
+        ax.fill_between(ag["x"], ag["q1"], ag["q3"], color=cor, alpha=.16,
+                        linewidth=0, zorder=3)
+        ax.plot(ag["x"], ag["mediana"], color=cor, lw=2.0, zorder=4,
+                label=f"{nome}  (n={ag['n_sementes']})", solid_capstyle="round")
+        rotulos.append((ag["x"][-1], ag["mediana"][-1], nome, cor))
+
+    # --- rótulo direto no fim de cada curva (a "relief rule" do contraste)
+    for x, y, nome, cor in _sem_colisao(rotulos):
+        ax.annotate(nome, xy=(x, y), xytext=(6, 0), textcoords="offset points",
+                    color=p["ink2"], fontsize=9, va="center", ha="left", zorder=5)
+
+    # --- eixos e cromo
+    if x_log:
+        ax.set_xscale("log")
+    ax.set_xlabel("passos de ambiente", color=p["ink2"], fontsize=10)
+    ax.set_ylabel("score na avaliação (1.000 episódios, greedy)",
+                  color=p["ink2"], fontsize=10)
+    ax.set_title(titulo or "snake-arena · mesmo ambiente, mesmo orçamento, mesma régua",
+                 color=p["ink"], fontsize=13, pad=14, loc="left")
+
+    ax.grid(True, which="major", color=p["grid"], lw=0.8, ls="-", zorder=0)
+    ax.set_axisbelow(True)
+    for lado in ("top", "right"):
+        ax.spines[lado].set_visible(False)
+    for lado in ("left", "bottom"):
+        ax.spines[lado].set_color(p["axis"])
+        ax.spines[lado].set_linewidth(1.0)
+    ax.tick_params(colors=p["muted"], labelsize=9, length=0)
+    ax.xaxis.set_major_formatter(FuncFormatter(_formata_passos))
+
+    ax.set_ylim(bottom=0)
+    topo = max((y for _, y, _, _ in rotulos), default=PISO_ALEATORIO * 4)
+    if rotulos:
+        ax.set_ylim(top=max(topo * 1.3, PISO_ALEATORIO * 4))
+        ax.margins(x=.18)
+
+    if len(rotulos) >= 2:
+        leg = ax.legend(loc="upper left", frameon=False, fontsize=9,
+                        labelcolor=p["ink2"], handlelength=1.6)
+        for t in leg.get_texts():
+            t.set_color(p["ink2"])
+
+    # --- painel legado: eixo próprio, unidade própria
+    if ax_leg is not None:
+        _painel_legado(ax_leg, legado, p, ylim=ax.get_ylim())
+        fig.text(0.012, 0.015,
+                 "Os dois painéis não compartilham eixo x — e não podem. À esquerda, "
+                 "passos de ambiente no jogo novo; à direita, episódios no jogo de 2019, "
+                 "com outra recompensa e score de treino em vez de avaliação.",
+                 color=p["muted"], fontsize=8)
+        fig.subplots_adjust(left=.075, right=.985, top=.88, bottom=.135)
+    else:
+        fig.tight_layout()
+    return fig, (ax, ax_leg)
+
+
+def _painel_legado(ax, legado, p, ylim=None):
+    """As curvas históricas, no eixo delas: episódios de treino.
+
+    Compartilham a escala y com o painel principal — score é score, essa parte é
+    conversível. O eixo x é que não é, e por isso está separado.
+    """
+    ax.set_facecolor(p["surface"])
+    ax.axhline(PISO_ALEATORIO, color=p["muted"], lw=1.0, zorder=1)
+
+    melhor = (None, -1.0)
+    for r in legado:
+        x = np.array([c["episodes"] for c in r.curve], dtype=np.float64)
+        y = np.array([c["train_score_mean"] for c in r.curve], dtype=np.float64)
+        if y.size > 400:
+            # 10 mil episódios num painel estreito viram um borrão cinza; a janela
+            # larga mostra a tendência, que é o que o painel de contexto precisa dizer.
+            k = max(1, y.size // 40)
+            nucleo = np.ones(k) / k
+            y = np.convolve(y, nucleo, mode="valid")
+            x = x[k - 1:]
+        ax.plot(x, y, color=p["legado"], lw=1.2, ls=(0, (4, 3)), alpha=.6, zorder=2)
+        if y.max() > melhor[1]:
+            melhor = (r.variant, float(y.max()), float(x[int(y.argmax())]))
+
+    if melhor[0]:
+        # rótulo ancorado no canto, não no ponto: no painel estreito um rótulo junto
+        # ao máximo sai pela borda direita
+        ax.annotate(f"melhor: {melhor[0]}\nmédia móvel {melhor[1]:.1f}".replace(".", ","),
+                    xy=(0.04, 0.97), xycoords="axes fraction",
+                    color=p["ink2"], fontsize=8.5, ha="left", va="top",
+                    linespacing=1.5)
+
+    ax.set_title("legado · 2019", color=p["ink2"], fontsize=10, loc="left", pad=14)
+    ax.set_xlabel("episódios de treino", color=p["muted"], fontsize=9)
+    if ylim:
+        ax.set_ylim(ylim)
+    ax.grid(True, color=p["grid"], lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for lado in ("top", "right"):
+        ax.spines[lado].set_visible(False)
+    for lado in ("left", "bottom"):
+        ax.spines[lado].set_color(p["axis"])
+    ax.tick_params(colors=p["muted"], labelsize=8.5, length=0)
+    ax.xaxis.set_major_formatter(__import__("matplotlib").ticker.FuncFormatter(_formata_passos))
+
+
+def _sem_colisao(rotulos, minimo=0.045):
+    """Empurra rótulos que ficariam sobrepostos, preservando a ordem vertical."""
+    if not rotulos:
+        return []
+    ordenado = sorted(rotulos, key=lambda t: t[1])
+    ys = [t[1] for t in ordenado]
+    faixa = max(ys[-1] - ys[0], 1e-9)
+    minimo = minimo * faixa
+    for i in range(1, len(ys)):
+        if ys[i] - ys[i - 1] < minimo:
+            ys[i] = ys[i - 1] + minimo
+    return [(x, ys[i], nome, cor) for i, (x, _, nome, cor) in enumerate(ordenado)]
+
+
+def _formata_passos(v, _pos=None):
+    if v >= 1e6:
+        return f"{v / 1e6:g} M"
+    if v >= 1e3:
+        return f"{v / 1e3:g} mil"
+    return f"{v:g}"
+
+
+def plot_run(record, mode="light", figsize=(11, 3.4)):
+    """Diagnóstico de uma execução: treino (com exploração) contra avaliação (honesta).
+
+    As duas subindo juntas = aprendeu. A de treino subindo sozinha = está explorando com
+    sorte, e o número honesto não acompanha.
+    """
+    import matplotlib.pyplot as plt
+
+    p = PALETA[mode]
+    fig, ax = plt.subplots(figsize=figsize, facecolor=p["plane"])
+    ax.set_facecolor(p["surface"])
+
+    treino = [(c["global_step"], c["train_score_mean"]) for c in record.curve
+              if c.get("train_score_mean") is not None]
+    if treino:
+        x, y = zip(*treino)
+        ax.plot(x, y, color=p["muted"], lw=1.4, label="treino (com exploração)")
+
+    x, y = record.eval_curve()
+    if x.size:
+        ax.plot(x, y, color=p["series"][0], lw=2.0, label="avaliação (greedy)")
+
+    ax.axhline(PISO_ALEATORIO, color=p["muted"], lw=1.0)
+    ax.set_xlabel("passos de ambiente", color=p["ink2"], fontsize=10)
+    ax.set_ylabel("score", color=p["ink2"], fontsize=10)
+    ax.set_title(record.run_id, color=p["ink"], fontsize=12, loc="left", pad=10)
+    ax.grid(True, color=p["grid"], lw=0.8)
+    ax.set_axisbelow(True)
+    for lado in ("top", "right"):
+        ax.spines[lado].set_visible(False)
+    for lado in ("left", "bottom"):
+        ax.spines[lado].set_color(p["axis"])
+    ax.tick_params(colors=p["muted"], labelsize=9, length=0)
+    leg = ax.legend(frameon=False, fontsize=9)
+    for t in leg.get_texts():
+        t.set_color(p["ink2"])
+    fig.tight_layout()
+    return fig, ax
+
+
+# --------------------------------------------------------------------- tabela
+def arena_table(registros, markdown=True):
+    """A tabela de resultados — a visão que o gráfico não dá.
+
+    Existe também porque três cores da paleta clara ficam abaixo de 3:1 de contraste:
+    a regra manda oferecer rótulos visíveis **ou** a visão em tabela. Aqui temos as duas.
+    """
+    linhas = []
+    for (algo, variante), rs in sorted(_agrupa([r for r in registros if r.comparable]).items()):
+        finais = [r.final for r in rs if r.final]
+        if not finais:
+            continue
+        medias = np.array([f["score_mean"] for f in finais], dtype=np.float64)
+        passos = max((r.curve[-1]["global_step"] for r in rs if r.curve), default=0)
+        linhas.append({
+            "algo": algo,
+            "variante": variante,
+            "rede": rs[0].net,
+            "params": rs[0].params,
+            "sementes": len(rs),
+            "passos": int(passos),
+            "score_mean": float(np.median(medias)),
+            "score_spread": float(medias.max() - medias.min()) if len(medias) > 1 else 0.0,
+            "score_median": float(np.median([f.get("score_median", np.nan) for f in finais])),
+            "score_max": int(max(f.get("score_max", 0) for f in finais)),
+            "win_rate": float(np.median([f.get("win_rate", 0.0) for f in finais])),
+        })
+    linhas.sort(key=lambda d: -d["score_mean"])
+
+    if not markdown:
+        return linhas
+
+    out = [
+        "| algoritmo | rede | params | sementes | passos | score médio | amplitude | mediana | máx | cheio |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | 1 | — | 0% |".replace(".", ","),
+    ]
+    for d in linhas:
+        nome = d["algo"] if d["variante"] in ("default", "") else f"{d['algo']} · {d['variante']}"
+        out.append(
+            f"| {nome} | `{d['rede']}` | {d['params']:,} | {d['sementes']} | "
+            f"{d['passos']:,} | **{d['score_mean']:.2f}** | ±{d['score_spread']:.2f} | "
+            f"{d['score_median']:.0f} | {d['score_max']} | {d['win_rate']:.1%} |"
+        )
+    out.append(f"\nScore perfeito no 10×10: **{SCORE_PERFEITO}**.")
+    return "\n".join(out)

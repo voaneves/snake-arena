@@ -1,0 +1,7 @@
+tensorflow>=2.20
+keras>=3.0
+numpy>=1.26
+matplotlib>=3.8
+imageio>=2.34
+pandas>=2.2
+pytest>=8.0
