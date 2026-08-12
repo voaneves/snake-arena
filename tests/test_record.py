@@ -12,6 +12,7 @@ import pytest
 
 from snakeai.record import (
     CONTRATO,
+    ORCAMENTO_OFICIAL,
     SCHEMA_VERSION,
     ContractViolation,
     Recorder,
@@ -38,6 +39,7 @@ def registro_valido(**kw):
             {"global_step": 100_000, "train_score_mean": 9.0, "eval_score_mean": 8.1},
         ],
         final={"episodes": 1000, "score_mean": 8.1, "completo": True},
+        config={"total_steps": ORCAMENTO_OFICIAL},
     )
     base.update(kw)
     return RunRecord(**base)
@@ -118,7 +120,9 @@ def test_non_comparable_records_skip_the_contract_but_need_a_caveat():
 # --------------------------------------------------------------------- gravação
 def test_recorder_roundtrip(tmp_path):
     rec = Recorder("ppo", variant="resnet_small", seed=1, net="resnet_small",
-                   params=135_000, config={"lr": 3e-4}, root=str(tmp_path))
+                   params=135_000,
+                   config={"lr": 3e-4, "total_steps": ORCAMENTO_OFICIAL},
+                   root=str(tmp_path))
     rec.log(0, train_score_mean=1.0)
     rec.log(50_000, train_score_mean=np.float32(4.0), eval_score_mean=3.5)
     rec.log(100_000, train_score_mean=9.0, eval_score_mean=8.1)
@@ -144,7 +148,8 @@ def test_recorder_refuses_to_save_an_invalid_run(tmp_path):
 
 
 def test_numpy_types_survive_serialization(tmp_path):
-    rec = Recorder("a2c", seed=0, net="cnn3", params=1234, root=str(tmp_path))
+    rec = Recorder("a2c", seed=0, net="cnn3", params=1234,
+                   config={"total_steps": ORCAMENTO_OFICIAL}, root=str(tmp_path))
     rec.log(np.int64(0), x=np.float32(1.5), y=np.int32(3), z=np.array([1, 2]))
     rec.finish({"episodes": 1000, "score_mean": np.float64(5.0), "completo": True})
     caminho = rec.save()
@@ -206,6 +211,14 @@ def test_legacy_csv_without_usable_rows_raises(tmp_path):
     ruim.write_text(",0,1,2,3\n", encoding="utf-8")
     with pytest.raises(ValueError):
         from_legacy_csv(str(ruim))
+
+
+def test_budget_is_part_of_the_contract():
+    """Comparar 5 M passos com 500 mil mede paciência, não algoritmo."""
+    curto = registro_valido(config={"total_steps": 500_000})
+    assert any("orçamento" in p for p in validate(curto))
+    sem = registro_valido(config={})
+    assert any("total_steps" in p for p in validate(sem))
 
 
 def test_contract_constant_is_the_documented_one():

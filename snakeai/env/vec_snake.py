@@ -315,6 +315,34 @@ class VecSnake:
                     stack.append((ny, nx))
         return count
 
+    # -------------------------------------------------------- estado serializável
+    #: Os campos que definem completamente o estado do jogo. Nada fora desta lista
+    #: influencia o futuro — é o que torna a busca em árvore possível.
+    CAMPOS_ESTADO = ("occ", "head", "food", "dir", "length", "steps", "hunger", "score")
+
+    def get_state(self):
+        """Cópia do estado de todos os ambientes, como dicionário de arrays.
+
+        Existe para a busca em árvore: o MCTS precisa voltar a um nó anterior, e a única
+        forma honesta de fazer isso é restaurar o estado exato. Snake é determinístico e de
+        informação perfeita, então este dicionário *é* o nó da árvore.
+        """
+        return {c: getattr(self, c).copy() for c in self.CAMPOS_ESTADO}
+
+    def set_state(self, estado):
+        """Restaura o estado. Não valida por desempenho — use `check_invariants` em teste."""
+        for c in self.CAMPOS_ESTADO:
+            getattr(self, c)[...] = estado[c]
+        return self
+
+    def estado_de(self, i):
+        """O estado de um único ambiente, como dicionário de arrays sem eixo de lote."""
+        return {c: getattr(self, c)[i].copy() for c in self.CAMPOS_ESTADO}
+
+    def escrever_estado(self, i, estado_unico):
+        for c in self.CAMPOS_ESTADO:
+            getattr(self, c)[i] = estado_unico[c]
+
     # ------------------------------------------------------------- introspecção
     def check_invariants(self):
         """Levanta `AssertionError` se o estado interno estiver inconsistente.

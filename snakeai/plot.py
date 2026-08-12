@@ -139,7 +139,7 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
     from matplotlib.ticker import FuncFormatter
 
     p = PALETA[mode]
-    comparaveis = [r for r in registros if r.comparable]
+    comparaveis = [r for r in registros if r.oficial]
     legado = [r for r in registros if not r.comparable] if mostrar_legado else []
 
     cores = cores_por_algoritmo({r.algo for r in comparaveis}, mode)
@@ -199,11 +199,25 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
     ax.tick_params(colors=p["muted"], labelsize=9, length=0)
     ax.xaxis.set_major_formatter(FuncFormatter(_formata_passos))
 
-    ax.set_ylim(bottom=0)
-    topo = max((y for _, y, _, _ in rotulos), default=PISO_ALEATORIO * 4)
+    # o teto do eixo y vem de TODOS os dados, inclusive os legados: os dois painéis
+    # compartilham a escala de score, e calcular só a partir das curvas oficiais faz o
+    # painel da direita ser cortado quando a arena ainda está vazia
+    topo_oficial = max((y for _, y, _, _ in rotulos), default=0.0)
+    topo_legado = max(
+        (max(c["train_score_mean"] for c in r.curve) for r in legado), default=0.0
+    ) if legado else 0.0
+    topo = max(topo_oficial * 1.3, topo_legado * 1.15, PISO_ALEATORIO * 4)
+    ax.set_ylim(0, topo)
     if rotulos:
-        ax.set_ylim(top=max(topo * 1.3, PISO_ALEATORIO * 4))
         ax.margins(x=.18)
+    else:
+        # arena vazia: um eixo x de 1 a 10 e um retângulo em branco não comunicam nada
+        ax.set_xlim(1e4, 1e7)
+        ax.annotate(
+            "nenhuma execução oficial ainda\n\n"
+            "as curvas entram aqui quando forem treinadas no orçamento do contrato",
+            xy=(0.5, 0.55), xycoords="axes fraction", ha="center", va="center",
+            color=p["muted"], fontsize=11, linespacing=1.6)
 
     if len(rotulos) >= 2:
         leg = ax.legend(loc="upper left", frameon=False, fontsize=9,
@@ -211,7 +225,7 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
         for t in leg.get_texts():
             t.set_color(p["ink2"])
 
-    # --- painel legado: eixo próprio, unidade própria
+    # --- painel legado: eixo próprio, unidade própria, mesma escala de score
     if ax_leg is not None:
         _painel_legado(ax_leg, legado, p, ylim=ax.get_ylim())
         fig.text(0.012, 0.015,
@@ -341,7 +355,7 @@ def arena_table(registros, markdown=True):
     a regra manda oferecer rótulos visíveis **ou** a visão em tabela. Aqui temos as duas.
     """
     linhas = []
-    for (algo, variante), rs in sorted(_agrupa([r for r in registros if r.comparable]).items()):
+    for (algo, variante), rs in sorted(_agrupa([r for r in registros if r.oficial]).items()):
         finais = [r.final for r in rs if r.final]
         if not finais:
             continue

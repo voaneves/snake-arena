@@ -145,12 +145,29 @@ Todos reimplementados em **Keras 3**, sobre o mesmo ambiente e a mesma API de ag
 
 | Algoritmo | Notebook | Origem | Estado |
 |---|---|---|---|
-| **PPO** — clipping, GAE(λ), value clipping, early stop por KL, entropia decrescente | `01_ppo.ipynb` | novo, é a referência | 🚧 portando para o pacote |
-| **DQN** — família unificada: ER/PER, double, dueling, n-step, noisy | `02_dqn.ipynb` | 6 notebooks do `colab-rl` | 📋 planejado |
-| **Rainbow** — C51 sobre a família acima | `03_rainbow.ipynb` | novo | 📋 planejado |
-| **A2C** — actor-critic síncrono, o controle experimental do PPO | `04_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | 📋 planejado |
-| **ACER** — Retrace(λ), IS truncado com correção de viés, replay ratio | `05_acer.ipynb` | 2 notebooks quebrados | 📋 planejado, risco alto |
-| **K-FAC** | — | 2 notebooks quebrados | ⚰️ aposentado — dependia de `tensorflow.contrib`, que não existe desde o TF2. A pergunta original ("o otimizador importa?") vira uma ablação de RMSprop × Adam × AdamW, que roda |
+| **PPO** — clipping, GAE(λ), value clipping, early stop por KL | `01_ppo.ipynb` | novo, é a referência | ✅ implementado, 19 testes |
+| **DQN** — família unificada: ER/PER, double, dueling, n-step, noisy, C51 | `02_dqn.ipynb` | 6 notebooks do `colab-rl` | ✅ implementado, 8 variantes testadas |
+| **A2C** — actor-critic síncrono, o controle experimental do PPO | `03_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | ✅ implementado, herda o rollout do PPO |
+| **ACER** — Retrace(λ), IS truncado com correção de viés, região de confiança | `04_acer.ipynb` | 2 notebooks quebrados | ✅ reescrito e **convergindo** (16,8 em 151k passos) |
+| **AlphaZero** — MCTS sobre o simulador real | `05_alphazero.ipynb` | novo | ✅ implementado; a busca sozinha faz **30,3** |
+| **MuZero** — a mesma busca, sobre um modelo aprendido | `06_muzero.ipynb` | novo | ✅ implementado |
+| **K-FAC** | — | 2 notebooks quebrados | ⚰️ aposentado — dependia de `tensorflow.contrib`, que não existe desde o TF2 |
+
+**Por que busca.** Snake é determinístico, de informação perfeita, tem 3 ações e o
+`VecSnake` faz ~286 mil passos/s. Isso torna planejamento com o simulador **real** a jogada
+de maior retorno — e torna desnecessária a parte cara do MuZero, que é aprender um modelo
+do mundo que aqui já existe exato. Medido, com um valor heurístico bobo (distância de
+Manhattan até a comida) e **nenhum treino**:
+
+| | score médio | máx |
+|---|---|---|
+| aleatório com máscara | 0,67 | 4 |
+| MCTS 8 simulações | **24,15** | 37 |
+| MCTS 24 simulações | **30,33** | 46 |
+
+O MuZero está aqui para responder a pergunta oposta: **quanto custa não ter o simulador?**
+Ele deveria perder para o AlphaZero neste domínio, e é justamente esse o resultado
+interessante.
 
 ### Redes como eixo de comparação
 
@@ -173,28 +190,26 @@ medida, não folclore.
 <a name="resultados"></a>
 ## Resultados
 
-<div align="center">
+![arena](assets/arena_light.png)
 
-*O gráfico da arena aparece aqui quando as primeiras execuções oficiais terminarem.*
+A tabela completa está em [`docs/RESULTADOS.md`](docs/RESULTADOS.md), gerada por
+`python -m snakeai.arena --all`. **O painel da esquerda está vazio de propósito** — nenhuma
+execução no orçamento oficial foi feita ainda, e o repositório prefere um gráfico honesto e
+vazio a um gráfico bonito com números de execuções curtas.
 
-</div>
+O painel da direita é o acervo de 2019, no eixo dele: episódios, não passos de ambiente.
 
-| Algoritmo | Rede | Params | Passos | Score médio | Mediana | p95 | Máx | Tabuleiro cheio | Com filtro | ms/inf |
-|---|---|---|---|---|---|---|---|---|---|---|
-| aleatório + máscara | — | — | 0 | **1,21** | 1 | 4 | — | 0% | — | — |
-| PPO | | | | | | | | | | |
-| DQN | | | | | | | | | | |
-| Rainbow | | | | | | | | | | |
-| A2C | | | | | | | | | | |
-| ACER | | | | | | | | | | |
+O que já foi medido, fora do contrato e portanto fora da arena:
 
-**Os últimos modelos treinados moram neste repositório**, em [`models/`](models/) — `.keras` para
-retomar treino e TFLite fp16/int8 para embarcar no jogo. O [`MODELS.md`](MODELS.md) registra, para
-cada arquivo: score, orçamento, semente e o hash do commit que o produziu.
+| | score | onde |
+|---|---|---|
+| MCTS 24 sims + valor heurístico, sem treino | **30,3** | `tests/test_search.py` |
+| melhor DQN de 2019 (treino, ambiente antigo) | 18,3 | `results/legacy/` |
+| ACER, 151 mil passos, rede `tiny`, CPU | 16,8 | execução de fumaça |
+| piso aleatório com máscara | 1,21 | contrato |
 
-<p align="right">(<a href="#topo">voltar ao topo</a>)</p>
-
----
+**Os últimos modelos treinados moram neste repositório**, em [`models/`](models/) — `.keras`
+para retomar treino e TFLite fp16/int8 para embarcar no jogo.
 
 <a name="estrutura"></a>
 ## Estrutura do projeto
@@ -332,16 +347,22 @@ Use `model.export(dir, format="tf_saved_model")` e converta a partir dele.
 ## Roteiro
 
 - [x] **0** — Criar o repositório, o contrato e o README
-- [ ] **1** — Núcleo `snakeai/`: ambiente, redes, avaliação, registro, gráfico, testes
-- [ ] **2** — PPO refatorado para o pacote, 3 sementes, primeiro `history.json` oficial
-- [ ] **3** — DQN unificado (substitui os 6 notebooks antigos por um)
-- [ ] **4** — A2C
-- [ ] **5** — Rainbow
-- [ ] **6** — ACER reescrito
-- [ ] **7** — Ablação de otimizadores (sucessora do K-FAC)
-- [ ] **8** — Arena: gráfico comparativo, tabela final, painel de tempo de parede
-- [ ] **9** — Modelos exportados, `MODELS.md`, integração com o leaderboard humano
-- [ ] **10** — Verificação: reprodutibilidade, paridade `.keras` × TFLite, CI
+- [x] **1** — Núcleo `snakeai/`: ambiente, redes, avaliação, registro, gráfico, testes
+- [x] **2** — PPO refatorado para o pacote
+- [x] **3** — DQN unificado (substitui os 6 notebooks antigos por um)
+- [x] **4** — A2C
+- [x] **5** — Rainbow (C51 + double + dueling + PER + n-step + noisy)
+- [x] **6** — ACER reescrito — e converge
+- [x] **7** — AlphaZero e MuZero, com o MCTS compartilhado
+- [x] **8** — Arena: `python -m snakeai.arena --all`
+- [x] **9** — Notebooks do Colab, gerados a partir do pacote
+- [ ] **10** — **Treinar de verdade**: 3 sementes × orçamento oficial, numa GPU
+- [ ] **11** — Modelos exportados, `MODELS.md`, integração com o leaderboard humano
+- [ ] **12** — Verificação final: reprodutibilidade, paridade `.keras` × TFLite, CI
+
+O passo 10 é o que falta para o gráfico deixar de estar vazio. Ele não cabe numa CPU: o
+orçamento oficial de 5 M passos leva ~3,7 h por semente só no PPO. É para isso que os
+notebooks existem.
 
 O plano detalhado, com o diagnóstico completo dos treze notebooks e a lista de bugs encontrados,
 está em [`docs/PLANO.md`](docs/PLANO.md).

@@ -28,6 +28,7 @@ import numpy as np
 __all__ = [
     "SCHEMA_VERSION",
     "CONTRATO",
+    "ORCAMENTO_OFICIAL",
     "ContractViolation",
     "RunRecord",
     "Recorder",
@@ -57,6 +58,12 @@ CONTRATO = {
     "eval_greedy": True,
     "eval_safety": False,
 }
+
+#: Orçamento oficial, em passos de ambiente. Fica fora do `CONTRATO` porque não descreve o
+#: ambiente, mas é igualmente obrigatório: comparar um algoritmo que treinou 5 M passos com
+#: outro que treinou 500 mil não mede algoritmo, mede paciência. Validado a partir de
+#: `config["total_steps"]`.
+ORCAMENTO_OFICIAL = 5_000_000
 
 #: Piso e teto do 10x10, medidos e documentados no README.
 PISO_ALEATORIO = 1.21
@@ -118,6 +125,16 @@ class RunRecord:
 
     def steps(self):
         return np.array([p["global_step"] for p in self.curve], dtype=np.int64)
+
+    @property
+    def oficial(self):
+        """Pode competir na arena? Comparável **e** sem violação de contrato registrada.
+
+        Separado de `comparable` de propósito: uma execução de fumaça não é uma curva
+        histórica. Ela não compete, mas também não vira contexto — simplesmente não
+        aparece, e o motivo fica em `meta["contract_violations"]`.
+        """
+        return self.comparable and not self.meta.get("contract_violations")
 
     def eval_curve(self):
         """`(passos, scores)` só dos pontos em que a avaliação rodou."""
@@ -256,6 +273,14 @@ def validate(record: RunRecord, strict_eval=True):
             p.append("`final.score_mean` ausente")
         elif not (0.0 <= media <= SCORE_PERFEITO):
             p.append(f"score_mean fora da faixa possível: {media}")
+
+    orcamento = record.config.get("total_steps")
+    if orcamento is None:
+        p.append("`config['total_steps']` ausente — o orçamento é parte do contrato")
+    elif int(orcamento) != ORCAMENTO_OFICIAL:
+        p.append(f"orçamento de {int(orcamento):,} passos; o contrato exige "
+                 f"{ORCAMENTO_OFICIAL:,}. Comparar treinos de tamanhos diferentes mede "
+                 "paciência, não algoritmo")
 
     if record.params <= 0:
         p.append("`params` deve ser o número de parâmetros treináveis")

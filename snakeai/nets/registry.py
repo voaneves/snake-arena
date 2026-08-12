@@ -29,6 +29,7 @@ __all__ = [
     "build_backbone",
     "build_actor_critic",
     "build_q_network",
+    "build_policy_q",
     "resumo",
 ]
 
@@ -163,6 +164,43 @@ def build_q_network(board_size=10, net="cnn_rainbow", largura_densa=None,
                               (f"c51x{n_atoms}", bool(n_atoms))) if on]
     sufixo = ("_" + "_".join(partes)) if partes else ""
     return keras.Model(inp, saida, name=nome or f"q_{canonico}{sufixo}")
+
+
+def build_policy_q(board_size=10, net="resnet_small", largura_densa=None,
+                   n_actions=N_ACTIONS, nome=None):
+    """Modelo de duas saídas `[logits, Q(s,·)]` — o que o ACER consome.
+
+    Diferente do actor-critic comum: aqui o crítico devolve **um valor por ação**, não um
+    escalar. É disso que o Retrace precisa, e `V(s) = Σ_a π(a|s) Q(s,a)` sai de graça —
+    sem uma terceira cabeça e sem inconsistência entre V e Q, que é uma fonte clássica de
+    bug silencioso em ACER.
+    """
+    inp = _entrada(board_size)
+    x, canonico = build_backbone(inp, net)
+    largura = LARGURA_DENSA_PADRAO if largura_densa is None else int(largura_densa)
+
+    if _e_espacial(x):
+        p = layers.Conv2D(4, 1, use_bias=False, name="pi_c")(x)
+        p = layers.GroupNormalization(groups=2, name="pi_n")(p)
+        p = layers.Activation("relu", name="pi_a")(p)
+        p = layers.Flatten(name="pi_f")(p)
+
+        q = layers.Conv2D(8, 1, use_bias=False, name="q_c")(x)
+        q = layers.GroupNormalization(groups=2, name="q_n")(q)
+        q = layers.Activation("relu", name="q_a")(q)
+        q = layers.Flatten(name="q_f")(q)
+        q = layers.Dense(largura, activation="relu", name="q_d")(q)
+    else:
+        p = layers.Dense(largura, activation="relu", name="pi_d")(x)
+        q = layers.Dense(largura, activation="relu", name="q_d")(x)
+
+    logits = layers.Dense(
+        n_actions, name="logits",
+        kernel_initializer=keras.initializers.Orthogonal(gain=0.01),
+        bias_initializer="zeros",
+    )(p)
+    q_saida = layers.Dense(n_actions, name="q", bias_initializer="zeros")(q)
+    return keras.Model(inp, [logits, q_saida], name=nome or f"acer_{canonico}")
 
 
 def resumo(board_size=10, largura_densa=None):
