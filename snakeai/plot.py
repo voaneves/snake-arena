@@ -58,7 +58,29 @@ PALETA = {
 }
 
 #: Ordem fixa dos slots. Um algoritmo novo entra no fim; ninguém troca de cor por isso.
-ORDEM_ALGORITMOS = ["ppo", "dqn", "rainbow", "a2c", "acer", "dqn-legacy"]
+ORDEM_ALGORITMOS = ["ppo", "dqn", "rainbow", "a2c", "acer", "alphazero",
+                    "muzero", "acktr", "dreamerv3", "dqn-legacy"]
+
+#: Famílias, na ordem em que os painéis aparecem. Existem porque a arena passou de oito
+#: algoritmos e **oito é o limite honesto de uma paleta categórica**: a nona cor seria
+#: indistinguível de alguma das oito sob daltonismo. A saída não é gerar mais uma cor, é
+#: mudar a forma do gráfico — *small multiples*, um painel por família.
+#:
+#: O agrupamento é o de sempre em RL, e não uma conveniência visual: o que o algoritmo
+#: aprende (política, valor, ou um modelo do mundo) é a divisão que explica por que as
+#: curvas têm formatos diferentes.
+FAMILIAS = [
+    ("política", "gradiente de política", ["ppo", "a2c", "acktr", "acer"]),
+    ("valor", "função de valor", ["dqn", "rainbow"]),
+    ("modelo", "modelo do mundo e busca", ["alphazero", "muzero", "dreamerv3"]),
+]
+
+
+def familia_de(algo):
+    for chave, _, membros in FAMILIAS:
+        if algo in membros:
+            return chave
+    return "outros"
 
 PISO_ALEATORIO = 1.21
 SCORE_PERFEITO = 97
@@ -78,9 +100,25 @@ def cores_por_algoritmo(algoritmos, mode="light"):
     if len(ordenados) > len(p):
         raise ValueError(
             f"{len(ordenados)} algoritmos para {len(p)} slots de cor. "
-            "Use small multiples ou agrupe a cauda em 'outros' — não gere cor nova."
+            "Use `arena_figure(..., familias=True)` — small multiples por família — "
+            "ou agrupe a cauda em 'outros'. Não gere cor nova."
         )
     return {a: p[i] for i, a in enumerate(ordenados)}
+
+
+def cores_por_familia(mode="light"):
+    """Cor de cada algoritmo **dentro do painel da sua família**.
+
+    Nos *small multiples*, cada painel é uma unidade de leitura com no máximo quatro
+    séries coloridas; as outras famílias aparecem em cinza, só para dar contexto. Duas
+    famílias podem repetir um matiz — o que é seguro porque elas nunca aparecem coloridas
+    no mesmo painel, e cada curva colorida ganha rótulo direto.
+
+    A cor é presa ao algoritmo pela posição dele dentro da família, que é fixa. Filtrar
+    execuções não repinta ninguém.
+    """
+    p = PALETA[mode]["series"]
+    return {a: p[i] for _, _, membros in FAMILIAS for i, a in enumerate(membros)}
 
 
 # ------------------------------------------------------------------ agregação
@@ -123,9 +161,134 @@ def _agrupa(registros):
 
 
 # -------------------------------------------------------------------- figuras
+def arena_familias(registros, mode="light", figsize=(14.5, 4.8), titulo=None,
+                   x_log=True, mostrar_legado=True):
+    """*Small multiples*: um painel por família, com as demais em cinza ao fundo.
+
+    Esta é a forma que a arena assume quando passa de oito algoritmos. Ela não é um
+    consolo por não caber tudo num painel — é melhor para a pergunta que a arena de fato
+    responde. Sobrepor nove curvas com faixa interquartil produz um emaranhado onde a
+    comparação relevante ("o Rainbow supera o DQN?") fica *mais* difícil, não menos.
+
+    Cada painel mostra a família em cor e **todas as outras curvas em cinza claro**, na
+    mesma escala. Sem esse fundo, três painéis lado a lado seriam três gráficos
+    independentes e a comparação entre famílias se perderia — que é justamente o que a
+    arena existe para permitir.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    p = PALETA[mode]
+    cores = cores_por_familia(mode)
+    comparaveis = [r for r in registros if r.oficial]
+
+    agregados = {}
+    for (algo, variante), rs in sorted(_agrupa(comparaveis).items()):
+        ag = agrega_sementes(rs)
+        if ag is not None:
+            agregados[(algo, variante)] = ag
+
+    presentes = [f for f in FAMILIAS
+                 if any(a in f[2] for a, _ in agregados)] or FAMILIAS
+    legado = [r for r in registros if not r.comparable] if mostrar_legado else []
+
+    # O painel legado entra com largura menor e **eixo x próprio**: ele mede episódios, e
+    # pendurá-lo no eixo de passos seria fabricar um eixo comum que não existe.
+    larguras = [1.0] * len(presentes) + ([0.62] if legado else [])
+    fig = plt.figure(figsize=figsize, facecolor=p["plane"])
+    gs = fig.add_gridspec(1, len(larguras), width_ratios=larguras, wspace=.08)
+    axes = [fig.add_subplot(gs[0])]
+    axes += [fig.add_subplot(gs[i], sharex=axes[0], sharey=axes[0])
+             for i in range(1, len(presentes))]
+    ax_leg = fig.add_subplot(gs[-1], sharey=axes[0]) if legado else None
+
+    topo = max((max(ag["mediana"]) for ag in agregados.values()), default=0.0)
+    topo = max(topo * 1.3, PISO_ALEATORIO * 4)
+
+    for i, (ax, (chave, rotulo, membros)) in enumerate(zip(axes, presentes)):
+        ax.set_facecolor(p["surface"])
+        ax.axhline(PISO_ALEATORIO, color=p["muted"], lw=1.0, zorder=1)
+        if i == len(presentes) - 1:
+            # rotulada uma vez, e no painel mais vazio: repetir a referência nos três
+            # seria ruído, e à esquerda ela cai em cima do início das curvas
+            ax.annotate(f"piso aleatório · {PISO_ALEATORIO:.2f}".replace(".", ","),
+                        xy=(0.98, PISO_ALEATORIO), xycoords=("axes fraction", "data"),
+                        xytext=(0, 5), textcoords="offset points",
+                        color=p["muted"], fontsize=8, va="bottom", ha="right")
+
+        # contexto: todo o resto, em cinza, atrás
+        for (algo, _), ag in agregados.items():
+            if algo not in membros:
+                ax.plot(ag["x"], ag["mediana"], color=p["legado"], lw=1.2,
+                        alpha=.45, zorder=2, solid_capstyle="round")
+
+        rotulos = []
+        for (algo, variante), ag in agregados.items():
+            if algo not in membros:
+                continue
+            cor = cores[algo]
+            nome = algo if variante in ("default", "") else f"{algo} · {variante}"
+            ax.fill_between(ag["x"], ag["q1"], ag["q3"], color=cor, alpha=.16,
+                            linewidth=0, zorder=3)
+            ax.plot(ag["x"], ag["mediana"], color=cor, lw=2.0, zorder=4,
+                    label=f"{nome}  (n={ag['n_sementes']})", solid_capstyle="round")
+            rotulos.append((ag["x"][-1], ag["mediana"][-1], nome, cor))
+
+        for x, y, nome, _ in _sem_colisao(rotulos):
+            ax.annotate(nome, xy=(x, y), xytext=(5, 0), textcoords="offset points",
+                        color=p["ink2"], fontsize=8.5, va="center", ha="left", zorder=5)
+
+        ax.set_title(rotulo, color=p["ink2"], fontsize=10.5, loc="left", pad=10)
+        if x_log:
+            ax.set_xscale("log")
+        ax.set_ylim(0, topo)
+        if not agregados:
+            ax.set_xlim(1e4, 1e7)
+        else:
+            # espaço à direita para o rótulo direto de cada curva não sair do painel
+            ax.margins(x=.30)
+        ax.grid(True, which="major", color=p["grid"], lw=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        for lado in ("top", "right"):
+            ax.spines[lado].set_visible(False)
+        for lado in ("left", "bottom"):
+            ax.spines[lado].set_color(p["axis"])
+        ax.tick_params(colors=p["muted"], labelsize=9, length=0)
+        ax.xaxis.set_major_formatter(FuncFormatter(_formata_passos))
+        ax.set_xlabel("passos de ambiente", color=p["ink2"], fontsize=9.5)
+        if i:
+            ax.tick_params(labelleft=False)
+        if rotulos:
+            leg = ax.legend(loc="upper left", frameon=False, fontsize=8.5,
+                            labelcolor=p["ink2"], handlelength=1.6)
+            for t in leg.get_texts():
+                t.set_color(p["ink2"])
+
+    if ax_leg is not None:
+        _painel_legado(ax_leg, legado, p, ylim=(0, topo))
+        ax_leg.tick_params(labelleft=False)
+
+    axes[0].set_ylabel("score na avaliação (1.000 episódios, greedy)",
+                       color=p["ink2"], fontsize=10)
+    fig.suptitle(titulo or "snake-arena · por família de algoritmo",
+                 color=p["ink"], fontsize=13, x=.006, ha="left", y=.985)
+    fig.text(.006, .015,
+             "cada painel colore uma família e mantém as demais curvas em cinza, na mesma "
+             "escala; nove algoritmos não cabem numa paleta categórica. O painel do legado "
+             "tem eixo x próprio, em episódios — ver docs/COMPARABILITY.md.",
+             color=p["muted"], fontsize=8)
+    fig.subplots_adjust(left=.058, right=.985, top=.83, bottom=.16)
+    return fig, tuple(axes) + ((ax_leg,) if ax_leg is not None else ())
+
+
 def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
-                 mostrar_legado=True, x_log=True):
+                 mostrar_legado=True, x_log=True, familias="auto"):
     """A figura principal do benchmark. Devolve `(fig, (ax, ax_legado))`.
+
+    `familias="auto"` (o padrão) troca para *small multiples* assim que o número de
+    algoritmos passa dos oito slots de cor. É automático de propósito: a alternativa
+    seria a arena quebrar — ou, pior, ganhar uma nona cor — no dia em que o nono
+    algoritmo termina de treinar.
 
     `registros` é uma lista de `snakeai.record.RunRecord` — tipicamente
     `record.load_all("runs")` mais as curvas legadas convertidas.
@@ -142,7 +305,12 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
     comparaveis = [r for r in registros if r.oficial]
     legado = [r for r in registros if not r.comparable] if mostrar_legado else []
 
-    cores = cores_por_algoritmo({r.algo for r in comparaveis}, mode)
+    algos = {r.algo for r in comparaveis}
+    if familias is True or (familias == "auto" and len(algos) > len(p["series"])):
+        return arena_familias(registros, mode=mode, titulo=titulo, x_log=x_log,
+                              mostrar_legado=mostrar_legado)
+
+    cores = cores_por_algoritmo(algos, mode)
 
     fig = plt.figure(figsize=figsize, facecolor=p["plane"])
     if legado:

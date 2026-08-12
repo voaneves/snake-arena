@@ -147,11 +147,44 @@ Todos reimplementados em **Keras 3**, sobre o mesmo ambiente e a mesma API de ag
 |---|---|---|---|
 | **PPO** — clipping, GAE(λ), value clipping, early stop por KL | `01_ppo.ipynb` | novo, é a referência | ✅ implementado, 19 testes |
 | **DQN** — família unificada: ER/PER, double, dueling, n-step, noisy, C51 | `02_dqn.ipynb` | 6 notebooks do `colab-rl` | ✅ implementado, 8 variantes testadas |
-| **A2C** — actor-critic síncrono, o controle experimental do PPO | `03_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | ✅ implementado, herda o rollout do PPO |
-| **ACER** — Retrace(λ), IS truncado com correção de viés, região de confiança | `04_acer.ipynb` | 2 notebooks quebrados | ✅ reescrito e **convergindo** (16,8 em 151k passos) |
-| **AlphaZero** — MCTS sobre o simulador real | `05_alphazero.ipynb` | novo | ✅ implementado; a busca sozinha faz **30,3** |
-| **MuZero** — a mesma busca, sobre um modelo aprendido | `06_muzero.ipynb` | novo | ✅ implementado |
-| **K-FAC** | — | 2 notebooks quebrados | ⚰️ aposentado — dependia de `tensorflow.contrib`, que não existe desde o TF2 |
+| **Rainbow** — os seis componentes juntos | `03_rainbow.ipynb` | novo | ✅ algoritmo próprio, com linha própria na arena |
+| **A2C** — actor-critic síncrono, o controle experimental do PPO | `04_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | ✅ implementado, herda o rollout do PPO |
+| **ACER** — Retrace(λ), IS truncado com correção de viés, região de confiança | `05_acer.ipynb` | 2 notebooks quebrados | ✅ reescrito e **convergindo** (16,8 em 151k passos) |
+| **AlphaZero** — MCTS sobre o simulador real | `06_alphazero.ipynb` | novo | ✅ implementado; a busca sozinha faz **30,3** |
+| **MuZero** — a mesma busca, sobre um modelo aprendido | `07_muzero.ipynb` | novo | ✅ implementado |
+| **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC reimplementado em Keras 3, 19 testes de curvatura |
+| **DreamerV3** — modelo do mundo, ator treinado no sonho | `09_dreamerv3.ipynb` | novo | ✅ RSSM categórico, symlog, two-hot, 28 testes |
+| ↳ **eixo de otimizadores** (primeira ordem) | `99_ablacoes.ipynb` | — | ✅ Adam, AdamW, RMSprop, Lion e SGD como ablação medida |
+
+**Sobre o Rainbow.** Ele não é um algoritmo novo — é o `DQN` deste repositório com as seis
+flags ligadas. Existe como classe própria por duas razões, as duas sobre honestidade do
+gráfico: teria a cor do DQN e um rótulo `dqn · double+dueling+per+noisy+3steps+c51` que
+ninguém lê; e a composição canônica do paper fica no código em vez de depender de quem
+configura acertar seis argumentos.
+
+**Sobre o K-FAC.** Quatro notebooks de 2019 tentaram e nenhum roda: dependiam de
+`tensorflow.contrib.kfac`, removido no TF2. Ele foi reimplementado do zero em Keras 3
+(`snakeai/kfac.py`) — captura de ativações e gradientes de pré-ativação por camada,
+amortecimento de Tikhonov fatorado, Cholesky nos dois fatores, e o KFC de Grosse & Martens
+para as convoluções. A implementação canônica do Google (`tensorflow/kfac`) foi **arquivada
+em 19/04/2026** e usa `tensorflow.compat.v1`, então serviu de referência, não de dependência.
+
+Ele **não** entra no eixo `cfg.optimizer`, e por um motivo estrutural: um
+`keras.optimizers.Optimizer` só recebe pares `(gradiente, variável)`, e o K-FAC precisa das
+ativações de entrada de cada camada. Ele vive onde o uso é historicamente correto — dentro
+do **ACKTR**, que é o `A2C` deste repositório com uma única troca. A diferença entre as duas
+curvas na arena é a resposta medida para "vale a pena aproximar a curvatura?", com todo o
+resto congelado: mesmo rollout, mesmo GAE, mesma rede.
+
+O que trava a corretude é `tests/test_kfac.py`: com a Fisher exata, **um** passo de tamanho
+1 aterrissa no ótimo de mínimos quadrados — o que nenhum método de primeira ordem faz, com
+learning rate nenhum. É a diferença entre "implementei K-FAC" e "implementei algo que
+pré-condiciona".
+
+**Sobre o DreamerV3.** É o único dos nove que não busca nada na hora de agir: AlphaZero e
+MuZero gastam computação de inferência em MCTS, o Dreamer usa o modelo só para **treinar**,
+em rollouts imaginados. Por isso o número dele na curva é o da política pura, sem asterisco
+— a mesma regra que mantém a busca do AlphaZero numa coluna à parte.
 
 **Por que busca.** Snake é determinístico, de informação perfeita, tem 3 ações e o
 `VecSnake` faz ~286 mil passos/s. Isso torna planejamento com o simulador **real** a jogada
@@ -180,7 +213,7 @@ qualquer tronco por string:
 | `resnet_tiny` (~40k), `resnet_small` (~135k), `resnet_base` (~320k) | do notebook de PPO | ResNet totalmente convolucional com GroupNorm |
 
 Cabeças `dueling`, `noisy` e `c51` encaixam em qualquer tronco. O notebook
-`99_ablation_redes.ipynb` fixa o algoritmo e varre as redes — assim "qual arquitetura é melhor" vira
+`99_ablacoes.ipynb` fixa o algoritmo e varre as redes — assim "qual arquitetura é melhor" vira
 medida, não folclore.
 
 <p align="right">(<a href="#topo">voltar ao topo</a>)</p>
@@ -225,7 +258,7 @@ snake-arena/
 │   ├── record.py             # esquema do history.json + validador do contrato
 │   ├── plot.py               # o gráfico comparativo
 │   └── export.py             # .keras + TFLite + medição de latência
-├── notebooks/                # um .ipynb por algoritmo + a arena
+├── notebooks/                # um .ipynb por algoritmo (9) + as ablações
 ├── runs/                     # history.json de cada execução (versionado)
 ├── models/                   # os melhores checkpoints, por algoritmo
 ├── legacy/                   # os 13 notebooks antigos, congelados e anotados
@@ -279,13 +312,16 @@ sem nada instalado.
 
 | Notebook | Abrir |
 |---|---|
-| Arena — treina/agrega tudo e gera o gráfico | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/00_arena.ipynb) |
-| PPO | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/01_ppo.ipynb) |
-| DQN | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/02_dqn.ipynb) |
+| PPO — a referência | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/01_ppo.ipynb) |
+| DQN — a família inteira | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/02_dqn.ipynb) |
 | Rainbow | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/03_rainbow.ipynb) |
-| A2C | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/04_a2c.ipynb) |
+| A2C — o controle do PPO | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/04_a2c.ipynb) |
 | ACER | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/05_acer.ipynb) |
-| Ablação de redes | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/99_ablation_redes.ipynb) |
+| AlphaZero | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/06_alphazero.ipynb) |
+| MuZero | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/07_muzero.ipynb) |
+| ACKTR — K-FAC | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/08_acktr.ipynb) |
+| DreamerV3 | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/09_dreamerv3.ipynb) |
+| Ablações — rede e otimizador | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/99_ablacoes.ipynb) |
 
 O que todo notebook garante, por construção:
 
@@ -330,7 +366,7 @@ TF1 ou de APIs removidas do Keras.
 | `keras.backend` para grafo, `tf.losses.huber_loss` | `keras.ops` e `keras.losses.Huber` |
 | Otimizadores customizados herdando da API antiga (`COCOB`, `SMORMS3`, `Yogi`, `Nadamax`, `Radamax`, `AdamDelta`) | reescritos sobre `keras.optimizers.Optimizer` — ou aposentados, se não justificarem a manutenção |
 | `NoisyDense` mexendo em internals de `Dense` | camada própria com `add_weight` e `keras.random` |
-| `tensorflow.contrib.kfac` | não existe. Aposentado (ver [Algoritmos](#algoritmos)) |
+| `tensorflow.contrib.kfac` | não existe, e `tensorflow/kfac` foi arquivado em 19/04/2026. Reimplementado em `snakeai/kfac.py` sobre Keras 3 puro |
 | Salvar em `.h5` | `.keras` para retomar treino, TFLite para embarcar |
 | Modelo funcional recebendo `KerasTensor` em API TF sem dispatch (o erro que matava o ACER) | operação encapsulada em `keras.Layer` própria |
 

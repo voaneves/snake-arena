@@ -113,9 +113,16 @@ def test_lr_suggestions_reflect_the_step_geometry():
     assert set(LR_SUGERIDO) == set(OTIMIZADORES)
 
 
-def test_kfac_is_gone_and_documented():
-    """O K-FAC não volta: `tensorflow.contrib` não existe desde o TF2."""
+def test_kfac_is_not_in_this_axis_and_the_module_says_where_it_is():
+    """O K-FAC existe (`snakeai/kfac.py`), mas não cabe nesta assinatura.
+
+    `cria_otimizador(nome, lr)` não tem como entregar as ativações de entrada e os
+    gradientes de pré-ativação de cada camada, que é do que o K-FAC vive. Deixar isso
+    escrito no módulo evita que alguém "conserte" a ausência adicionando um
+    `optimizer="kfac"` que silenciosamente não pré-condicionaria nada.
+    """
     import snakeai.otimizadores as mod
 
     assert "kfac" not in OTIMIZADORES
-    assert "K-FAC" in mod.__doc__ and "contrib" in mod.__doc__
+    assert "K-FAC" in mod.__doc__ and "snakeai/kfac.py" in mod.__doc__
+    assert "ACKTR" in mod.__doc__

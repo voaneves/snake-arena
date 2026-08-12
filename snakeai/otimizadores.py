@@ -1,14 +1,23 @@
-"""Otimizadores — o eixo que substitui o K-FAC.
+"""Otimizadores — o eixo de ablação de primeira ordem.
 
-Por que o K-FAC saiu
---------------------
-Dois notebooks do `colab-rl` tentaram K-FAC e nenhum roda: ele dependia de
-`tensorflow.contrib.kfac`, que não existe desde o TensorFlow 2. Reimplementar aproximação
-de Fisher por blocos Kronecker do zero é um projeto próprio, não uma correção de porte.
+Onde foi parar o K-FAC
+----------------------
+Quatro notebooks do `colab-rl` tentaram K-FAC e nenhum roda: dependiam de
+`tensorflow.contrib.kfac`, que não existe desde o TensorFlow 2. Ele **voltou**, mas não
+para cá: mora em `snakeai/kfac.py` e é usado pelo `ACKTR` (`snakeai/agents/acktr.py`).
 
-Mas a **pergunta** por trás daqueles notebooks era boa: *o otimizador importa?* Ela merece
-resposta, e merece uma resposta medida. Este módulo é essa resposta — um eixo de ablação
-com otimizadores que existem, funcionam em Keras 3 e cobrem escolhas de projeto diferentes:
+O motivo de não estar neste eixo é estrutural, não histórico. `cria_otimizador` recebe um
+nome e um learning rate; um `keras.optimizers.Optimizer` recebe pares `(gradiente,
+variável)`. O K-FAC precisa das **ativações de entrada** e dos **gradientes de
+pré-ativação** de cada camada — coisas que só existem durante o forward/backward e que
+nenhum otimizador do Keras enxerga. Espremê-lo nesta assinatura exigiria refazer o forward
+por dentro do otimizador, que foi o que a API Keras do `tensorflow/kfac` fazia (arquivada
+em 19/04/2026).
+
+A **pergunta** por trás daqueles notebooks continua sendo boa: *o otimizador importa?* Este
+módulo é a resposta de primeira ordem — um eixo de ablação com otimizadores que existem,
+funcionam em Keras 3 e cobrem escolhas de projeto diferentes. A resposta de segunda ordem é
+a curva do ACKTR ao lado da do A2C, que é o mesmo algoritmo com a curvatura ligada:
 
 ===========  ==============================================================
 nome         o que muda

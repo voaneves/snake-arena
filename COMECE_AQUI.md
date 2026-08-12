@@ -10,7 +10,7 @@ O repositório local tem um commit só e tudo o mais está solto. No PowerShell:
 ```powershell
 cd D:\GitHub\snake-arena
 git add -A
-git commit -m "snake-arena: pacote completo, 7 algoritmos, 347 testes"
+git commit -m "snake-arena: pacote completo, 9 algoritmos, 424 testes"
 ```
 
 Se sobrou uma pasta `_to_delete\`, pode apagar — são notebooks com a numeração antiga.
@@ -40,9 +40,11 @@ Ordem sugerida, por retorno sobre o tempo:
 | 3 | `03_rainbow.ipynb` | o topo da linhagem DQN |
 | 4 | `02_dqn.ipynb` | a base, para o Rainbow ter contra o que ser comparado |
 | 5 | `04_a2c.ipynb` | o controle experimental do PPO |
-| 6 | `07_muzero.ipynb` | responde "quanto custa não ter o simulador" |
-| 7 | `05_acer.ipynb` | o mais difícil; já se sabe que converge |
-| 8 | `99_ablacoes.ipynb` | arquitetura e otimizador, os dois eixos que 2019 nunca mediu |
+| 6 | `08_acktr.ipynb` | **rode logo depois do A2C.** Só faz sentido lido contra ele: é o mesmo algoritmo com o gradiente natural ligado, e a diferença entre as duas curvas é a resposta para "vale a pena aproximar a curvatura?" |
+| 7 | `07_muzero.ipynb` | responde "quanto custa não ter o simulador" |
+| 8 | `05_acer.ipynb` | o mais difícil; já se sabe que converge |
+| 9 | `09_dreamerv3.ipynb` | **o mais caro por passo de ambiente.** Comece com `preset="dreamer_tiny"` para ver a curva subir antes de gastar GPU no `dreamer_small` |
+| 10 | `99_ablacoes.ipynb` | arquitetura e otimizador, os dois eixos que 2019 nunca mediu |
 
 Cada um roda três vezes, com `SEMENTE` em 0, 1 e 2. Deixe `PASSOS` no padrão: o contrato
 exige o mesmo orçamento para todos, e o notebook avisa se você mudar.

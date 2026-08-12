@@ -39,6 +39,7 @@ MARCA_FIM = "# ==== FIM DO CÓDIGO GERADO ===="
 #: idêntico: o ambiente, a régua de avaliação e o registro.
 NUCLEO = [
     "snakeai/env/vec_snake.py",
+    "snakeai/otimizadores.py",
     "snakeai/eval.py",
     "snakeai/record.py",
     "snakeai/env/render.py",
@@ -52,6 +53,17 @@ NUCLEO = [
 ]
 
 NOTEBOOKS = [
+    {
+        "arquivo": "99_ablacoes.ipynb",
+        "titulo": "Ablações — arquitetura e otimizador",
+        "modulos": ["snakeai/memory/replay.py", "snakeai/agents/dqn.py"],
+        "agente": "DQN",
+        "config": "DQNConfig",
+        "resumo": "Dois eixos que o repositório antigo nunca conseguiu medir: qual tronco "
+                  "convolucional é melhor, e se o otimizador importa. O segundo é o "
+                  "sucessor do K-FAC, que dependia de `tensorflow.contrib` e não roda "
+                  "desde o TF2.",
+    },
     {
         "arquivo": "01_ppo.ipynb",
         "titulo": "PPO",
@@ -70,7 +82,18 @@ NOTEBOOKS = [
                   "Ligar todas é Rainbow; nenhuma é o DQN de 2013.",
     },
     {
-        "arquivo": "03_a2c.ipynb",
+        "arquivo": "03_rainbow.ipynb",
+        "titulo": "Rainbow — os seis componentes juntos",
+        "modulos": ["snakeai/memory/replay.py", "snakeai/agents/dqn.py",
+                    "snakeai/agents/rainbow.py"],
+        "agente": "Rainbow",
+        "config": "RainbowConfig",
+        "resumo": "double + dueling + PER + n-step + noisy + C51. Não é algoritmo novo — "
+                  "é a soma canônica da família DQN, com linha própria na arena para não "
+                  "virar um rótulo ilegível.",
+    },
+    {
+        "arquivo": "04_a2c.ipynb",
         "titulo": "A2C — o controle experimental",
         "modulos": ["snakeai/agents/ppo.py", "snakeai/agents/a2c.py"],
         "agente": "A2C",
@@ -79,7 +102,7 @@ NOTEBOOKS = [
                   "duas curvas mede exatamente quanto essas duas coisas valem.",
     },
     {
-        "arquivo": "04_acer.ipynb",
+        "arquivo": "05_acer.ipynb",
         "titulo": "ACER",
         "modulos": ["snakeai/memory/trajectory.py", "snakeai/agents/acer.py"],
         "agente": "ACER",
@@ -87,7 +110,7 @@ NOTEBOOKS = [
         "resumo": "Retrace(λ), IS truncado com correção de viés, região de confiança.",
     },
     {
-        "arquivo": "05_alphazero.ipynb",
+        "arquivo": "06_alphazero.ipynb",
         "titulo": "AlphaZero — busca sobre o simulador real",
         "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
                     "snakeai/agents/alphazero.py"],
@@ -98,7 +121,7 @@ NOTEBOOKS = [
                   "se a destilação funciona.",
     },
     {
-        "arquivo": "06_muzero.ipynb",
+        "arquivo": "07_muzero.ipynb",
         "titulo": "MuZero — a mesma busca, sobre um modelo aprendido",
         "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
                     "snakeai/nets/muzero.py", "snakeai/agents/muzero.py"],
@@ -107,24 +130,59 @@ NOTEBOOKS = [
         "resumo": "Deve perder para o AlphaZero — o simulador aqui é exato e gratuito. "
                   "O que se mede é quanto custa não tê-lo.",
     },
+    {
+        "arquivo": "08_acktr.ipynb",
+        "titulo": "ACKTR — gradiente natural com K-FAC",
+        "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
+                    "snakeai/agents/acktr.py"],
+        "agente": "ACKTR",
+        "config": "ACKTRConfig",
+        "resumo": "A dívida de 2019 paga: quatro notebooks do `colab-rl` tentaram K-FAC "
+                  "via `tensorflow.contrib` e nenhum roda. Aqui a curvatura é aproximada "
+                  "por fatores de Kronecker em Keras 3 puro, e o tamanho do passo sai de "
+                  "uma KL alvo, não do learning rate. Compare com `04_a2c`: é o mesmo "
+                  "algoritmo com uma única troca.",
+    },
+    {
+        "arquivo": "09_dreamerv3.ipynb",
+        "titulo": "DreamerV3 — treinar dentro de um modelo do mundo",
+        "modulos": ["snakeai/memory/sequencia.py", "snakeai/nets/dreamer.py",
+                    "snakeai/agents/dreamerv3.py"],
+        "agente": "DreamerV3",
+        "config": "DreamerV3Config",
+        "resumo": "O único dos nove que não busca nada na hora de agir: o modelo serve "
+                  "para **treinar**, em rollouts imaginados. symlog, two-hot, KL "
+                  "balanceada e free bits são o que dispensam ajuste por ambiente. "
+                  "É o mais caro por passo de ambiente — comece com `dreamer_tiny`.",
+    },
 ]
 
-RE_IMPORT_RELATIVO = re.compile(r"^from\s+\.+[\w.]*\s+import\s+.*(\(\s*)?$")
+RE_IMPORT_RELATIVO = re.compile(r"^from\s+\.+[\w.]*\s+import\s+")
 RE_FUTURE = re.compile(r"^from\s+__future__\s+import\s+")
 
 
 def _limpa(fonte, caminho):
-    """Remove imports relativos e docstring de módulo, mantendo o resto intacto."""
+    """Remove imports relativos e docstring de módulo, mantendo o resto intacto.
+
+    O import relativo pode ocupar várias linhas, e não necessariamente com o parêntese
+    sozinho no fim::
+
+        from ..kfac import (KFac, captura_kfac,
+                            perda_fisher_gaussiana)
+
+    Por isso a continuação é detectada **contando parênteses**, não olhando se a linha
+    termina em `(`. A versão anterior olhava só o fim da linha, deixava a segunda linha
+    órfã e o notebook nascia com `IndentationError` — e o gerador não reclamava, porque
+    ele não compila o que gera.
+    """
     linhas = fonte.splitlines()
-    saida, pulando_parenteses = [], False
+    saida, abertos = [], 0
     for linha in linhas:
-        if pulando_parenteses:
-            if ")" in linha:
-                pulando_parenteses = False
+        if abertos > 0:
+            abertos += linha.count("(") - linha.count(")")
             continue
         if RE_IMPORT_RELATIVO.match(linha.strip()):
-            if linha.rstrip().endswith("("):
-                pulando_parenteses = True
+            abertos = linha.count("(") - linha.count(")")
             continue
         # `from __future__` só é válido na PRIMEIRA linha do arquivo; com N módulos
         # concatenados, a partir do segundo vira SyntaxError. Sai daqui e volta uma vez

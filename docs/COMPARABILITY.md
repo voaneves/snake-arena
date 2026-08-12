@@ -55,8 +55,28 @@ se aplica ao **MCTS na hora de jogar**: busca é computação extra no momento d
 então AlphaZero e MuZero são medidos na curva pela **rede pura**, e com busca numa coluna à
 parte.
 
+O DreamerV3 passa por essa regra sem asterisco, e vale dizer por quê: ele também tem modelo
+do mundo, mas não o usa para agir. O modelo serve para **treinar** o ator em rollouts
+imaginados; na hora de jogar, a rede olha o estado latente e escolhe. Não há computação de
+inferência extra a descontar. O que ele tem de diferente é **memória**: a política é
+recorrente, e por isso `evaluate` avisa a política de onde cada episódio terminou
+(`apos_passo`). Sem esse aviso, o latente atravessaria a morte da cobra e o Dreamer seria
+medido **para baixo** — um defeito de medição que pareceria um resultado.
+
 **Três sementes.** Uma curva de RL de execução única não é resultado, é anedota. A arena
 mostra a mediana com faixa interquartil.
+
+## Uma regra que é de leitura, não de medição
+
+**Oito é o limite de uma paleta categórica.** Com nove algoritmos, a nona cor seria
+indistinguível de alguma das oito sob daltonismo — e uma cor ambígua num gráfico
+comparativo é a mesma classe de erro que um eixo x fabricado: parece informação e não é.
+`cores_por_algoritmo` **levanta exceção** no nono em vez de gerar matiz nova.
+
+A saída é mudar a forma, não a paleta: `arena_figure` troca sozinha para *small multiples*,
+um painel por família (política · valor · modelo do mundo), com as demais curvas em cinza na
+mesma escala para que a comparação entre famílias não se perca. O painel do legado continua
+com o eixo x próprio, em episódios.
 
 ## Como uma execução é reprovada
 

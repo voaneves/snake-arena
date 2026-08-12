@@ -158,3 +158,85 @@ def test_the_generated_core_defines_what_the_notebook_uses():
                  "def render_episode", "def export_model", "def validate",
                  "def plot_run", "class Recorder", "class AgentBase"):
         assert nome in fonte, f"o núcleo gerado não define {nome!r}"
+
+
+def test_multiline_relative_imports_are_stripped_whole():
+    """O import relativo pode ocupar várias linhas sem o parêntese sozinho no fim.
+
+    A versão anterior do `_limpa` olhava se a linha terminava em `(`; com este formato ela
+    apagava só a primeira linha e deixava a segunda órfã, e o notebook nascia com
+    `IndentationError`. É o formato que `snakeai/kfac.py` e `snakeai/agents/dreamerv3.py`
+    usam, então isto não é hipotético.
+    """
+    from gerar_notebooks import _limpa  # noqa: PLC0415
+
+    fonte = (
+        "from ..kfac import (KFac, captura_kfac,\n"
+        "                    perda_fisher_gaussiana)\n"
+        "from .base import AgentBase\n"
+        "\n"
+        "X = 1\n"
+    )
+    limpo = _limpa(fonte, "fake.py")
+    assert "perda_fisher_gaussiana" not in limpo
+    assert "AgentBase" not in limpo
+    assert "X = 1" in limpo
+    compile(limpo, "fake.py", "exec")
+
+
+def test_absolute_imports_survive():
+    """Só os relativos saem — `import numpy as np` tem que continuar lá."""
+    from gerar_notebooks import _limpa  # noqa: PLC0415
+
+    limpo = _limpa("import numpy as np\nfrom dataclasses import (dataclass,\n    field)\n",
+                   "fake.py")
+    assert "numpy" in limpo and "dataclass" in limpo and "field" in limpo
+
+
+# --------------------------------------------------- o README contra a pasta
+def _readme():
+    with open(os.path.join(RAIZ, "README.md"), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_readme_never_links_a_notebook_that_does_not_exist():
+    """Um badge do Colab apontando para um arquivo inexistente abre uma página de erro.
+
+    Isto não é hipotético: a tabela de badges apontava para `00_arena.ipynb` e
+    `99_ablation_redes.ipynb`, dois arquivos que nunca existiram neste repositório, e
+    ninguém percebeu porque badge quebrado só quebra quando alguém clica.
+    """
+    import re  # noqa: PLC0415
+
+    citados = set(re.findall(r"notebooks/([\w.]+\.ipynb)", _readme()))
+    assert citados, "o README não cita nenhum notebook"
+    faltando = sorted(n for n in citados
+                      if not os.path.exists(os.path.join(RAIZ, "notebooks", n)))
+    assert not faltando, f"o README aponta para notebooks que não existem: {faltando}"
+
+
+@pytest.mark.parametrize("spec", NOTEBOOKS, ids=lambda s: s["arquivo"])
+def test_every_notebook_has_a_colab_badge(spec):
+    """Todo notebook gerado tem que estar na tabela de badges — senão ele existe no
+    repositório e não existe para quem lê o README, que é o mesmo que não existir."""
+    readme = _readme()
+    alvo = f"blob/main/notebooks/{spec['arquivo']}"
+    assert alvo in readme, f"{spec['arquivo']} não tem badge do Colab no README"
+
+
+@pytest.mark.parametrize("spec", NOTEBOOKS, ids=lambda s: s["arquivo"])
+def test_every_notebook_is_in_the_algorithm_table(spec):
+    readme = _readme()
+    assert f"`{spec['arquivo']}`" in readme, \
+        f"{spec['arquivo']} não aparece na tabela de algoritmos do README"
+
+
+def test_the_notebooks_folder_has_exactly_what_the_generator_declares():
+    """Nada de notebook órfão na pasta: se está lá e o gerador não o conhece, ele não é
+    verificado por nenhum teste de sincronia e vai apodrecer em silêncio."""
+    na_pasta = {f for f in os.listdir(os.path.join(RAIZ, "notebooks"))
+                if f.endswith(".ipynb")}
+    declarados = {s["arquivo"] for s in NOTEBOOKS}
+    assert na_pasta == declarados, (
+        f"órfãos na pasta: {sorted(na_pasta - declarados)}; "
+        f"declarados e ausentes: {sorted(declarados - na_pasta)}")

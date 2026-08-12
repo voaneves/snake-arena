@@ -145,6 +145,7 @@ def evaluate(
     env = VecSnake(num_envs, board_size, rng=np.random.default_rng(seed))
     rng = rng if rng is not None else np.random.default_rng(seed + 1)
     obs, mask = env.reset()
+    apos_passo = getattr(policy, "apos_passo", None)
 
     por_env = math.ceil(episodes / num_envs)
     coletados = [[] for _ in range(num_envs)]
@@ -170,6 +171,13 @@ def evaluate(
         obs, mask, r, done, info = env.step(acoes)
         wins += info["wins"]
         passos += 1
+
+        # Políticas com estado recorrente (DreamerV3) precisam saber o que de fato
+        # aconteceu: a ação escolhida — que pode não ser o argmax, se o filtro de
+        # segurança agiu — e onde o episódio terminou, para zerar o estado latente ali.
+        # Políticas sem memória simplesmente não expõem este método.
+        if apos_passo is not None:
+            apos_passo(acoes, done)
 
         for i in np.nonzero(done)[0]:
             if len(coletados[i]) < por_env:
