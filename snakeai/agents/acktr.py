@@ -115,6 +115,26 @@ class ACKTRConfig(A2CConfig):
     #: compartilham tronco, que é o caso aqui.
     fisher_vf_coef: float = 1.0
 
+    #: **Calibra a região de confiança pela KL que de fato aconteceu.**
+    #:
+    #: Sem isto, `kl_max` é um alvo nominal: a execução de 5 M passos pediu 0,002 e
+    #: entregou ~0,01, porque `Δᵀ∇` usa a Fisher *aproximada* e a KL medida é a da política
+    #: de verdade. Ligado, o agente estima o fator sistemático `c = KL_medida / alvo_pedido`
+    #: por média móvel e pede `kl_max / c` — de modo que a KL **entregue** convirja para
+    #: `kl_max`.
+    #:
+    #: É um eixo de ablação, não uma correção óbvia: apertar a região encolhe todo passo
+    #: por `√c`, e a execução base terminou ainda em subida, ou seja, limitada por
+    #: orçamento. Ligar isto pode muito bem piorar o resultado — e é essa a medição.
+    kl_calibrado: bool = False
+
+    #: Média móvel do fator. Alta porque `c` é ruidoso lote a lote.
+    kl_cal_ema: float = 0.98
+
+    #: Limites do fator, para um lote patológico não travar a calibração num extremo.
+    kl_cal_min: float = 0.05
+    kl_cal_max: float = 200.0
+
     optimizer: str = "sgd"
 
 
@@ -131,6 +151,12 @@ class ACKTR(A2C):
         # `on_model_reloaded` recria o otimizador; o K-FAC tem que acompanhar, senão os
         # índices de `trainable_variables` apontam para o modelo antigo.
         self._ultimo = {}
+        #: Fator sistemático entre a KL pedida e a entregue. Começa em 1 — ou seja, a
+        #: primeira atualização é idêntica à da versão não calibrada, e a correção só
+        #: aparece conforme a medição chega.
+        self._fator_kl = 1.0
+        if c.kl_calibrado and (variant is None):
+            self.variant = f"{self.cfg.net}+klcal"
 
     # ------------------------------------------------------------------ um passo
     def _forward_e_gradientes(self, obs, mask, act, adv, ret, ent_coef, vf_coef):
@@ -187,17 +213,29 @@ class ACKTR(A2C):
         t0 = time.perf_counter()
         self.kfac.acumula(cap, gs)
         naturais = self.kfac.precondiciona(grads)
-        eta = self.kfac.escala_kl(naturais, grads, cfg.kl_max, self.lr())
+        alvo_efetivo = cfg.kl_max / self._fator_kl if cfg.kl_calibrado else cfg.kl_max
+        eta = self.kfac.escala_kl(naturais, grads, alvo_efetivo, self.lr())
         t_kfac = time.perf_counter() - t0
 
         self.optimizer.learning_rate.assign(float(eta))
         self.optimizer.apply_gradients(zip(naturais, self.model.trainable_variables))
 
         kl = self._kl_medida(lote, logp_velho)
+
+        if cfg.kl_calibrado:
+            # `c` é medido contra o que foi **pedido** nesta atualização, não contra
+            # `kl_max`: pedir `kl_max/c` e depois comparar com `kl_max` realimentaria a
+            # própria correção e a faria divergir.
+            c = kl / max(alvo_efetivo, 1e-12)
+            d = cfg.kl_cal_ema
+            self._fator_kl = float(np.clip(d * self._fator_kl + (1 - d) * c,
+                                           cfg.kl_cal_min, cfg.kl_cal_max))
+
         return {
             "pg": float(pg), "vf": float(vl), "ent": float(ent),
             "lr": float(eta), "lr_teto": float(self.lr()), "ent_coef": ent_coef,
-            "kl": kl, "kl_alvo": cfg.kl_max, "epochs_done": 1,
+            "kl": kl, "kl_alvo": cfg.kl_max, "kl_alvo_efetivo": float(alvo_efetivo),
+            "kl_fator": self._fator_kl, "epochs_done": 1,
             "kfac_ms": t_kfac * 1e3, "fwd_ms": t_fwd * 1e3,
         }
 

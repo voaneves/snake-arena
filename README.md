@@ -154,6 +154,7 @@ Todos reimplementados em **Keras 3**, sobre o mesmo ambiente e a mesma API de ag
 | **MuZero** — a mesma busca, sobre um modelo aprendido | `07_muzero.ipynb` | novo | ✅ implementado |
 | **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC reimplementado em Keras 3, 19 testes de curvatura |
 | **DreamerV3** — modelo do mundo, ator treinado no sonho | `09_dreamerv3.ipynb` | novo | ✅ RSSM categórico, symlog, two-hot, 28 testes |
+| ↳ **ACKTR calibrado** — a KL entregue converge para a pedida | `98_acktr_kl_max_corrigido.ipynb` | — | ✅ mesmo agente, `kl_calibrado=True`; é ablação, pode piorar |
 | ↳ **eixo de otimizadores** (primeira ordem) | `99_ablacoes.ipynb` | — | ✅ Adam, AdamW, RMSprop, Lion e SGD como ablação medida |
 
 **Sobre o Rainbow.** Ele não é um algoritmo novo — é o `DQN` deste repositório com as seis
@@ -321,6 +322,7 @@ sem nada instalado.
 | MuZero | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/07_muzero.ipynb) |
 | ACKTR — K-FAC | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/08_acktr.ipynb) |
 | DreamerV3 | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/09_dreamerv3.ipynb) |
+| ACKTR — região de confiança calibrada | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/98_acktr_kl_max_corrigido.ipynb) |
 | Ablações — rede e otimizador | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/99_ablacoes.ipynb) |
 
 O que todo notebook garante, por construção:

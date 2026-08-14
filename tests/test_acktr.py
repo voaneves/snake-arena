@@ -121,3 +121,72 @@ def test_acktr_records_the_kfac_cost():
     de parede, e não só em passos de ambiente."""
     s = ACKTR(cfg()).iterate()
     assert s["kfac_ms"] > 0 and s["fwd_ms"] > 0
+
+
+# ------------------------------------------------ a região de confiança calibrada
+def test_uncalibrated_asks_exactly_the_nominal_target():
+    ag = ACKTR(cfg(kl_calibrado=False, kl_max=3e-3))
+    s = ag.iterate()
+    assert s["kl_alvo_efetivo"] == pytest.approx(3e-3)
+    assert s["kl_fator"] == 1.0, "sem calibração o fator nunca sai de 1"
+
+
+def test_calibration_shows_up_in_the_variant_name():
+    """Senão as duas execuções cairiam na mesma pasta e a comparação se perderia."""
+    assert ACKTR(cfg(kl_calibrado=True)).variant.endswith("+klcal")
+    assert not ACKTR(cfg(kl_calibrado=False)).variant.endswith("+klcal")
+
+
+def test_the_first_update_is_identical_with_and_without_calibration():
+    """O fator começa em 1: a correção só entra depois que existe medição.
+
+    Isso importa para a comparação — a diferença entre as duas curvas não pode incluir
+    "uma começou com um passo diferente da outra".
+    """
+    a = ACKTR(cfg(kl_calibrado=False, seed=0)).iterate()
+    b = ACKTR(cfg(kl_calibrado=True, seed=0)).iterate()
+    assert a["kl_alvo_efetivo"] == pytest.approx(b["kl_alvo_efetivo"])
+
+
+def test_the_factor_measured_now_sets_the_target_asked_next():
+    """A ordem importa e é fácil de errar: o alvo de uma atualização vem do fator estimado
+    na **anterior**. Conferir o fator contra o alvo da mesma linha compararia o valor de
+    depois do passo com o de antes."""
+    ag = ACKTR(cfg(kl_calibrado=True, kl_cal_ema=0.5))
+    primeiro = ag.iterate()
+    segundo = ag.iterate()
+
+    assert primeiro["kl_fator"] != 1.0, "a primeira medição já move o fator"
+    assert segundo["kl_alvo_efetivo"] == pytest.approx(
+        ag.cfg.kl_max / primeiro["kl_fator"])
+
+
+def test_the_factor_is_clipped_against_a_pathological_batch():
+    ag = ACKTR(cfg(kl_calibrado=True, kl_cal_max=2.0, kl_cal_ema=0.0))
+    ag._fator_kl = 1e9
+    ag.iterate()
+    assert ag._fator_kl <= 2.0
+
+
+def test_the_control_law_converges_to_delivering_the_nominal_kl():
+    """A lei de controle, isolada do treino.
+
+    Se a KL entregue é `c · alvo_pedido` com `c` sistemático, pedir `kl_max / ĉ` e estimar
+    `ĉ` por média móvel tem ponto fixo em `ĉ = c` — e aí a KL **entregue** vale `kl_max`.
+    Este teste roda a recursão com um `c` conhecido e confere as duas coisas.
+    """
+    kl_max, c_real, ema = 2e-3, 5.0, 0.9
+    fator = 1.0
+    for _ in range(300):
+        pedido = kl_max / fator
+        entregue = c_real * pedido
+        fator = ema * fator + (1 - ema) * (entregue / pedido)
+
+    assert fator == pytest.approx(c_real, rel=1e-3)
+    assert (kl_max / fator) * c_real == pytest.approx(kl_max, rel=1e-3)
+
+
+def test_calibration_is_off_by_default():
+    """A execução base já existe e foi feita sem isto. O padrão não pode mudar embaixo
+    dela — senão a comparação entre as duas viraria outra coisa."""
+    assert ACKTRConfig().kl_calibrado is False

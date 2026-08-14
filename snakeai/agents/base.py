@@ -227,7 +227,12 @@ class AgentBase:
         final = self.avaliar()
         rec.log(self.global_step, eval_score_mean=final["score_mean"],
                 eval_score_p95=final["score_p95"], episodes=self.episodes)
-        rec.finish(final)
+
+        # O melhor checkpoint é medido com o **mesmo** protocolo, e não reaproveita o
+        # número da avaliação periódica: aquele veio de outra amostra, e comparar duas
+        # medições ruidosas favorece sistematicamente quem foi medido mais vezes.
+        melhor = self.avaliar_melhor(verbose=verbose)
+        rec.finish(final, melhor_stats=melhor)
         rec.record.meta["baseline"] = self.baseline
         self.salvar("last")
 
@@ -250,16 +255,86 @@ class AgentBase:
         return rec
 
     # ---------------------------------------------------------------- artefatos
-    def artefatos(self, rec, verbose=True):
-        """Gráfico de diagnóstico e GIFs do agente jogando.
+    def modelo_melhor(self):
+        """O modelo do checkpoint `best`, ou `None` se ele não existe.
 
-        Ficam ao lado do `history.json`, na pasta da execução — assim um checkpoint
-        antigo nunca fica órfão da imagem que o explicava.
+        Carrega numa instância separada de propósito: `self.model` continua sendo o do
+        último passo, porque é ele que define a curva e o número oficial. Trocar em
+        silêncio faria a última avaliação medir uma coisa e a curva outra.
+        """
+        import keras
+
+        caminho = self._caminho("best", "keras")
+        if not os.path.exists(caminho):
+            return None
+        return keras.models.load_model(caminho)
+
+    def avaliar_melhor(self, verbose=True):
+        """Roda o protocolo oficial sobre o melhor checkpoint. `{}` se não houver."""
+        m = self.modelo_melhor()
+        if m is None:
+            return {}
+        atual = self.model
+        try:
+            self.model = m
+            stats = self.avaliar()
+        finally:
+            self.model = atual
+        stats["global_step"] = int(self._passo_do_melhor())
+        if verbose:
+            print(f"  [melhor] checkpoint do passo {stats['global_step']:,} · "
+                  f"score {stats['score_mean']:.2f} "
+                  f"(último: {self.evals[-1]['score_mean']:.2f})"
+                  if self.evals else
+                  f"  [melhor] score {stats['score_mean']:.2f}")
+        return stats
+
+    def _passo_do_melhor(self):
+        caminho = self._caminho("best", "json")
+        if os.path.exists(caminho):
+            with open(caminho, encoding="utf-8") as f:
+                return json.load(f).get("global_step", 0)
+        return 0
+
+    def copiar_modelos(self, destino, verbose=True):
+        """Leva `last.keras` e `best.keras` para dentro da pasta da execução.
+
+        Os checkpoints vivem em `ckpt_dir`, que é compartilhado e sobrescrito pela
+        execução seguinte. Sem esta cópia, o `history.json` afirma um score que ninguém
+        consegue reproduzir nem inspecionar depois — e o GIF vira a única evidência de
+        como o agente jogava.
+
+        Os dois, e não só o melhor: `last` é o modelo que produziu o número **oficial**,
+        então é ele que permite reconferir a curva; `best` é o que se leva para o jogo.
+        """
+        import shutil
+
+        pasta = os.path.join(destino, "modelos")
+        os.makedirs(pasta, exist_ok=True)
+        copiados = {}
+        for tag in ("last", "best"):
+            origem = self._caminho(tag, "keras")
+            if os.path.exists(origem):
+                alvo = os.path.join(pasta, f"{tag}.keras")
+                shutil.copyfile(origem, alvo)
+                copiados[tag] = alvo
+        if verbose and copiados:
+            mb = sum(os.path.getsize(c) for c in copiados.values()) / 1e6
+            print(f"  [modelos] {', '.join(sorted(copiados))} em {pasta} ({mb:.1f} MB)")
+        return copiados
+
+    def artefatos(self, rec, verbose=True):
+        """Gráfico, GIFs e os modelos — tudo ao lado do `history.json`.
+
+        A pasta da execução tem que ser autossuficiente: quem a recebe consegue ver a
+        curva, ver o agente jogando e **rodar o modelo**, sem depender de nenhum estado
+        que ficou na máquina de quem treinou.
         """
         import os
 
         destino = os.path.dirname(rec.save(skip_validation=True))
         saida = {}
+        saida["modelos"] = self.copiar_modelos(destino, verbose=verbose)
 
         if self.cfg.salvar_grafico:
             try:

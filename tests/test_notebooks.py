@@ -312,3 +312,46 @@ def test_drive_is_on_by_default(caminho):
     """
     junto = "\n".join(codigo_de(carrega(caminho)))
     assert "USAR_DRIVE = True" in junto
+
+
+# ------------------------------------------- last e best, os dois lados do resultado
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_notebook_reports_both_the_last_and_the_best_model(caminho):
+    """RL profundo não melhora monotonicamente: a execução pode terminar pior do que já
+    esteve. Reportar só o último esconde isso; reportar só o melhor premia o ruído."""
+    junto = "\n".join(codigo_de(carrega(caminho)))
+    assert "modelo_melhor()" in junto, "o notebook nunca carrega o melhor checkpoint"
+    assert 'registro.record.melhor' in junto
+
+
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_notebook_exports_both_models_to_separate_folders(caminho):
+    junto = "\n".join(codigo_de(carrega(caminho)))
+    assert '"export", "last"' in junto and '"export", "best"' in junto
+
+
+def test_the_calibrated_acktr_notebook_is_the_same_agent_with_one_flag():
+    """O `98` não pode ser um agente novo — se fosse, a diferença entre as duas curvas
+    incluiria tudo o que divergiu entre as duas implementações."""
+    base = next(s for s in NOTEBOOKS if s["arquivo"] == "08_acktr.ipynb")
+    cal = next(s for s in NOTEBOOKS
+               if s["arquivo"] == "98_acktr_kl_max_corrigido.ipynb")
+    assert cal["agente"] == base["agente"] == "ACKTR"
+    assert cal["modulos"] == base["modulos"]
+    assert cal["extra_cfg"].strip() == "kl_calibrado=True,"
+
+    codigo = "\n".join(codigo_de(carrega(
+        os.path.join(RAIZ, "notebooks", cal["arquivo"]))))
+    assert "kl_calibrado=True" in codigo
+    base_codigo = "\n".join(codigo_de(carrega(
+        os.path.join(RAIZ, "notebooks", base["arquivo"]))))
+    assert "kl_calibrado=True" not in base_codigo, \
+        "o 08 é o controle: tem que continuar sem a calibração"
+
+
+def test_the_two_acktr_notebooks_embed_byte_identical_code():
+    """A única diferença permitida entre os dois é a linha de configuração."""
+    a = bloco_gerado(carrega(os.path.join(RAIZ, "notebooks", "08_acktr.ipynb")))
+    b = bloco_gerado(carrega(os.path.join(
+        RAIZ, "notebooks", "98_acktr_kl_max_corrigido.ipynb")))
+    assert a == b

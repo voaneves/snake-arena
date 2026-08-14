@@ -276,3 +276,35 @@ def test_the_curve_records_the_moving_average_and_keeps_the_raw_value():
     pontos = [p for p in ag.history if "train_score_mean" in p]
     assert pontos, "nada foi registrado"
     assert any("train_score_iter" in p for p in pontos)
+
+
+def test_the_run_folder_carries_the_models(tmp_path):
+    """A pasta da execução tem que ser autossuficiente.
+
+    Os checkpoints vivem em `ckpt_dir`, que a execução seguinte sobrescreve. Sem a cópia,
+    o `history.json` afirma um score que ninguém consegue reproduzir — e num repositório
+    que existe para tornar resultados comparáveis, um número sem o modelo que o produziu
+    é exatamente o que não serve.
+    """
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=8, rollout=4, minibatches=1,
+                       epochs=1, total_steps=200, eval_episodes=20, eval_envs=10,
+                       eval_every_steps=100, log_every_steps=10 ** 9,
+                       ckpt_dir=str(tmp_path / "ckpt"), runs_dir=str(tmp_path / "runs"),
+                       salvar_gif=False, salvar_grafico=False))
+    rec = ag.train(verbose=False)
+
+    pasta = tmp_path / "runs" / "ppo" / ag.variant / "seed0" / "modelos"
+    assert (pasta / "last.keras").exists()
+    assert (pasta / "best.keras").exists(), "o melhor checkpoint também vai junto"
+
+
+def test_the_record_carries_both_results(tmp_path):
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=8, rollout=4, minibatches=1,
+                       epochs=1, total_steps=200, eval_episodes=20, eval_envs=10,
+                       eval_every_steps=100, log_every_steps=10 ** 9,
+                       ckpt_dir=str(tmp_path / "ckpt"), runs_dir=str(tmp_path / "runs"),
+                       salvar_gif=False, salvar_grafico=False))
+    rec = ag.train(verbose=False)
+    assert "score_mean" in rec.record.final
+    assert "score_mean" in rec.record.melhor
+    assert "global_step" in rec.record.melhor, "sem o passo, o número fica sem endereço"

@@ -93,7 +93,15 @@ class RunRecord:
         Lista de pontos ao longo do treino. Cada ponto tem, no mínimo, `global_step`;
         `eval_score_mean` aparece só nos passos em que a avaliação rodou.
     final
-        O `stats` devolvido por `snakeai.eval.evaluate` no fim.
+        O `stats` de `snakeai.eval.evaluate` para o modelo do **último** passo. É este que
+        entra na curva e na arena.
+    melhor
+        O mesmo `stats`, para o **melhor checkpoint** já visto, mais o `global_step` em que
+        ele apareceu. RL profundo não melhora monotonicamente — não há garantia nenhuma
+        fora do caso tabular — e uma execução pode terminar pior do que já esteve. Guardar
+        os dois separa duas perguntas diferentes: *como o algoritmo terminou* (final) e
+        *o melhor que ele produziu* (melhor). A primeira é a da arena; a segunda é a de
+        quem vai levar o modelo para o jogo. Ver `docs/COMPARABILITY.md`.
     comparable, caveat
         `False` marca uma curva que entra no gráfico como contexto histórico, com o
         motivo em `caveat`. Toda execução nova nasce `True`.
@@ -108,6 +116,7 @@ class RunRecord:
     env_spec: dict = field(default_factory=lambda: dict(CONTRATO))
     curve: list = field(default_factory=list)
     final: dict = field(default_factory=dict)
+    melhor: dict = field(default_factory=dict)
     comparable: bool = True
     caveat: str = ""
     meta: dict = field(default_factory=dict)
@@ -180,8 +189,10 @@ class Recorder:
         self.record.curve.append(ponto)
         return ponto
 
-    def finish(self, final_stats, comparable=True, caveat=""):
+    def finish(self, final_stats, comparable=True, caveat="", melhor_stats=None):
         self.record.final = {k: _jsonable(v) for k, v in dict(final_stats).items()}
+        if melhor_stats is not None:
+            self.record.melhor = {k: _jsonable(v) for k, v in dict(melhor_stats).items()}
         self.record.comparable = bool(comparable)
         self.record.caveat = str(caveat)
         self.record.meta["wall_s_total"] = round(time.perf_counter() - self.t0, 3)

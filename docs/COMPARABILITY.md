@@ -78,6 +78,35 @@ um painel por família (política · valor · modelo do mundo), com as demais cu
 mesma escala para que a comparação entre famílias não se perca. O painel do legado continua
 com o eixo x próprio, em episódios.
 
+## O último modelo e o melhor checkpoint
+
+RL profundo **não melhora monotonicamente**. A garantia de melhora monotônica é da
+*policy iteration* tabular e morre quando a tabela vira uma rede; no DQN é pior, porque
+aproximação + bootstrapping + off-policy é a tríade sem prova de convergência nenhuma.
+Medido aqui: na primeira execução longa do ACKTR, **8 das 21 avaliações** tinham um
+checkpoint anterior melhor que o modelo daquele momento — numa delas, 21,7 pontos melhor.
+
+Por isso cada execução guarda dois resultados:
+
+| campo | o que é | onde aparece |
+|---|---|---|
+| `final` | o modelo do **último** passo | a curva e o **número oficial** da arena |
+| `melhor` | o **melhor checkpoint**, com o passo em que apareceu | coluna à parte na tabela |
+
+O oficial é o `final`, e a razão é a mesma que mantém a busca do AlphaZero fora da curva:
+escolher o melhor entre N avaliações **premia quem foi medido mais vezes**. Com avaliação
+ruidosa, mais medições significa maior chance de uma sair alta por acaso, e aí a régua
+passaria a depender de `eval_every_steps`. O `final` mede o que o algoritmo entrega,
+instabilidade inclusa — e instabilidade é um resultado, não um detalhe a esconder.
+
+O `melhor` fica registrado porque é a resposta de outra pergunta legítima: *qual modelo eu
+levo para o jogo?* As duas convivem, rotuladas, em vez de uma virar a outra em silêncio.
+
+Os dois `.keras` vão para `runs/<algo>/<variante>/seed<N>/modelos/`, junto com a curva e os
+GIFs: a pasta de uma execução tem que ser autossuficiente. Um `history.json` que afirma um
+score sem o modelo que o produziu é, num repositório feito para tornar resultados
+comparáveis, exatamente o que não serve.
+
 ## Como uma execução é reprovada
 
 O `Recorder` grava **sempre** — perder a curva no fim de um treino de horas seria o pior

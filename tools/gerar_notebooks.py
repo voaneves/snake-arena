@@ -144,6 +144,22 @@ NOTEBOOKS = [
                   "algoritmo com uma única troca.",
     },
     {
+        "arquivo": "98_acktr_kl_max_corrigido.ipynb",
+        "titulo": "ACKTR com a região de confiança calibrada",
+        "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
+                    "snakeai/agents/acktr.py"],
+        "agente": "ACKTR",
+        "config": "ACKTRConfig",
+        "extra_cfg": "    kl_calibrado=True,",
+        "resumo": "O `08_acktr` pede KL 0,002 e entrega ~0,01: `Δᵀ∇` usa a Fisher "
+                  "*aproximada* e a KL medida é a da política de verdade. Aqui o agente "
+                  "estima esse fator sistemático por média móvel e pede `kl_max / c`, de "
+                  "modo que a KL **entregue** convirja para `kl_max`. **Não é uma correção "
+                  "óbvia:** apertar a região encolhe todo passo por `√c`, e a execução base "
+                  "terminou ainda em subida — ou seja, limitada por orçamento, não por "
+                  "instabilidade. Pode piorar. É essa a medição.",
+    },
+    {
         "arquivo": "09_dreamerv3.ipynb",
         "titulo": "DreamerV3 — treinar dentro de um modelo do mundo",
         "modulos": ["snakeai/memory/sequencia.py", "snakeai/nets/dreamer.py",
@@ -218,6 +234,11 @@ def _code(texto, titulo=None):
 
 
 def monta_notebook(spec, usuario="voaneves", repo="snake-arena"):
+    #: Linhas de configuração específicas de uma variante — o que faz o `98` ser o `08`
+    #: com uma chave a mais, em vez de um agente novo. `""` para todos os outros.
+    extra = spec.get("extra_cfg", "")
+    if extra and not extra.endswith("\n"):
+        extra += "\n"
     modulos = NUCLEO + [m for m in spec["modulos"] if m not in NUCLEO]
     fonte = fonte_combinada(modulos)
     marca = _hash(fonte)
@@ -296,7 +317,7 @@ cfg = {config}(
     seed=SEMENTE,
     net=REDE,
     total_steps=PASSOS,
-    ckpt_dir=os.path.join(PASTA, "checkpoints"),
+{extra}    ckpt_dir=os.path.join(PASTA, "checkpoints"),
     runs_dir=os.path.join(PASTA, "runs"),
 )
 print(json.dumps(asdict(cfg), indent=2, ensure_ascii=False))""", "Parâmetros"),
@@ -312,14 +333,37 @@ if agente.retomar("last"):
 print("parâmetros:", f"{{agente.model.count_params():,}}")
 
 registro = agente.train(verbose=True)""", "Treinar"),
-        _md("""## Veredito
+        _md("""## Veredito — os dois modelos
 
-Três regimes na mesma execução: o piso aleatório, a política pura e a política com o
-filtro de segurança. Se a coluna do meio não estiver bem acima do piso, não aprendeu — e
-aí o problema é hiperparâmetro ou tempo de treino, não código.
+Duas perguntas diferentes, dois números:
+
+* **`last`** — o modelo do último passo. É ele que entra na curva e na arena, porque é o
+  estado final do algoritmo, instabilidade inclusa.
+* **`best`** — o melhor checkpoint já visto. É ele que você levaria para o jogo.
+
+Os dois existem porque **RL profundo não melhora monotonicamente**: fora do caso tabular
+não há garantia nenhuma, e uma execução pode terminar pior do que já esteve. Na primeira
+execução longa do ACKTR, 8 das 21 avaliações tinham um checkpoint anterior melhor que o
+modelo daquele momento — numa delas, 21,7 pontos melhor.
+
+Dentro de cada um, três regimes: piso aleatório, política pura e política com o filtro de
+segurança. Se a coluna do meio não estiver bem acima do piso, não aprendeu — e aí o
+problema é hiperparâmetro ou tempo de treino, não código.
 """),
-        _code("""resultado = verdict(agente.politica(), episodes=1000)
+        _code("""print("=== last · modelo do último passo (é o que entra na arena) ===")
+resultado = verdict(agente.politica(), episodes=1000)
 print(format_verdict(resultado))
+
+melhor = agente.modelo_melhor()
+if melhor is not None:
+    print()
+    print(f"=== best · checkpoint do passo "
+          f"{registro.record.melhor.get('global_step', 0):,} ===")
+    _guardado, agente.model = agente.model, melhor
+    try:
+        print(format_verdict(verdict(agente.politica(), episodes=1000)))
+    finally:
+        agente.model = _guardado
 
 fig, _ = plot_run(registro.record)
 plt.show()""", "Veredito"),
@@ -333,22 +377,46 @@ diferentes.
 
 for semente in (7, 21, 42):
     caminho, score, motivo = render_episode(
-        agente.politica(), caminho=f"episodio_s{semente}.gif", seed=semente)
-    print(f"semente {semente}: score {score}, terminou por {motivo}")
+        agente.politica(), caminho=f"episodio_last_s{semente}.gif", seed=semente)
+    print(f"last · semente {semente}: score {score}, terminou por {motivo}")
     display(Image(filename=caminho))""", "GIF"),
-        _md("""## Exportar
+        _md("""## Exportar — os dois
 
 `.keras` para retomar treino, TFLite fp16/int8 para embarcar no jogo. A paridade de **ação**
 contra o `.keras` é conferida — diferença numérica de quantização é aceitável, ação
 diferente não é.
+
+Exporta `last` **e** `best`, em pastas separadas. Exportar é para usar, e o que você leva
+para o jogo é o melhor; mas o `last` vai junto porque é ele que corresponde ao número da
+arena, e misturar os dois é como se perde a rastreabilidade entre o gráfico e o arquivo.
 """),
-        _code("""relatorio = export_model(agente.model, out_dir=os.path.join(PASTA, "export"))
-print(json.dumps(relatorio, indent=2, ensure_ascii=False))""", "Exportar"),
+        _code("""relatorios = {}
+relatorios["last"] = export_model(
+    agente.model, out_dir=os.path.join(PASTA, "export", "last"))
+
+_melhor = agente.modelo_melhor()
+if _melhor is not None:
+    relatorios["best"] = export_model(
+        _melhor, out_dir=os.path.join(PASTA, "export", "best"))
+
+print(json.dumps(relatorios, indent=2, ensure_ascii=False))""", "Exportar"),
         _md("""## Onde ficou o resultado
 
 O `history.json` da execução vai para `runs/<algo>/<variante>/seed<N>/`, junto com a curva e
 os GIFs. Essa pasta é o que entra na arena: coloque em `runs/` do repositório e rode
 `python -m snakeai.arena --all`.
+
+Ele carrega os dois resultados: `final` (o modelo do último passo, que é o número oficial)
+e `melhor` (o melhor checkpoint, com o passo em que apareceu). Junto vão `modelos/last.keras`
+e `modelos/best.keras` — a pasta é autossuficiente, quem a recebe consegue rodar o agente
+sem depender de nada que ficou nesta máquina.
+
+Sobre versionar isso no GitHub: um `.keras` vai de 0,8 MB (`resnet_small`) a 6,7 MB
+(`cnn_rainbow` com dueling e C51), então a arena inteira — 9 algoritmos × 3 sementes × 2
+modelos — dá algo em torno de 140 MB. Cabe num repositório, mas binário em git **nunca
+some do histórico**: cada re-execução deixa mais uma cópia lá para sempre. Se começar a
+incomodar, o lugar certo é um *Release* do GitHub, que é feito para binário e não entra no
+clone.
 """),
         _code("""CAMINHO_REGISTRO = registro.save(skip_validation=True)
 print("registro:", CAMINHO_REGISTRO)
@@ -356,7 +424,18 @@ print("registro:", CAMINHO_REGISTRO)
 problemas = validate(registro.record)
 print("entra na arena?" , "sim" if not problemas else "NÃO:")
 for p in problemas:
-    print("  -", p)""", "Conferir o contrato"),
+    print("  -", p)
+
+_f = registro.record.final.get("score_mean")
+_m = registro.record.melhor.get("score_mean")
+if _f is not None and _m is not None:
+    print()
+    print(f"last  {_f:.2f}   (passo {registro.record.steps()[-1]:,})")
+    print(f"best  {_m:.2f}   (passo {registro.record.melhor.get('global_step', 0):,})")
+    if _m > _f:
+        print(f"→ a execução terminou {_m - _f:.2f} abaixo do melhor que já esteve. "
+              "Normal: RL profundo não melhora monotonicamente.")""",
+              "Conferir o contrato"),
         _md("""## Baixar o resultado
 
 Um `.zip` só, com a pasta inteira da execução — registro, curva, GIFs e o modelo exportado.
@@ -397,6 +476,23 @@ except Exception as e:
     print(f"o .zip está em {ZIP} — baixe pelo painel de arquivos")""",
               "Baixar tudo num .zip"),
     ]
+
+    # O gerador compila o que gera. Duas vezes um escape mal escrito virou uma quebra de
+    # linha dentro de uma f-string e o notebook nasceu com `SyntaxError` — nas duas o
+    # defeito só apareceu depois, porque `tests/test_notebooks.py` confere o arquivo em
+    # disco e eu tinha gerado antes de rodar os testes. Falhar aqui é falhar cedo.
+    for i, c in enumerate(celulas):
+        if c["cell_type"] != "code":
+            continue
+        fonte = "".join(c["source"])
+        try:
+            compile(fonte, f"{spec['arquivo']}[{i}]", "exec")
+        except SyntaxError as e:
+            raise SyntaxError(
+                f"{spec['arquivo']}: a célula {i} não compila ({e.msg}, linha {e.lineno}). "
+                "Quase sempre é um `\\n` dentro de uma f-string do template — escreva "
+                "`print()` numa linha separada em vez de escapar."
+            ) from e
 
     return {
         "cells": celulas,

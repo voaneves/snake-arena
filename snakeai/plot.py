@@ -541,6 +541,12 @@ def arena_table(registros, markdown=True):
             "score_median": float(np.median([f.get("score_median", np.nan) for f in finais])),
             "score_max": int(max(f.get("score_max", 0) for f in finais)),
             "win_rate": float(np.median([f.get("win_rate", 0.0) for f in finais])),
+            # coluna à parte, como o filtro de flood-fill e a busca do AlphaZero: o
+            # melhor checkpoint responde "o melhor que este algoritmo produziu", que não
+            # é a mesma pergunta que "como ele terminou"
+            "melhor_mean": float(np.median(
+                [r.melhor["score_mean"] for r in rs if r.melhor])) if any(
+                    r.melhor for r in rs) else None,
         })
     linhas.sort(key=lambda d: -d["score_mean"])
 
@@ -548,16 +554,25 @@ def arena_table(registros, markdown=True):
         return linhas
 
     out = [
-        "| algoritmo | rede | params | sementes | passos | score médio | amplitude | mediana | máx | cheio |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
-        f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | 1 | — | 0% |".replace(".", ","),
+        "| algoritmo | rede | params | sementes | passos | score médio (last) | melhor ckpt | amplitude | mediana | máx | cheio |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | — | 1 | — | 0% |".replace(".", ","),
     ]
     for d in linhas:
         nome = d["algo"] if d["variante"] in ("default", "") else f"{d['algo']} · {d['variante']}"
+        melhor = f"{d['melhor_mean']:.2f}" if d["melhor_mean"] is not None else "—"
         out.append(
             f"| {nome} | `{d['rede']}` | {d['params']:,} | {d['sementes']} | "
-            f"{d['passos']:,} | **{d['score_mean']:.2f}** | ±{d['score_spread']:.2f} | "
+            f"{d['passos']:,} | **{d['score_mean']:.2f}** | {melhor} | "
+            f"±{d['score_spread']:.2f} | "
             f"{d['score_median']:.0f} | {d['score_max']} | {d['win_rate']:.1%} |"
         )
     out.append(f"\nScore perfeito no 10×10: **{SCORE_PERFEITO}**.")
+    out.append(
+        "\nA coluna **score médio (last)** é o número oficial: o modelo do último passo, "
+        "que é o estado final do algoritmo. **melhor ckpt** é o melhor que aquela execução "
+        "produziu em algum momento — fica à parte porque premia quem foi medido mais "
+        "vezes, pela mesma razão que a busca do AlphaZero e o filtro de flood-fill ficam "
+        "fora da curva."
+    )
     return "\n".join(out)

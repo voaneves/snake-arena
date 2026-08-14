@@ -177,3 +177,27 @@ def test_table_reports_seed_spread():
     linhas = arena_table([run(seed=s, teto=20 + 3 * s) for s in (0, 1, 2)], markdown=False)
     assert linhas[0]["sementes"] == 3
     assert linhas[0]["score_spread"] > 0
+
+
+def test_the_table_separates_the_last_model_from_the_best_checkpoint():
+    """São duas perguntas: 'como terminou' e 'o melhor que produziu'.
+
+    Juntar as duas numa coluna só premiaria quem foi avaliado mais vezes — quanto mais
+    avaliações, maior a chance de uma delas sair alta por ruído.
+    """
+    rs = [run(algo="ppo", seed=i, teto=20.0) for i in range(3)]
+    for r in rs:
+        r.melhor = {"score_mean": 41.0, "global_step": 3_000_000}
+    texto = arena_table(rs)
+    assert "melhor ckpt" in texto and "41.00" in texto
+
+    linhas = arena_table(rs, markdown=False)
+    assert linhas[0]["melhor_mean"] == pytest.approx(41.0)
+    assert linhas[0]["score_mean"] < linhas[0]["melhor_mean"]
+
+
+def test_a_run_without_a_best_checkpoint_still_renders():
+    """Execuções antigas não têm o campo. A tabela não pode quebrar por causa disso."""
+    linhas = arena_table([run(algo="dqn", seed=0)], markdown=False)
+    assert linhas[0]["melhor_mean"] is None
+    assert "—" in arena_table([run(algo="dqn", seed=0)])
