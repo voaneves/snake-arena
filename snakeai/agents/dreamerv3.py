@@ -107,6 +107,10 @@ class PoliticaRecorrente:
     def __init__(self, agente):
         self.ag = agente
         self.n = None
+        #: O mesmo grafo da coleta. A avaliação são 1.000 episódios de centenas de passos
+        #: cada; em eager, o custo é dominado pelo despacho e o protocolo oficial demora
+        #: mais que um pedaço do treino.
+        self._grafo = tf.function(agente._passo_de_politica, reduce_retracing=True)
 
     def _garante(self, n):
         if self.n != n:
@@ -118,8 +122,10 @@ class PoliticaRecorrente:
 
     def __call__(self, obs, mask):
         self._garante(obs.shape[0])
-        h = self.ag._avanca(self.h, self.z, tf.one_hot(self.a, N_ACTIONS), self.first)
-        z, _ = self.ag._posterior(h, tf.convert_to_tensor(obs, tf.float32))
+        _, h, z = self._grafo(
+            self.h, self.z, tf.one_hot(self.a, N_ACTIONS),
+            tf.convert_to_tensor(self.first),
+            tf.convert_to_tensor(obs, tf.float32), tf.convert_to_tensor(mask))
         self.h, self.z, self.first = h, z, np.zeros(self.n, bool)
         logits = self.ag.ator(tf.concat([h, z], axis=-1), training=False)
         return tf.where(tf.convert_to_tensor(mask), logits,
@@ -257,6 +263,7 @@ class DreamerV3(AgentBase):
         self._grad_steps = 0
         self._construido = False
         self._grafo = tf.function(self._passo_de_gradiente, reduce_retracing=True)
+        self._grafo_politica = tf.function(self._passo_de_politica, reduce_retracing=True)
 
     # -------------------------------------------------------------- variáveis
     def _vars_modelo(self):
@@ -299,19 +306,37 @@ class DreamerV3(AgentBase):
         return tf.reduce_sum(q * (lq - lp), axis=[-1, -2])
 
     # ------------------------------------------------------------------ coleta
+    def _passo_de_politica(self, h, z, a_ant, primeiro, obs, mask):
+        """`(estado, observação) → (ação, estado novo)`. **Pura**, para caber num grafo.
+
+        Um passo de coleta chama encoder, posterior, GRU e ator — meia dúzia de submodelos
+        sobre um lote pequeno. Em eager, cada um é um despacho separado, e medido aqui isso
+        é **99% do custo da coleta**: o `VecSnake` gasta 7,7 ms enquanto as chamadas de
+        modelo gastam 603 ms. Não é cálculo, é overhead de chamada.
+
+        Numa GPU isso é pior, porque cada despacho espera o Python: o treino já está em
+        grafo e ficou rápido, então a coleta vira o gargalo e a placa fica ociosa
+        — exatamente o que o painel de uso do Kaggle mostrava com GPU em 4%.
+
+        A função é pura de propósito: `(h, z)` entram e saem como tensores em vez de virar
+        atributo. Efeito colateral em Python dentro de `tf.function` acontece só na
+        traçagem, e o estado latente congelaria no da primeira iteração.
+        """
+        h = self._avanca(h, z, a_ant, primeiro)
+        z, _ = self._posterior(h, obs)
+        logits = self.ator(tf.concat([h, z], axis=-1))
+        logits = tf.where(mask, logits, tf.fill(tf.shape(logits), MASK_NEG))
+        return tf.random.categorical(logits, 1)[:, 0], h, z
+
     def _escolher(self, obs, mask):
         """Ação amostrada da política, sobre o estado latente atual. Atualiza `(h, z)`."""
-        a_ant = tf.one_hot(self._ultima_acao, N_ACTIONS)
-        h = self._avanca(self._h, self._z, a_ant, self._primeiro)
-        z, _ = self._posterior(h, tf.convert_to_tensor(obs, tf.float32))
+        acoes, h, z = self._grafo_politica(
+            self._h, self._z, tf.one_hot(self._ultima_acao, N_ACTIONS),
+            tf.convert_to_tensor(self._primeiro),
+            tf.convert_to_tensor(obs, tf.float32), tf.convert_to_tensor(mask))
         self._h, self._z = h, z
-
-        logits = self.ator(tf.concat([h, z], axis=-1))
-        logits = tf.where(tf.convert_to_tensor(mask), logits,
-                          tf.fill(tf.shape(logits), MASK_NEG))
-        acoes = tf.random.categorical(logits, 1)[:, 0].numpy().astype(np.int32)
-        self._ultima_acao = acoes
-        return acoes
+        self._ultima_acao = acoes.numpy().astype(np.int32)
+        return self._ultima_acao
 
     def collect(self):
         cfg = self.cfg

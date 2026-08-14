@@ -352,3 +352,49 @@ def test_the_default_ratio_is_high_enough_to_actually_learn():
     """
     assert DreamerV3Config().train_ratio >= 2.0
     assert DreamerV3Config().train_steps >= 4
+
+
+def test_the_collect_step_also_runs_as_a_graph():
+    """A coleta era 99% overhead de despacho: 7,7 ms de ambiente contra 603 ms de modelo.
+
+    Cada passo chama encoder, posterior, GRU e ator. Em eager são quatro despachos
+    separados sobre um lote pequeno; numa GPU cada um espera o Python, e como o treino já
+    está em grafo é a **coleta** que passa a segurar a placa ociosa.
+    """
+    ag = DreamerV3(cfg())
+    assert isinstance(ag._grafo_politica, tf.types.experimental.GenericFunction)
+
+
+def test_the_policy_step_is_pure_so_it_can_be_traced():
+    """`(h, z)` entram e saem como tensores em vez de virar atributo.
+
+    Atribuir a `self` dentro de um `tf.function` acontece **só na traçagem**: o latente
+    congelaria no da primeira iteração e o agente agiria para sempre com o estado inicial,
+    sem erro nenhum.
+    """
+    ag = DreamerV3(cfg())
+    ag.collect()          # sem isto, `primeiro` é todo True e `h` sai zerado por definição
+    obs, mask = ag.obs, ag.mask
+    h0, z0 = ag._h, ag._z
+    a, h, z = ag._passo_de_politica(
+        h0, z0, tf.one_hot(ag._ultima_acao, 3), tf.convert_to_tensor(ag._primeiro),
+        tf.convert_to_tensor(obs, tf.float32), tf.convert_to_tensor(mask))
+    assert a.shape == (ag.cfg.num_envs,)
+    assert not np.allclose(h.numpy(), h0.numpy()), "o estado devolvido tem que avançar"
+    assert ag._h is h0, "e a função não pode ter trocado o atributo de `self`"
+
+
+def test_the_latent_keeps_advancing_across_collect_calls():
+    """O contrapeso do teste acima: puro não pode virar sem memória."""
+    ag = DreamerV3(cfg())
+    ag.collect()
+    h1 = ag._h.numpy().copy()
+    ag.collect()
+    assert not np.allclose(ag._h.numpy(), h1)
+
+
+def test_the_evaluation_policy_uses_the_same_graph():
+    """A avaliação são 1.000 episódios de centenas de passos. Em eager, o protocolo
+    oficial custaria mais que um pedaço do treino."""
+    pol = DreamerV3(cfg()).politica()
+    assert isinstance(pol._grafo, tf.types.experimental.GenericFunction)
