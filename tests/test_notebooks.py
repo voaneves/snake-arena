@@ -240,3 +240,75 @@ def test_the_notebooks_folder_has_exactly_what_the_generator_declares():
     assert na_pasta == declarados, (
         f"órfãos na pasta: {sorted(na_pasta - declarados)}; "
         f"declarados e ausentes: {sorted(declarados - na_pasta)}")
+
+
+# ------------------------------------------------------- o download no fim
+def _celula_download(caminho):
+    for c in carrega(caminho)["cells"]:
+        if c["cell_type"] == "code" and "Baixar tudo" in "".join(c["source"]):
+            return "".join(c["source"])
+    return None
+
+
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_every_notebook_ends_by_packing_the_run(caminho):
+    """Sem esta célula, o Colab termina o treino e o resultado morre com a sessão.
+
+    Era o que acontecia: a pasta da execução ficava no `/content`, e quem não lembrasse de
+    baixar à mão perdia horas de GPU quando a máquina caísse.
+    """
+    src = _celula_download(caminho)
+    assert src is not None, "notebook sem a célula de download"
+    assert "make_archive" in src and "files.download" in src
+
+
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_the_download_cell_survives_outside_colab(caminho, tmp_path):
+    """Ela roda de verdade aqui, onde `google.colab` não existe.
+
+    Este é o caso que mais importa: sessão desconectada, aba fechada, ou execução fora do
+    Colab. O `.zip` tem que existir de qualquer forma — o download automático é conveniência,
+    o arquivo é o resultado.
+    """
+    import types  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    pasta = tmp_path / "snake-arena"
+    execucao = pasta / "runs" / "dqn" / "base" / "seed0"
+    execucao.mkdir(parents=True)
+    (pasta / "export").mkdir()
+    for nome in ("history.json", "curva.png", "episodio_s7.gif"):
+        (execucao / nome).write_text("x")
+    (pasta / "export" / "modelo.tflite").write_text("y")
+
+    registro = types.SimpleNamespace(
+        record=types.SimpleNamespace(algo="dqn", variant="base", seed=0))
+    escopo = {"os": os, "PASTA": str(pasta), "registro": registro,
+              "CAMINHO_REGISTRO": str(execucao / "history.json")}
+    exec(compile(_celula_download(caminho), "celula", "exec"), escopo)
+
+    dentro = set(zipfile.ZipFile(escopo["ZIP"]).namelist())
+    assert {"history.json", "curva.png", "episodio_s7.gif"} <= dentro
+    assert "export/modelo.tflite" in dentro, \
+        "o modelo exportado mora fora da pasta da execução e tem que ser copiado para dentro"
+
+
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_the_run_path_is_captured_before_it_is_zipped(caminho):
+    """A célula de contrato tem que guardar o caminho em vez de só imprimi-lo — senão a
+    célula seguinte não tem como saber que pasta compactar."""
+    codigo = "\n".join(codigo_de(carrega(caminho)))
+    assert "CAMINHO_REGISTRO = registro.save" in codigo
+
+
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_drive_is_on_by_default(caminho):
+    """`USAR_DRIVE = True` é o padrão, e isso não é preferência de estilo.
+
+    A sessão do Colab cai — é questão de quando, não de se. Sem o Drive ela leva junto os
+    checkpoints, e um treino de 5 M passos que caiu na terceira hora recomeça do zero em
+    vez de retomar. O custo de ligar é uma tela de autorização; o de não ligar é a
+    execução inteira.
+    """
+    junto = "\n".join(codigo_de(carrega(caminho)))
+    assert "USAR_DRIVE = True" in junto

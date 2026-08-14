@@ -245,3 +245,34 @@ def test_seed_makes_the_run_reproducible():
     xa = [w.numpy() for w in a.model.trainable_variables]
     xb = [w.numpy() for w in b.model.trainable_variables]
     assert all(np.allclose(p, q, atol=1e-5) for p, q in zip(xa, xb))
+
+
+# --------------------------------------------- o log que parecia instabilidade
+def test_training_log_is_a_moving_average_not_the_last_iteration():
+    """`2,50 · 10,00 · — · — · 2,00 · 11,00` não era o algoritmo oscilando.
+
+    Era o log imprimindo a média dos episódios que por acaso terminaram **naquela**
+    iteração — amostra de tamanho 0 a 3. O `—` é "nenhum episódio acabou agora". Quanto
+    melhor o agente fica, mais longos os episódios e mais frequente o traço, então o
+    defeito piora exatamente quando o treino está indo bem.
+    """
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=8, rollout=4, minibatches=1,
+                       epochs=1, salvar_gif=False, salvar_grafico=False))
+    assert ag.media_movel() is None, "sem episódio nenhum, não há média"
+
+    ag._janela.append((10.0 * 1, 1))     # uma iteração com 1 episódio de score 10
+    ag._janela.append((2.0 * 20, 20))    # outra com 20 episódios de score 2
+    # ponderado pela quantidade: (10 + 40) / 21, e não a média das médias (6,0)
+    assert ag.media_movel() == pytest.approx(50 / 21)
+
+
+def test_the_curve_records_the_moving_average_and_keeps_the_raw_value():
+    """A curva precisa do número estável; o valor cru continua disponível para quem
+    quiser ver a variância entre iterações."""
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=16, rollout=4, minibatches=1,
+                       epochs=1, total_steps=400, eval_every_steps=10 ** 9,
+                       log_every_steps=1, salvar_gif=False, salvar_grafico=False))
+    ag.train(verbose=False)
+    pontos = [p for p in ag.history if "train_score_mean" in p]
+    assert pontos, "nada foi registrado"
+    assert any("train_score_iter" in p for p in pontos)

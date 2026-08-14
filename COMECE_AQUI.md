@@ -49,8 +49,13 @@ Ordem sugerida, por retorno sobre o tempo:
 Cada um roda três vezes, com `SEMENTE` em 0, 1 e 2. Deixe `PASSOS` no padrão: o contrato
 exige o mesmo orçamento para todos, e o notebook avisa se você mudar.
 
-Ligue `USAR_DRIVE = True`. A sessão do Colab vai cair; com o Drive o treino continua de onde
-parou.
+`USAR_DRIVE` já vem ligado — o notebook vai pedir para montar o Drive na primeira célula.
+A sessão do Colab vai cair; com o Drive o treino continua de onde parou, sem o Drive
+recomeça do zero. Desligue só se for um teste rápido que você não pretende retomar.
+
+A última célula empacota a execução inteira — registro, curva, GIFs e o modelo exportado —
+num `.zip` só e dispara o download. Se a aba não estiver aberta na hora, ela imprime o
+caminho do `.zip` em vez de falhar calada.
 
 ## 4. Montar a arena
 

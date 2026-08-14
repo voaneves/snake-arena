@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import deque
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
@@ -80,9 +81,24 @@ class AgentBase:
         self.melhor = -np.inf
         self._proximo_eval = 0
         self._proximo_log = 0
+        #: Janela de episódios recentes para a média móvel do treino. Sem ela, o log
+        #: imprime a média dos episódios que por acaso terminaram **naquela** iteração —
+        #: uma amostra de tamanho 0 a 3. É o que produzia a sequência
+        #: `2,50 · 10,00 · — · — · 2,00 · 11,00`, que parece instabilidade do algoritmo e
+        #: é só tamanho de amostra. O `—` é literalmente "nenhum episódio acabou agora".
+        self._janela = deque(maxlen=200)
         os.makedirs(cfg.ckpt_dir, exist_ok=True)
 
     # ----------------------------------------------------------- agendamentos
+    def media_movel(self):
+        """Score médio dos episódios recentes, ponderado pela quantidade em cada iteração.
+
+        `None` só quando nenhum episódio terminou na janela inteira — o que, com 200
+        iterações, significa que o agente está mesmo sem terminar episódio.
+        """
+        n = sum(k for _, k in self._janela)
+        return sum(soma for soma, _ in self._janela) / n if n else None
+
     def frac(self):
         """Fração do orçamento já gasta, em [0, 1]. Base de todo agendamento linear."""
         return min(1.0, self.global_step / max(1, self.cfg.total_steps))
@@ -173,10 +189,18 @@ class AgentBase:
             stats = self.iterate()
             self.iteration += 1
 
+            m, k = stats.get("train_score_mean"), stats.get("n_episodes") or 0
+            if m is not None and k:
+                self._janela.append((m * k, k))
+
             if self.global_step >= self._proximo_log:
                 self._proximo_log = self.global_step + self.cfg.log_every_steps
+                # a curva registra a **média móvel**, não a iteração isolada: é o número
+                # que responde "o treino está andando?" sem depender de quantos episódios
+                # acabaram no exato momento do log
                 ponto = {"episodes": self.episodes,
-                         "train_score_mean": stats.get("train_score_mean"),
+                         "train_score_mean": self.media_movel(),
+                         "train_score_iter": stats.get("train_score_mean"),
                          **{k: v for k, v in stats.items() if k != "train_score_mean"}}
                 self.history.append({"global_step": self.global_step, **ponto})
                 rec.log(self.global_step, **ponto)
@@ -273,7 +297,9 @@ class AgentBase:
         return saida
 
     def _imprimir(self, stats):
-        m = stats.get("train_score_mean")
+        """Uma linha por log. Média móvel, não a iteração isolada — ver `self._janela`."""
+        m = self.media_movel()
         m = f"{m:.2f}" if m is not None else "—"
+        n = sum(k for _, k in self._janela)
         print(f"passo {self.global_step:>10,} · ep {self.episodes:>8,} · "
-              f"treino {m:>6}")
+              f"treino {m:>6} (média de {n} episódios)")

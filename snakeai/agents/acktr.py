@@ -28,6 +28,45 @@ ACKTR usar passos que derrubariam um A2C: quando a curvatura é baixa ele anda m
 `a'` amostrada da política — não da perda de RL. Ver `snakeai/kfac.py`, seção "Fisher de
 verdade".
 
+O que a primeira execução longa mostrou sobre a região de confiança
+-------------------------------------------------------------------
+Numa execução de 5 M passos (`resnet_small`, semente 0), a KL **medida depois do passo**
+ficou sistematicamente acima do alvo — e o registro está aqui porque a primeira leitura que
+fizemos destes números estava errada em duas frentes ao mesmo tempo.
+
+============  ==============  ========  ==========
+quinto        KL mediana      × alvo    entropia
+============  ==============  ========  ==========
+1             0,0237          11,8      0,158
+2             0,0248          12,4      0,069
+3             0,0150           7,5      0,053
+4             0,0105           5,2      0,041
+5             0,0088           4,4      0,041
+============  ==============  ========  ==========
+
+O estouro é **maior no começo e diminui ao longo do treino** — o contrário do que se lê
+olhando as últimas linhas do log, que são pontos isolados de 0,03–0,06 e não a mediana. E a
+correlação entre `log(KL)` e entropia é fraca (−0,26), então "a política ficou determinística
+demais" **não** explica: o pior estouro acontece justamente quando a entropia é a mais alta
+da execução.
+
+A explicação que sobra é a própria aproximação. `Δᵀ∇ = ΔᵀF̃Δ`, com `F̃` a Fisher *aproximada*
+— bloco-diagonal por camada, e cada bloco um produto de Kronecker. A KL medida é a da
+política de verdade. Onde `F̃` subestima a curvatura real, `Δ` fica grande demais naquelas
+direções e a KL prevista sai baixa. Que o erro encolha conforme a média móvel dos fatores
+amadurece é consistente com isso. (Não é o amortecimento: com `Δ = (F̃ + λI)⁻¹∇`, tem-se
+`Δᵀ∇ = ΔᵀF̃Δ + λ‖Δ‖²`, que **super**estima a forma quadrática e portanto *encolhe* o passo.)
+
+Duas consequências práticas, ambas medidas:
+
+* Em **100% das atualizações** o passo veio da fórmula da KL, nunca do teto do `lr`. Os
+  `lr_start`/`lr_end` do ACKTR não limitaram nada nesta execução — quem governa é `kl_max`.
+* `kl_max = 0,002` entrega, na prática, KL ≈ 0,01. O parâmetro é um alvo *aproximado* com um
+  fator de escala que depende da qualidade de `F̃`. Apertá-lo encolhe todo passo por `√k`.
+
+`stats["kl"]` existe exatamente para que isso seja visível em vez de suposto — e a lição de
+método é que a mediana por fase diz uma coisa que as últimas linhas do log dizem ao contrário.
+
 Custo
 -----
 Uma retropropagação extra por atualização (a perda de Fisher) e as fatorações de Cholesky

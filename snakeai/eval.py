@@ -149,8 +149,12 @@ def evaluate(
 
     por_env = math.ceil(episodes / num_envs)
     coletados = [[] for _ in range(num_envs)]
+    #: Por que cada episódio da amostra terminou. Score sozinho não distingue "o agente
+    #: joga mal" de "o agente anda em círculo": um DQN greedy no começo do treino tira
+    #: 0,05 morrendo **100% por fome**, e a leitura correta disso não é "não aprendeu", é
+    #: "a política determinística entrou em ciclo". São problemas diferentes.
+    motivos = {"fome": 0, "colisao": 0, "tabuleiro_cheio": 0}
     faltam = num_envs
-    wins = 0
     passos = 0
 
     while faltam > 0 and passos < max_steps:
@@ -167,9 +171,7 @@ def evaluate(
             p /= p.sum(axis=1, keepdims=True)
             acoes = (p.cumsum(axis=1) > rng.random((num_envs, 1))).argmax(axis=1).astype(np.int32)
 
-        scores_antes = env.score.copy()
         obs, mask, r, done, info = env.step(acoes)
-        wins += info["wins"]
         passos += 1
 
         # Políticas com estado recorrente (DreamerV3) precisam saber o que de fato
@@ -179,9 +181,21 @@ def evaluate(
         if apos_passo is not None:
             apos_passo(acoes, done)
 
-        for i in np.nonzero(done)[0]:
+        # `info["scores"]` é o score **final** do episódio, já contando a comida do
+        # último passo. Ler `env.score` antes do passo perde exatamente um ponto nos
+        # episódios que terminam comendo — que são precisamente as vitórias. Ver
+        # `test_eval.py::test_a_winning_episode_scores_the_last_apple`.
+        truncados = set(info["trunc_idx"].tolist())
+        for j, i in enumerate(np.nonzero(done)[0]):
             if len(coletados[i]) < por_env:
-                coletados[i].append(int(scores_antes[i]))
+                s_final = int(info["scores"][j])
+                coletados[i].append(s_final)
+                if i in truncados:
+                    motivos["fome"] += 1
+                elif s_final == board_size * board_size - 3:
+                    motivos["tabuleiro_cheio"] += 1
+                else:
+                    motivos["colisao"] += 1
                 if len(coletados[i]) == por_env:
                     faltam -= 1
 
@@ -190,6 +204,9 @@ def evaluate(
         raise RuntimeError("nenhum episódio terminou — aumente `max_steps`")
 
     perfeito = board_size * board_size - 3
+    # A taxa de vitória sai da **amostra coletada**, não de um contador do laço: o laço
+    # continua rodando os ambientes que já cumpriram a cota, e somar as vitórias deles
+    # daria uma taxa que não corresponde aos episódios de fato medidos.
     stats = {
         "episodes": int(scores.size),
         "score_mean": float(scores.mean()),
@@ -197,11 +214,13 @@ def evaluate(
         "score_std": float(scores.std()),
         "score_max": int(scores.max()),
         "score_p95": float(np.percentile(scores, 95)),
-        "win_rate": wins / max(1, scores.size),
+        "win_rate": float((scores == perfeito).mean()),
         "perfect_possible": perfeito,
         "env_steps_used": int(passos),
         "completo": bool(faltam == 0),
     }
+    total_motivos = max(1, sum(motivos.values()))
+    stats.update({f"fim_{k}": v / total_motivos for k, v in motivos.items()})
     return stats, scores
 
 
@@ -277,4 +296,21 @@ def format_verdict(resultado):
         f"score perfeito: {resultado['perfeito']}   |   "
         f"ganho sobre o piso: {resultado['ganho_sobre_o_piso']:.1f}x"
     )
+    ag = resultado["linhas"][1]
+    if "fim_fome" in ag:
+        out.append(
+            f"como terminou: fome {ag['fim_fome']:.0%} · colisão {ag['fim_colisao']:.0%}"
+            f" · tabuleiro cheio {ag['fim_tabuleiro_cheio']:.0%}"
+        )
+        # Morrer de fome é o fim NORMAL aqui: a máscara de morte impede a colisão, então
+        # até a política aleatória termina 85% dos episódios por fome. O que denuncia o
+        # ciclo é a combinação — quase nenhuma colisão **e** score abaixo do piso, ou seja,
+        # a cobra anda para sempre sem nunca comer.
+        if ag["fim_colisao"] < 0.05 and ag["score_mean"] < resultado["piso"]:
+            out.append(
+                "  ⚠ nunca colide e não come: a política determinística entrou em ciclo.\n"
+                "    Não é 'jogou mal' — é falta de exploração na hora de agir. Normal cedo\n"
+                "    num DQN greedy, e é por isso que o score de TREINO (ε-greedy) fica\n"
+                "    acima do de AVALIAÇÃO (greedy) nesta fase."
+            )
     return "\n".join(out)

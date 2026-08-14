@@ -282,8 +282,10 @@ qualquer outra coisa e diz o motivo.
         _code(f"""SEMENTE = 0        # @param {{type:"integer"}}
 PASSOS = 5000000   # @param {{type:"integer"}}
 REDE = "resnet_small"  # @param ["resnet_tiny", "resnet_small", "resnet_base", "cnn_rainbow", "cnn_alphazero", "cnn_vgg", "cnn_vgg_dropout", "cnn_vgg_sem_pool"]
-USAR_DRIVE = False  # @param {{type:"boolean"}}
+USAR_DRIVE = True  # @param {{type:"boolean"}}
 
+# Ligado por padrão: a sessão do Colab cai, e sem o Drive ela leva junto os
+# checkpoints — o treino não retoma de onde parou, recomeça do zero.
 PASTA = "/content/snake-arena"
 if USAR_DRIVE:
     from google.colab import drive
@@ -344,15 +346,56 @@ diferente não é.
 print(json.dumps(relatorio, indent=2, ensure_ascii=False))""", "Exportar"),
         _md("""## Onde ficou o resultado
 
-O `history.json` da execução está em `runs/<algo>/<variante>/seed<N>/`, junto com a curva e
-os GIFs. **Baixe essa pasta** e coloque em `runs/` do repositório para a execução entrar na
-arena — depois basta rodar `python -m snakeai.arena --all`.
+O `history.json` da execução vai para `runs/<algo>/<variante>/seed<N>/`, junto com a curva e
+os GIFs. Essa pasta é o que entra na arena: coloque em `runs/` do repositório e rode
+`python -m snakeai.arena --all`.
 """),
-        _code("""print("registro:", registro.save(skip_validation=True))
+        _code("""CAMINHO_REGISTRO = registro.save(skip_validation=True)
+print("registro:", CAMINHO_REGISTRO)
+
 problemas = validate(registro.record)
 print("entra na arena?" , "sim" if not problemas else "NÃO:")
 for p in problemas:
     print("  -", p)""", "Conferir o contrato"),
+        _md("""## Baixar o resultado
+
+Um `.zip` só, com a pasta inteira da execução — registro, curva, GIFs e o modelo exportado.
+
+**Um arquivo, e não vários downloads**, por dois motivos: o navegador bloqueia downloads
+múltiplos disparados em sequência, e a pasta da execução só faz sentido inteira — o
+`history.json` sem a curva e sem os GIFs perde metade do que ela responde.
+
+Se a aba do Colab não estiver aberta na hora em que isso rodar, o download automático não
+acontece (o navegador precisa estar lá para receber). Nesse caso o `.zip` fica salvo e a
+célula imprime o caminho — dá para baixar pelo painel de arquivos à esquerda, ou pelo Drive
+se `USAR_DRIVE = True`.
+"""),
+        _code("""import shutil
+
+PASTA_EXECUCAO = os.path.dirname(CAMINHO_REGISTRO)
+
+# o export mora fora da pasta da execução; copiamos para dentro antes de zipar,
+# senão o .zip sai sem o modelo — que é justamente o que se leva para o jogo
+_export = os.path.join(PASTA, "export")
+if os.path.isdir(_export):
+    shutil.copytree(_export, os.path.join(PASTA_EXECUCAO, "export"), dirs_exist_ok=True)
+
+_nome = "_".join([registro.record.algo, registro.record.variant,
+                  f"seed{registro.record.seed}"])
+ZIP = shutil.make_archive(os.path.join(PASTA, _nome), "zip", PASTA_EXECUCAO)
+print(f"{ZIP}  ({os.path.getsize(ZIP) / 1e6:.1f} MB)")
+for _raiz, _, _arqs in os.walk(PASTA_EXECUCAO):
+    for _a in sorted(_arqs):
+        print("   ", os.path.relpath(os.path.join(_raiz, _a), PASTA_EXECUCAO))
+
+try:
+    from google.colab import files
+    files.download(ZIP)
+except Exception as e:
+    print()
+    print(f"download automático não rolou ({type(e).__name__}: {e})")
+    print(f"o .zip está em {ZIP} — baixe pelo painel de arquivos")""",
+              "Baixar tudo num .zip"),
     ]
 
     return {
