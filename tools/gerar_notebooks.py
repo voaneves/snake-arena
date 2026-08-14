@@ -199,6 +199,16 @@ def _limpa(fonte, caminho):
             abertos += linha.count("(") - linha.count(")")
             continue
         if RE_IMPORT_RELATIVO.match(linha.strip()):
+            # `from ..x import y as z` não pode ser simplesmente removido: no notebook o
+            # módulo inlinado define `y`, nunca `z`, e a ligação do apelido morava só no
+            # import. O resultado é um `NameError` que só aparece quando aquela linha
+            # roda — no caso que motivou isto, no fim de um treino de 5 M passos.
+            if re.search(r"\bimport\b.*\bas\b", linha):
+                raise ValueError(
+                    f"{caminho}: import relativo com apelido não sobrevive ao "
+                    f"achatamento do notebook:\n    {linha.strip()}\n"
+                    "  Importe sem `as`, ou renomeie a função na origem."
+                )
             abertos = linha.count("(") - linha.count(")")
             continue
         # `from __future__` só é válido na PRIMEIRA linha do arquivo; com N módulos
@@ -304,12 +314,11 @@ qualquer outra coisa e diz o motivo.
         _code(f"""SEMENTE = 0        # @param {{type:"integer"}}
 PASSOS = 5000000   # @param {{type:"integer"}}
 REDE = "resnet_small"  # @param ["resnet_tiny", "resnet_small", "resnet_base", "cnn_rainbow", "cnn_alphazero", "cnn_vgg", "cnn_vgg_dropout", "cnn_vgg_sem_pool"]
-USAR_DRIVE = True  # @param {{type:"boolean"}}
 
-# Detecta Colab, Kaggle ou máquina local e escolhe a pasta que **persiste** em cada um.
-# `USAR_DRIVE` só vale no Colab, onde sem o Drive a queda da sessão leva junto os
-# checkpoints e o treino recomeça do zero. No Kaggle quem persiste é /kaggle/working.
-PASTA = pasta_de_trabalho(usar_drive=USAR_DRIVE)
+# Armazenamento: nada para configurar. Detecta Colab, Kaggle ou máquina local e escolhe a
+# pasta que **persiste** em cada um — Drive, /kaggle/working ou o diretório atual. Se a
+# montagem do Drive falhar, avisa e segue, em vez de parar.
+PASTA = pasta_de_trabalho()
 
 # No Kaggle a sessão nova nasce com /kaggle/working vazio: o que sobreviveu está montado
 # somente-leitura em /kaggle/input. Isto traz os checkpoints de volta — e nunca sobrescreve
@@ -330,7 +339,7 @@ print(json.dumps(asdict(cfg), indent=2, ensure_ascii=False))""", "Parâmetros"),
 sessão gratuita sem cair pelo menos uma vez. Rode a célula de novo e ela continua do último
 checkpoint.
 
-* **Colab** — com `USAR_DRIVE = True` os checkpoints ficam no Drive e sobrevivem à queda.
+* **Colab** — os checkpoints vão para o Drive e sobrevivem à queda da sessão.
 * **Kaggle** — `/kaggle/working` vira a **saída** desta versão. Para continuar depois:
   *Save Version → Save & Run All* (roda headless, sem aba aberta), e na execução seguinte
   *Add Input → Your Work → Notebook Output* apontando para esta. A célula de parâmetros

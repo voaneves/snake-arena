@@ -131,9 +131,14 @@ def test_notebook_pins_the_keras_backend(caminho):
 
 @pytest.mark.parametrize("caminho", CAMINHOS, ids=[s["arquivo"] for s in NOTEBOOKS])
 def test_notebook_offers_drive_and_resume(caminho):
-    """A sessão do Colab cai. Sem retomada e sem Drive, o treino longo é inviável."""
+    """A sessão cai. Sem retomada e sem armazenamento que persiste, treino longo é inviável.
+
+    E **sem knob**: a escolha do armazenamento é automática. Um parâmetro a mais na célula
+    é uma coisa a mais para procurar e esquecer, e o valor certo dele é sempre o mesmo.
+    """
     junto = "\n".join(codigo_de(carrega(caminho)))
-    assert "USAR_DRIVE" in junto and "drive.mount" in junto
+    assert "drive.mount" in junto and "PASTA = pasta_de_trabalho()" in junto
+    assert "USAR_DRIVE" not in junto, "o armazenamento não é mais configurado à mão"
     assert 'retomar("last")' in junto
 
 
@@ -305,16 +310,17 @@ def test_the_run_path_is_captured_before_it_is_zipped(caminho):
 
 
 @pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
-def test_drive_is_on_by_default(caminho):
-    """`USAR_DRIVE = True` é o padrão, e isso não é preferência de estilo.
+def test_storage_persists_by_default_without_being_asked(caminho):
+    """O armazenamento que sobrevive à queda é o padrão, e não uma opção a marcar.
 
-    A sessão do Colab cai — é questão de quando, não de se. Sem o Drive ela leva junto os
-    checkpoints, e um treino de 5 M passos que caiu na terceira hora recomeça do zero em
-    vez de retomar. O custo de ligar é uma tela de autorização; o de não ligar é a
-    execução inteira.
+    A sessão cai — é questão de quando, não de se. Sem armazenamento persistente ela leva
+    junto os checkpoints, e um treino de 5 M passos que caiu na terceira hora recomeça do
+    zero. Deixar isso numa chave que o usuário tem que achar e ligar transforma um
+    requisito em pegadinha.
     """
     junto = "\n".join(codigo_de(carrega(caminho)))
-    assert "USAR_DRIVE = True" in junto
+    assert "PASTA = pasta_de_trabalho()" in junto
+    assert "/content/drive/MyDrive" in junto, "o caminho do Drive tem que estar no núcleo"
 
 
 # ------------------------------------------- last e best, os dois lados do resultado
@@ -393,3 +399,70 @@ def test_notebook_runs_on_colab_and_on_kaggle(caminho):
 def test_the_platform_module_is_part_of_the_shared_core():
     """Se cada notebook trouxesse a própria detecção, elas divergiriam."""
     assert "snakeai/plataforma.py" in NUCLEO
+
+
+# ------------------------------------------- o espaço de nomes achatado do notebook
+#: `__all__` é declaração por módulo e some no achatamento sem consequência.
+COLISOES_TOLERADAS = {"__all__"}
+
+
+def _nomes_de_topo(caminho):
+    import ast  # noqa: PLC0415
+
+    with open(os.path.join(RAIZ, caminho), encoding="utf-8") as f:
+        arv = ast.parse(f.read())
+    nomes = []
+    for no in arv.body:
+        if isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            nomes.append((no.name, no))
+        elif isinstance(no, ast.Assign):
+            nomes += [(a.id, no) for a in no.targets if isinstance(a, ast.Name)]
+    return nomes
+
+
+def test_no_two_inlined_modules_define_the_same_name():
+    """No notebook, os módulos viram **um espaço de nomes só** — e o último vence.
+
+    Duas funções `resumo()` em módulos diferentes convivem em paz no pacote e viram um
+    apagamento silencioso no notebook: a que for inlinada depois substitui a outra, sem
+    erro, e quem chamava a primeira passa a chamar a segunda. Foi assim que
+    `plataforma.resumo` e `nets/registry.resumo` colidiram.
+
+    Constantes repetidas com o **mesmo valor** são toleradas — são duplicação, não
+    ambiguidade. Com valores diferentes seria pior ainda, e o teste falha.
+    """
+    import ast  # noqa: PLC0415
+
+    modulos = list(NUCLEO) + sorted({m for n in NOTEBOOKS for m in n["modulos"]})
+    visto = {}
+    conflitos = []
+    for m in modulos:
+        for nome, no in _nomes_de_topo(m):
+            if nome in COLISOES_TOLERADAS:
+                continue
+            if nome in visto and visto[nome][0] != m:
+                antes_m, antes_no = visto[nome]
+                iguais = (isinstance(no, ast.Assign) and isinstance(antes_no, ast.Assign)
+                          and ast.dump(no.value) == ast.dump(antes_no.value))
+                if not iguais:
+                    conflitos.append(f"{nome!r}: {antes_m} e {m}")
+            visto.setdefault(nome, (m, no))
+    assert not conflitos, (
+        "nomes que colidem no notebook (o último inlinado apaga o primeiro):\n  "
+        + "\n  ".join(conflitos))
+
+
+def test_the_generator_refuses_a_renaming_relative_import():
+    """`from ..x import y as z` some inteiro no achatamento, e `z` fica indefinido.
+
+    Sem apelido não há problema: o nome importado é o mesmo que o módulo inlinado define.
+    Com apelido, a ligação existia **só** no import — e o import é justamente o que sai.
+    Deu `NameError` no fim de um treino de 5 M passos.
+    """
+    from gerar_notebooks import _limpa  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="apelido"):
+        _limpa("from ..plataforma import resumo as _r\nx = _r()\n", "fake.py")
+
+    # sem apelido, segue sendo removido em silêncio, que é o certo
+    assert "plataforma" not in _limpa("from ..plataforma import resumo\n", "fake.py")

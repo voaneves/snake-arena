@@ -19,7 +19,7 @@ import argparse
 import glob
 import os
 
-from .plot import arena_figure, arena_table
+from .plot import arena_figure, arena_table, arena_tempo, mesmo_hardware
 from .record import ORCAMENTO_OFICIAL, from_legacy_csv, load_all
 
 __all__ = ["montar", "main"]
@@ -77,6 +77,23 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
         plt.close(fig)
         saidas[modo] = caminho
 
+    # O painel de custo. Ele não substitui o oficial: o eixo de passos iguala os dados
+    # vistos, este iguala o esforço, e as duas perguntas têm respostas diferentes.
+    for modo in ("light", "dark"):
+        try:
+            fig, _ = arena_tempo(oficiais, mode=modo)
+            caminho = os.path.join(assets, f"arena_tempo_{modo}.png")
+            fig.savefig(caminho, dpi=165, facecolor=fig.get_facecolor())
+            plt.close(fig)
+            saidas[f"tempo_{modo}"] = caminho
+        except Exception as e:                    # nunca derrubar a arena pelo secundário
+            saidas[f"tempo_{modo}_erro"] = repr(e)
+
+    igual, hw = mesmo_hardware(oficiais)
+    if verbose and oficiais and not igual:
+        print("  [atenção] execuções de hardwares diferentes (" + " · ".join(sorted(hw))
+              + "): o painel de tempo compara aceleradores, não algoritmos")
+
     tabela = arena_table(oficiais + historicas)
     linhas = [
         "# Resultados",
@@ -86,6 +103,15 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
         "![arena](../assets/arena_light.png)",
         "",
         tabela,
+        "",
+        "## O mesmo resultado, no eixo do custo",
+        "",
+        "O gráfico acima iguala os **dados vistos**. Este iguala o **esforço gasto** — e a",
+        "ordem muda, porque um passo de AlphaZero custa uma busca em árvore inteira e um",
+        "de DQN custa uma passada de rede. São duas perguntas diferentes, e nenhuma das",
+        "duas é a resposta da outra.",
+        "",
+        "![arena por tempo](../assets/arena_tempo_light.png)",
         "",
     ]
     if fora:

@@ -38,7 +38,7 @@ import os
 import shutil
 
 __all__ = ["detecta", "pasta_de_trabalho", "semear_checkpoints", "entregar_arquivo",
-           "resumo", "COLAB", "KAGGLE", "LOCAL"]
+           "resumo_plataforma", "COLAB", "KAGGLE", "LOCAL"]
 
 COLAB, KAGGLE, LOCAL = "colab", "kaggle", "local"
 
@@ -55,20 +55,34 @@ def detecta():
     return LOCAL
 
 
-def pasta_de_trabalho(usar_drive=True, nome="snake-arena", verbose=True):
-    """A pasta onde checkpoints, `runs/` e export vão viver.
+def pasta_de_trabalho(usar_drive="auto", nome="snake-arena", verbose=True):
+    """A pasta onde checkpoints, `runs/` e export vão viver. **Sem nada para configurar.**
 
-    `usar_drive` só significa alguma coisa no Colab; no Kaggle `/kaggle/working` já é o
-    lugar que o serviço preserva, e no local é o diretório atual. O parâmetro não vira
-    erro nos outros dois de propósito: o mesmo notebook roda nos três sem editar célula.
+    `usar_drive="auto"` é o padrão e resolve tudo sozinho: no Colab tenta montar o Drive,
+    no Kaggle usa `/kaggle/working`, no local usa o diretório atual. Passar `True` ou
+    `False` força o comportamento no Colab e não faz diferença nos outros dois — o mesmo
+    notebook roda nos três sem editar célula, que é o ponto.
+
+    Se a montagem do Drive falhar (o usuário recusa a autorização, ou a sessão não tem
+    navegador), cai para `/content` **avisando alto**: ali o treino roda, mas a queda da
+    sessão leva os checkpoints junto, e descobrir isso depois de três horas é pior do que
+    ler um aviso agora.
     """
     onde = detecta()
 
-    if onde == COLAB and usar_drive:
-        from google.colab import drive  # noqa: PLC0415
+    if onde == COLAB and usar_drive is not False:
+        try:
+            from google.colab import drive  # noqa: PLC0415
 
-        drive.mount("/content/drive")
-        raiz = os.path.join("/content/drive/MyDrive", nome)
+            drive.mount("/content/drive")
+            raiz = os.path.join("/content/drive/MyDrive", nome)
+        except Exception as e:
+            if usar_drive is True:
+                raise
+            print(f"AVISO: não consegui montar o Drive ({type(e).__name__}: {e}).")
+            print("       Usando /content, que NÃO sobrevive à queda da sessão —")
+            print("       se o treino cair, ele recomeça do zero.")
+            raiz = os.path.join("/content", nome)
     elif onde == COLAB:
         raiz = os.path.join("/content", nome)
     elif onde == KAGGLE:
@@ -147,8 +161,14 @@ def entregar_arquivo(caminho, verbose=True):
     return False
 
 
-def resumo():
-    """Dicionário com plataforma e aceleradores visíveis — vai para o `meta` do registro."""
+def resumo_plataforma():
+    """Dicionário com plataforma e aceleradores visíveis — vai para o `meta` do registro.
+
+    O nome é longo de propósito. No notebook gerado todos os módulos viram **um espaço de
+    nomes só**, e um `resumo()` aqui colidiria com o `resumo()` de `snakeai/nets/registry.py`
+    — o último inlinado venceria e o outro sumiria sem erro nenhum.
+    `tests/test_notebooks.py::test_no_two_inlined_modules_define_the_same_name` tranca isso.
+    """
     info = {"plataforma": detecta()}
     try:
         import tensorflow as tf  # noqa: PLC0415

@@ -107,6 +107,33 @@ GIFs: a pasta de uma execução tem que ser autossuficiente. Um `history.json` q
 score sem o modelo que o produziu é, num repositório feito para tornar resultados
 comparáveis, exatamente o que não serve.
 
+## As três perguntas, separadas
+
+O gráfico principal responde **uma** pergunta: *quem vai mais longe com os mesmos dados?*
+Ele é o oficial, e é o padrão da literatura. Mas duas outras perguntas legítimas moram nos
+mesmos dados, e juntá-las numa única resposta seria fingir que são a mesma coisa.
+
+| pergunta | como se lê | onde está |
+|---|---|---|
+| quem vai mais longe com os mesmos dados | curva na **vertical**, num x fixo | gráfico e coluna `score médio (last)` |
+| quem chega antes a um nível dado | curva na **horizontal**, num y fixo | coluna `passos até 40` |
+| quem entrega mais por hora de GPU | outro eixo x | `arena_tempo`, painel separado |
+
+**Passos até o limiar.** Sem interpolação: a resolução é a cadência de avaliação, e
+interpolar inventaria precisão que a amostragem não tem. Sementes que não chegaram ficam
+**fora** da mediana, com o `(k/n)` denunciando — incluí-las como um número grande
+arbitrário seria pior que omitir.
+
+**Horas de GPU.** O eixo oficial iguala os *dados vistos*; ele não iguala o *esforço*. Um
+passo de AlphaZero é uma busca em árvore inteira, um de DQN é uma passada de rede — a mesma
+posição no eixo x custa ordens de grandeza diferentes. Isso não é defeito do contrato, é o
+que "passos de ambiente" significa; mas é meia verdade, e a outra metade agora está
+desenhada.
+
+Esse painel só vale **dentro do mesmo hardware**. Uma curva de P100 ao lado de uma de T4
+compara aceleradores, não algoritmos, e nada no gráfico denunciaria — por isso o registro
+guarda plataforma e GPU, e o painel escreve o aviso na figura quando elas divergem.
+
 ## Como uma execução é reprovada
 
 O `Recorder` grava **sempre** — perder a curva no fim de um treino de horas seria o pior

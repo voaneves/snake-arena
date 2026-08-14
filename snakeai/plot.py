@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["PALETA", "cores_por_algoritmo", "arena_figure", "arena_table", "plot_run"]
+__all__ = ["PALETA", "cores_por_algoritmo", "arena_figure", "arena_familias",
+           "arena_tempo", "arena_table", "plot_run", "mesmo_hardware"]
 
 # ---------------------------------------------------------------------- paleta
 PALETA = {
@@ -84,6 +85,12 @@ def familia_de(algo):
 
 PISO_ALEATORIO = 1.21
 SCORE_PERFEITO = 97
+
+#: Limiar padrão da coluna "passos até". 40 é bem acima do piso (1,21) e bem abaixo do teto
+#: (97): alto o bastante para exigir que o agente jogue de verdade, baixo o bastante para
+#: a maioria alcançar dentro do orçamento — um limiar que quase ninguém atinge não ordena
+#: nada.
+LIMIAR_PADRAO = 40.0
 
 
 def cores_por_algoritmo(algoritmos, mode="light"):
@@ -151,6 +158,39 @@ def agrega_sementes(registros, pontos=60):
         "q3": np.percentile(empilhado, 75, axis=0),
         "n_sementes": len(curvas),
     }
+
+
+def mesmo_hardware(registros):
+    """Todas as execuções vieram da mesma máquina? Devolve `(bool, conjunto)`.
+
+    O eixo de tempo só significa alguma coisa dentro de um mesmo hardware. Uma curva feita
+    numa P100 do Kaggle e outra numa T4 do Colab colocadas lado a lado em horas comparam os
+    aceleradores, não os algoritmos — e o gráfico não avisaria.
+    """
+    hw = {r.hardware for r in registros}
+    return len(hw) <= 1, hw
+
+
+def agrega_tempo(registros, pontos=60):
+    """Como `agrega_sementes`, no eixo de horas de GPU."""
+    curvas = []
+    for r in registros:
+        h, y = r.eval_curve_tempo()
+        ok = np.isfinite(h) & (h > 0)
+        if ok.sum() >= 2:
+            curvas.append((h[ok], y[ok]))
+    if not curvas:
+        return None
+
+    x_min = max(1e-4, max(c[0][0] for c in curvas))
+    x_max = min(c[0][-1] for c in curvas)
+    if x_max <= x_min:
+        return None
+    grade = np.geomspace(x_min, x_max, pontos)
+    emp = np.stack([np.interp(grade, h, y) for h, y in curvas])
+    return {"x": grade, "mediana": np.median(emp, axis=0),
+            "q1": np.percentile(emp, 25, axis=0), "q3": np.percentile(emp, 75, axis=0),
+            "n_sementes": len(curvas)}
 
 
 def _agrupa(registros):
@@ -453,6 +493,19 @@ def _painel_legado(ax, legado, p, ylim=None):
     ax.xaxis.set_major_formatter(__import__("matplotlib").ticker.FuncFormatter(_formata_passos))
 
 
+def _ate_o_limiar(registros, limiar):
+    """Mediana dos passos até `limiar`, e quantas sementes chegaram lá.
+
+    Quem não chegou **não** entra na mediana como um número grande inventado: fica de fora
+    e o `n` denuncia. Uma mediana calculada sobre metade das sementes que chegaram, sem
+    dizer que foi metade, seria a pior das duas opções.
+    """
+    passos = [r.passos_ate(limiar) for r in registros]
+    chegaram = [p for p in passos if p is not None]
+    return {"passos_ate": int(np.median(chegaram)) if chegaram else None,
+            "sementes_ate": len(chegaram), "limiar": limiar}
+
+
 def _sem_colisao(rotulos, minimo=0.045):
     """Empurra rótulos que ficariam sobrepostos, preservando a ordem vertical."""
     if not rotulos:
@@ -516,7 +569,152 @@ def plot_run(record, mode="light", figsize=(11, 3.4)):
 
 
 # --------------------------------------------------------------------- tabela
-def arena_table(registros, markdown=True):
+def arena_tempo(registros, mode="light", figsize=(7.4, 5.0), titulo=None,
+                limiar=LIMIAR_PADRAO):
+    """A arena no eixo de **custo**: score contra horas de GPU. Devolve `(fig, ax)`.
+
+    O eixo oficial — passos de ambiente — iguala os *dados vistos*. É o padrão da
+    literatura e é o certo para "quem aprende mais com a mesma experiência". Mas ele
+    esconde uma diferença enorme: o AlphaZero roda uma busca em árvore a cada passo e custa
+    ordens de grandeza mais que o DQN para chegar ao mesmo ponto no eixo x. Comparar ali dá
+    a ele computação de graça.
+
+    Este painel mostra a outra metade da verdade, e **não substitui** o oficial: são duas
+    perguntas diferentes, e a resposta de uma não vale para a outra.
+
+    Quando as execuções vêm de hardwares diferentes o gráfico **diz isso na cara**, porque
+    aí ele compara aceleradores e não algoritmos — e essa é a forma mais fácil de ler um
+    número errado com confiança.
+    """
+    import matplotlib.pyplot as plt
+
+    p = PALETA[mode]
+    comparaveis = [r for r in registros if r.oficial]
+
+    algos = {r.algo for r in comparaveis}
+    if len(algos) > len(p["series"]):
+        # A mesma regra do painel principal: acima de oito, a saída é mudar a forma do
+        # gráfico, não gerar cor nova. Aqui isso vira um painel de tempo por família.
+        return arena_tempo_familias(registros, mode=mode, titulo=titulo)
+    # `cores_por_algoritmo`, e **não** `cores_por_familia`: num painel único a cor por
+    # posição-dentro-da-família repete matiz entre famílias, e três curvas azuis no mesmo
+    # eixo é exatamente a ambiguidade que a paleta existe para evitar.
+    cores = cores_por_algoritmo(algos, mode)
+
+    fig, ax = plt.subplots(figsize=figsize, facecolor=p["plane"])
+    ax.set_facecolor(p["surface"])
+    ax.axhline(PISO_ALEATORIO, color=p["muted"], lw=1.0, zorder=1)
+
+    rotulos, topo = [], 0.0
+    for (algo, variante), rs in sorted(_agrupa(comparaveis).items()):
+        ag = agrega_tempo(rs)
+        if ag is None:
+            continue
+        cor = cores[algo]
+        nome = algo if variante in ("default", "") else f"{algo} · {variante}"
+        ax.fill_between(ag["x"], ag["q1"], ag["q3"], color=cor, alpha=.16, linewidth=0,
+                        zorder=3)
+        ax.plot(ag["x"], ag["mediana"], color=cor, lw=2.0, zorder=4,
+                label=f"{nome}  (n={ag['n_sementes']})", solid_capstyle="round")
+        rotulos.append((ag["x"][-1], ag["mediana"][-1], nome, cor))
+        topo = max(topo, float(ag["mediana"].max()))
+
+    for x, y, nome, _ in _sem_colisao(rotulos):
+        ax.annotate(nome, xy=(x, y), xytext=(6, 0), textcoords="offset points",
+                    color=p["ink2"], fontsize=9, va="center", ha="left", zorder=5)
+
+    ax.set_xscale("log")
+    ax.set_xlabel("horas de GPU (inclui as avaliações periódicas)",
+                  color=p["ink2"], fontsize=10)
+    ax.set_ylabel("score na avaliação (1.000 episódios, greedy)",
+                  color=p["ink2"], fontsize=10)
+    ax.set_title(titulo or "snake-arena · o mesmo resultado, no eixo do custo",
+                 color=p["ink"], fontsize=13, pad=14, loc="left")
+    ax.set_ylim(0, max(topo * 1.3, PISO_ALEATORIO * 4))
+    ax.margins(x=.22)
+    ax.grid(True, which="major", color=p["grid"], lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for lado in ("top", "right"):
+        ax.spines[lado].set_visible(False)
+    for lado in ("left", "bottom"):
+        ax.spines[lado].set_color(p["axis"])
+    ax.tick_params(colors=p["muted"], labelsize=9, length=0)
+    if rotulos:
+        leg = ax.legend(loc="upper left", frameon=False, fontsize=9)
+        for t in leg.get_texts():
+            t.set_color(p["ink2"])
+
+    igual, hw = mesmo_hardware(comparaveis)
+    aviso = ("mesmo hardware em todas as execuções: " + (next(iter(hw)) if hw else "—")
+             if igual else
+             "⚠ HARDWARES DIFERENTES (" + " · ".join(sorted(hw)) +
+             "): este eixo está comparando aceleradores, não algoritmos")
+    fig.text(.012, .015, aviso, color=p["muted"] if igual else p["ink"], fontsize=8.5)
+    fig.subplots_adjust(left=.115, right=.97, top=.9, bottom=.145)
+    return fig, ax
+
+
+def arena_tempo_familias(registros, mode="light", figsize=(14.5, 4.6), titulo=None):
+    """`arena_tempo` acima de oito algoritmos: um painel por família, o resto em cinza."""
+    import matplotlib.pyplot as plt
+
+    p = PALETA[mode]
+    cores = cores_por_familia(mode)
+    comparaveis = [r for r in registros if r.oficial]
+
+    agregados = {}
+    for chave, rs in sorted(_agrupa(comparaveis).items()):
+        ag = agrega_tempo(rs)
+        if ag is not None:
+            agregados[chave] = ag
+
+    presentes = [f for f in FAMILIAS if any(a in f[2] for a, _ in agregados)] or FAMILIAS
+    fig, axes = plt.subplots(1, len(presentes), figsize=figsize, sharex=True, sharey=True,
+                             facecolor=p["plane"])
+    axes = np.atleast_1d(axes)
+    topo = max((float(a["mediana"].max()) for a in agregados.values()), default=0.0)
+
+    for i, (ax, (_, rotulo, membros)) in enumerate(zip(axes, presentes)):
+        ax.set_facecolor(p["surface"])
+        ax.axhline(PISO_ALEATORIO, color=p["muted"], lw=1.0, zorder=1)
+        for (algo, _), ag in agregados.items():
+            if algo not in membros:
+                ax.plot(ag["x"], ag["mediana"], color=p["legado"], lw=1.2, alpha=.45,
+                        zorder=2)
+        for (algo, variante), ag in agregados.items():
+            if algo not in membros:
+                continue
+            nome = algo if variante in ("default", "") else f"{algo} · {variante}"
+            ax.plot(ag["x"], ag["mediana"], color=cores[algo], lw=2.0, zorder=4,
+                    label=f"{nome}  (n={ag['n_sementes']})", solid_capstyle="round")
+        ax.set_xscale("log")
+        ax.set_ylim(0, max(topo * 1.3, PISO_ALEATORIO * 4))
+        ax.set_title(rotulo, color=p["ink2"], fontsize=10.5, loc="left", pad=10)
+        ax.set_xlabel("horas de GPU", color=p["ink2"], fontsize=9.5)
+        ax.grid(True, color=p["grid"], lw=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        for lado in ("top", "right"):
+            ax.spines[lado].set_visible(False)
+        ax.tick_params(colors=p["muted"], labelsize=9, length=0, labelleft=(i == 0))
+        if any(a in membros for a, _ in agregados):
+            leg = ax.legend(loc="upper left", frameon=False, fontsize=8.5)
+            for t in leg.get_texts():
+                t.set_color(p["ink2"])
+
+    axes[0].set_ylabel("score na avaliação", color=p["ink2"], fontsize=10)
+    fig.suptitle(titulo or "snake-arena · o mesmo resultado, no eixo do custo",
+                 color=p["ink"], fontsize=13, x=.006, ha="left", y=.985)
+    igual, hw = mesmo_hardware(comparaveis)
+    fig.text(.006, .015,
+             ("mesmo hardware: " + (next(iter(hw)) if hw else "—")) if igual else
+             "⚠ HARDWARES DIFERENTES (" + " · ".join(sorted(hw)) +
+             "): este eixo compara aceleradores, não algoritmos",
+             color=p["muted"] if igual else p["ink"], fontsize=8.5)
+    fig.subplots_adjust(left=.058, right=.99, top=.83, bottom=.17)
+    return fig, tuple(axes)
+
+
+def arena_table(registros, markdown=True, limiar=LIMIAR_PADRAO):
     """A tabela de resultados — a visão que o gráfico não dá.
 
     Existe também porque três cores da paleta clara ficam abaixo de 3:1 de contraste:
@@ -547,6 +745,12 @@ def arena_table(registros, markdown=True):
             "melhor_mean": float(np.median(
                 [r.melhor["score_mean"] for r in rs if r.melhor])) if any(
                     r.melhor for r in rs) else None,
+            # A leitura HORIZONTAL da curva: em vez de "quanto marcou no fim", "quantos
+            # passos precisou para chegar a `limiar`". Sai dos mesmos dados e responde à
+            # outra pergunta — eficiência amostral no sentido estrito.
+            **_ate_o_limiar(rs, limiar),
+            "horas": float(np.median([r.meta.get("wall_s_total", np.nan) / 3600
+                                      for r in rs])),
         })
     linhas.sort(key=lambda d: -d["score_mean"])
 
@@ -554,20 +758,42 @@ def arena_table(registros, markdown=True):
         return linhas
 
     out = [
-        "| algoritmo | rede | params | sementes | passos | score médio (last) | melhor ckpt | amplitude | mediana | máx | cheio |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
-        f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | — | 1 | — | 0% |".replace(".", ","),
+        "| algoritmo | rede | params | sementes | passos | score médio (last) | melhor ckpt | "
+        + f"passos até {limiar:.0f} | horas | amplitude | mediana | máx | cheio |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | — | — | — | 1 | — | 0% |".replace(".", ","),
     ]
     for d in linhas:
         nome = d["algo"] if d["variante"] in ("default", "") else f"{d['algo']} · {d['variante']}"
         melhor = f"{d['melhor_mean']:.2f}" if d["melhor_mean"] is not None else "—"
+        if d["passos_ate"] is None:
+            ate = "não chegou"
+        else:
+            ate = f"{d['passos_ate']:,}"
+            if d["sementes_ate"] < d["sementes"]:
+                ate += f" ({d['sementes_ate']}/{d['sementes']})"
+        horas = f"{d['horas']:.1f}" if np.isfinite(d["horas"]) else "—"
         out.append(
             f"| {nome} | `{d['rede']}` | {d['params']:,} | {d['sementes']} | "
-            f"{d['passos']:,} | **{d['score_mean']:.2f}** | {melhor} | "
+            f"{d['passos']:,} | **{d['score_mean']:.2f}** | {melhor} | {ate} | {horas} | "
             f"±{d['score_spread']:.2f} | "
             f"{d['score_median']:.0f} | {d['score_max']} | {d['win_rate']:.1%} |"
         )
     out.append(f"\nScore perfeito no 10×10: **{SCORE_PERFEITO}**.")
+    out.append(
+        f"\n**passos até {limiar:.0f}** é a curva lida na horizontal em vez da vertical: "
+        "em vez de *quanto marcou no fim*, *quantos passos precisou para chegar lá*. Sai "
+        "dos mesmos dados e responde à outra pergunta — menor é melhor. A resolução é a "
+        "cadência de avaliação, e não há interpolação: o passo mostrado é um em que a "
+        "medição de fato aconteceu. `(k/n)` significa que só `k` das `n` sementes "
+        "chegaram, e as que não chegaram ficam **fora** da mediana em vez de entrar como "
+        "um número inventado."
+    )
+    out.append(
+        "\n**horas** é tempo de parede da execução inteira, útil só entre execuções do "
+        "mesmo hardware. O eixo de passos iguala os *dados vistos*; ele não iguala o "
+        "*esforço*, e a diferença entre os dois é enorme para quem faz busca em árvore."
+    )
     out.append(
         "\nA coluna **score médio (last)** é o número oficial: o modelo do último passo, "
         "que é o estado final do algoritmo. **melhor ckpt** é o melhor que aquela execução "

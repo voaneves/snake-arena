@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 from ..eval import evaluate, keras_policy, random_baseline
+from ..plataforma import resumo_plataforma
 from ..record import CONTRATO, Recorder, validate
 
 __all__ = ["BaseConfig", "AgentBase"]
@@ -263,8 +264,7 @@ class AgentBase:
         # Onde este número foi produzido. Uma curva do Kaggle e outra do Colab são
         # comparáveis — o contrato garante isso — mas o **tempo de parede** não é, e
         # `wall_s_total` é lido com frequência como se fosse.
-        from ..plataforma import resumo as _resumo_plataforma
-        rec.record.meta.update(_resumo_plataforma())
+        rec.record.meta.update(resumo_plataforma())
         self.salvar("last")
 
         # O registro é gravado SEMPRE. Estourar no fim de um treino de horas e perder a

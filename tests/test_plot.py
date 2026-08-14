@@ -12,8 +12,12 @@ matplotlib.use("Agg")
 import numpy as np
 import pytest
 
+import matplotlib.pyplot as plt
+
 from snakeai.plot import (
     PALETA,
+    arena_tempo,
+    mesmo_hardware,
     agrega_sementes,
     arena_figure,
     arena_table,
@@ -201,3 +205,90 @@ def test_a_run_without_a_best_checkpoint_still_renders():
     linhas = arena_table([run(algo="dqn", seed=0)], markdown=False)
     assert linhas[0]["melhor_mean"] is None
     assert "—" in arena_table([run(algo="dqn", seed=0)])
+
+
+# ------------------------------------------- as duas leituras que faltavam
+def curva_com_tempo(algo, seed, teto, seg_por_passo, n=15):
+    """Uma execução com `wall_s` em cada ponto — o que o eixo de custo consome."""
+    x = np.unique(np.geomspace(1e4, 5e6, n).astype(int))
+    y = teto * x / (x + 5e5)
+    r = run(algo=algo, seed=seed)
+    r.curve = [{"global_step": int(a), "wall_s": float(a * seg_por_passo),
+                "eval_score_mean": float(b), "eval_score_p95": float(b)}
+               for a, b in zip(x, y)]
+    r.meta = {"wall_s_total": float(x[-1] * seg_por_passo),
+              "plataforma": "kaggle", "gpus": ["GPU:0"]}
+    return r
+
+
+def test_steps_to_threshold_reads_the_curve_horizontally():
+    """A outra pergunta, sobre os mesmos dados: não *quanto marcou*, mas *quando chegou*."""
+    rapido = [curva_com_tempo("ppo", s, 80.0, 1e-4) for s in range(3)]
+    lento = [curva_com_tempo("dqn", s, 80.0, 1e-4) for s in range(3)]
+    for r in lento:                      # mesmo teto, mas chegando bem depois
+        for p in r.curve:
+            p["eval_score_mean"] *= 0.35
+
+    linhas = {d["algo"]: d for d in arena_table(rapido + lento, markdown=False)}
+    assert linhas["ppo"]["passos_ate"] is not None, "o rápido tem que chegar ao limiar"
+    assert linhas["dqn"]["passos_ate"] is None, "o lento nunca chega — e isso é o dado"
+    assert "não chegou" in arena_table(rapido + lento)
+
+
+def test_a_seed_that_never_reaches_the_threshold_stays_out_of_the_median():
+    """Entrar como um número grande inventado seria pior que ficar de fora; o `n` avisa."""
+    rs = [curva_com_tempo("ppo", s, 80.0, 1e-4) for s in range(3)]
+    for p in rs[2].curve:                # esta semente nunca passa de 5
+        p["eval_score_mean"] = 5.0
+
+    d = arena_table(rs, markdown=False)[0]
+    assert d["sementes_ate"] == 2 and d["sementes"] == 3
+    assert "(2/3)" in arena_table(rs)
+
+
+def test_the_threshold_is_a_measured_step_not_an_interpolation():
+    """A resolução é a cadência de avaliação. Interpolar inventaria precisão."""
+    r = curva_com_tempo("ppo", 0, 80.0, 1e-4)
+    passos = {p["global_step"] for p in r.curve}
+    assert r.passos_ate(20.0) in passos
+
+
+def test_the_cost_axis_puts_an_expensive_algorithm_to_the_right():
+    """O ponto do painel: no eixo de passos os dois chegam ao mesmo x; no de horas, não."""
+    barato = [curva_com_tempo("dqn", s, 60.0, 1e-4) for s in range(3)]
+    caro = [curva_com_tempo("alphazero", s, 60.0, 7e-3) for s in range(3)]
+
+    fig, ax = arena_tempo(barato + caro)
+    fim = {l.get_label().split()[0]: l.get_xdata()[-1] for l in ax.get_lines()
+           if l.get_label() and not l.get_label().startswith("_")}
+    assert fim["alphazero"] > fim["dqn"] * 10
+    plt.close(fig)
+
+
+def test_the_cost_panel_says_out_loud_when_the_hardware_differs():
+    """Comparar horas entre uma P100 e uma T4 compara aceleradores, não algoritmos — e o
+    gráfico não avisaria sozinho."""
+    rs = [curva_com_tempo("ppo", s, 60.0, 1e-4) for s in range(3)]
+    assert mesmo_hardware(rs)[0]
+
+    rs[1].meta["gpus"] = ["T4"]
+    rs[1].meta["plataforma"] = "colab"
+    assert not mesmo_hardware(rs)[0]
+
+    fig, _ = arena_tempo(rs)
+    textos = " ".join(t.get_text() for t in fig.texts)
+    assert "HARDWARES DIFERENTES" in textos
+    plt.close(fig)
+
+
+def test_the_cost_panel_uses_one_colour_per_algorithm():
+    """Num painel único, `cores_por_familia` repetiria matiz entre famílias — três curvas
+    azuis no mesmo eixo é a ambiguidade que a paleta existe para evitar."""
+    rs = []
+    for a in ("dqn", "ppo", "alphazero", "rainbow"):
+        rs += [curva_com_tempo(a, s, 60.0, 1e-4) for s in range(2)]
+    fig, ax = arena_tempo(rs)
+    cores = [l.get_color() for l in ax.get_lines()
+             if l.get_label() and not l.get_label().startswith("_")]
+    assert len(cores) == len(set(cores)), "duas curvas com a mesma cor no mesmo painel"
+    plt.close(fig)

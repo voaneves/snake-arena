@@ -147,10 +147,47 @@ class RunRecord:
 
     def eval_curve(self):
         """`(passos, scores)` só dos pontos em que a avaliação rodou."""
-        pts = [p for p in self.curve if p.get("eval_score_mean") is not None]
+        pts = self._pontos_de_eval()
         x = np.array([p["global_step"] for p in pts], dtype=np.int64)
         y = np.array([p["eval_score_mean"] for p in pts], dtype=np.float64)
         return x, y
+
+    def _pontos_de_eval(self):
+        return [p for p in self.curve if p.get("eval_score_mean") is not None]
+
+    def eval_curve_tempo(self):
+        """`(horas, scores)` — a mesma curva no eixo de **custo**, não de dados.
+
+        O eixo oficial da arena são passos de ambiente, que igualam os *dados vistos* e
+        escondem o *esforço gasto*: o AlphaZero faz busca em árvore a cada passo e custa
+        ordens de grandeza mais que o DQN para chegar ao mesmo x. Este eixo mostra a outra
+        metade.
+
+        O `wall_s` inclui as avaliações periódicas, e isso é proposital: elas são custo
+        real de quem roda. Mas veja `mesmo_hardware` — comparar tempo entre execuções
+        feitas em GPUs diferentes não significa nada.
+        """
+        pts = self._pontos_de_eval()
+        h = np.array([p.get("wall_s", np.nan) for p in pts], dtype=np.float64) / 3600.0
+        y = np.array([p["eval_score_mean"] for p in pts], dtype=np.float64)
+        return h, y
+
+    def passos_ate(self, limiar):
+        """Primeiro passo **medido** em que a avaliação atingiu `limiar`. `None` se nunca.
+
+        Sem interpolação, de propósito: a resolução é a cadência de avaliação
+        (`eval_every_steps`), e interpolar inventaria uma precisão que a amostragem não
+        tem. O número devolvido é um passo em que a medição de fato aconteceu.
+        """
+        x, y = self.eval_curve()
+        atingiu = np.nonzero(y >= limiar)[0]
+        return int(x[atingiu[0]]) if atingiu.size else None
+
+    @property
+    def hardware(self):
+        """Identidade do que rodou isto, para o eixo de tempo saber quando calar a boca."""
+        gpus = self.meta.get("gpus") or []
+        return f"{self.meta.get('plataforma', '?')}/{','.join(gpus) or 'cpu'}"
 
 
 # -------------------------------------------------------------------- gravação

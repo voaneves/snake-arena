@@ -11,7 +11,8 @@ import pytest
 
 from snakeai import plataforma
 from snakeai.plataforma import (COLAB, KAGGLE, LOCAL, detecta, entregar_arquivo,
-                                pasta_de_trabalho, resumo, semear_checkpoints)
+                                pasta_de_trabalho, resumo_plataforma,
+                                semear_checkpoints)
 
 
 @pytest.fixture
@@ -115,6 +116,6 @@ def test_kaggle_explains_where_the_file_is(monkeypatch, tmp_path, capsys):
 
 # --------------------------------------------------------------------- resumo
 def test_resumo_records_the_platform_and_the_accelerators():
-    r = resumo()
+    r = resumo_plataforma()
     assert r["plataforma"] in (COLAB, KAGGLE, LOCAL)
     assert r["n_gpus"] == len(r["gpus"])
