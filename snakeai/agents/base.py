@@ -68,6 +68,11 @@ class AgentBase:
 
     algo = "base"
 
+    #: Tamanho da janela da média móvel do treino, **em episódios**. 500 é da mesma ordem
+    #: dos 1.000 da avaliação oficial: grande o bastante para o número não pular com um
+    #: episódio de sorte, pequeno o bastante para acompanhar o agente melhorando.
+    JANELA_EPISODIOS = 500
+
     def __init__(self, cfg, variant="default"):
         self.cfg = cfg
         self.variant = variant
@@ -86,18 +91,39 @@ class AgentBase:
         #: uma amostra de tamanho 0 a 3. É o que produzia a sequência
         #: `2,50 · 10,00 · — · — · 2,00 · 11,00`, que parece instabilidade do algoritmo e
         #: é só tamanho de amostra. O `—` é literalmente "nenhum episódio acabou agora".
-        self._janela = deque(maxlen=200)
+        #:
+        #: A janela é medida em **episódios**, não em iterações, e a diferença não é
+        #: cosmética. Uma iteração de PPO são 512 × 96 = 49.152 passos e ~200 episódios;
+        #: uma de DQN são ~1.000 passos e 2 ou 3 episódios. Um limite fixo de iterações
+        #: cobriria a execução inteira num caso e alguns segundos no outro — e no primeiro
+        #: a "média móvel" viraria **média acumulada**, arrastada para baixo pelos
+        #: episódios ruins do começo para sempre.
+        self._janela = deque()
         os.makedirs(cfg.ckpt_dir, exist_ok=True)
 
     # ----------------------------------------------------------- agendamentos
-    def media_movel(self):
-        """Score médio dos episódios recentes, ponderado pela quantidade em cada iteração.
+    def _registra_episodios(self, media, n):
+        """Guarda `n` episódios de score médio `media` e descarta o que saiu da janela.
 
-        `None` só quando nenhum episódio terminou na janela inteira — o que, com 200
-        iterações, significa que o agente está mesmo sem terminar episódio.
+        Descarta pela esquerda enquanto o que sobra ainda cobre `JANELA_EPISODIOS`, e
+        nunca esvazia: com um algoritmo cuja iteração já produz mais episódios que a
+        janela inteira, o certo é a janela ser aquela iteração — e não ficar vazia.
+        """
+        self._janela.append((media * n, n))
+        total = sum(k for _, k in self._janela)
+        while len(self._janela) > 1 and total - self._janela[0][1] >= self.JANELA_EPISODIOS:
+            total -= self._janela.popleft()[1]
+
+    def media_movel(self):
+        """Score médio dos últimos ~`JANELA_EPISODIOS` episódios, ponderado.
+
+        `None` só quando nenhum episódio terminou ainda.
         """
         n = sum(k for _, k in self._janela)
         return sum(soma for soma, _ in self._janela) / n if n else None
+
+    def episodios_na_janela(self):
+        return sum(k for _, k in self._janela)
 
     def frac(self):
         """Fração do orçamento já gasta, em [0, 1]. Base de todo agendamento linear."""
@@ -191,7 +217,7 @@ class AgentBase:
 
             m, k = stats.get("train_score_mean"), stats.get("n_episodes") or 0
             if m is not None and k:
-                self._janela.append((m * k, k))
+                self._registra_episodios(m, k)
 
             if self.global_step >= self._proximo_log:
                 self._proximo_log = self.global_step + self.cfg.log_every_steps
@@ -234,6 +260,11 @@ class AgentBase:
         melhor = self.avaliar_melhor(verbose=verbose)
         rec.finish(final, melhor_stats=melhor)
         rec.record.meta["baseline"] = self.baseline
+        # Onde este número foi produzido. Uma curva do Kaggle e outra do Colab são
+        # comparáveis — o contrato garante isso — mas o **tempo de parede** não é, e
+        # `wall_s_total` é lido com frequência como se fosse.
+        from ..plataforma import resumo as _resumo_plataforma
+        rec.record.meta.update(_resumo_plataforma())
         self.salvar("last")
 
         # O registro é gravado SEMPRE. Estourar no fim de um treino de horas e perder a
@@ -375,6 +406,6 @@ class AgentBase:
         """Uma linha por log. Média móvel, não a iteração isolada — ver `self._janela`."""
         m = self.media_movel()
         m = f"{m:.2f}" if m is not None else "—"
-        n = sum(k for _, k in self._janela)
+        n = self.episodios_na_janela()
         print(f"passo {self.global_step:>10,} · ep {self.episodes:>8,} · "
               f"treino {m:>6} (média de {n} episódios)")

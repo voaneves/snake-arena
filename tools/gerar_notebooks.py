@@ -38,6 +38,7 @@ MARCA_FIM = "# ==== FIM DO CÓDIGO GERADO ===="
 #: Módulos comuns a todos os notebooks, em ordem de dependência. São o que **precisa** ser
 #: idêntico: o ambiente, a régua de avaliação e o registro.
 NUCLEO = [
+    "snakeai/plataforma.py",
     "snakeai/env/vec_snake.py",
     "snakeai/otimizadores.py",
     "snakeai/eval.py",
@@ -305,13 +306,15 @@ PASSOS = 5000000   # @param {{type:"integer"}}
 REDE = "resnet_small"  # @param ["resnet_tiny", "resnet_small", "resnet_base", "cnn_rainbow", "cnn_alphazero", "cnn_vgg", "cnn_vgg_dropout", "cnn_vgg_sem_pool"]
 USAR_DRIVE = True  # @param {{type:"boolean"}}
 
-# Ligado por padrão: a sessão do Colab cai, e sem o Drive ela leva junto os
-# checkpoints — o treino não retoma de onde parou, recomeça do zero.
-PASTA = "/content/snake-arena"
-if USAR_DRIVE:
-    from google.colab import drive
-    drive.mount("/content/drive")
-    PASTA = "/content/drive/MyDrive/snake-arena"
+# Detecta Colab, Kaggle ou máquina local e escolhe a pasta que **persiste** em cada um.
+# `USAR_DRIVE` só vale no Colab, onde sem o Drive a queda da sessão leva junto os
+# checkpoints e o treino recomeça do zero. No Kaggle quem persiste é /kaggle/working.
+PASTA = pasta_de_trabalho(usar_drive=USAR_DRIVE)
+
+# No Kaggle a sessão nova nasce com /kaggle/working vazio: o que sobreviveu está montado
+# somente-leitura em /kaggle/input. Isto traz os checkpoints de volta — e nunca sobrescreve
+# um checkpoint desta sessão, senão o treino andaria para trás.
+semear_checkpoints(os.path.join(PASTA, "checkpoints"))
 
 cfg = {config}(
     seed=SEMENTE,
@@ -323,9 +326,15 @@ cfg = {config}(
 print(json.dumps(asdict(cfg), indent=2, ensure_ascii=False))""", "Parâmetros"),
         _md("""## Treino
 
-**Retomável.** A sessão do Colab vai cair — é questão de quando, não de se. Rode a célula
-de novo e ela continua do último checkpoint. Com `USAR_DRIVE = True` os checkpoints
-sobrevivem à queda da máquina.
+**Retomável, e é requisito, não conveniência.** Um treino de 5 M passos não cabe numa
+sessão gratuita sem cair pelo menos uma vez. Rode a célula de novo e ela continua do último
+checkpoint.
+
+* **Colab** — com `USAR_DRIVE = True` os checkpoints ficam no Drive e sobrevivem à queda.
+* **Kaggle** — `/kaggle/working` vira a **saída** desta versão. Para continuar depois:
+  *Save Version → Save & Run All* (roda headless, sem aba aberta), e na execução seguinte
+  *Add Input → Your Work → Notebook Output* apontando para esta. A célula de parâmetros
+  recupera os checkpoints sozinha.
 """),
         _code(f"""agente = {agente}(cfg)
 if agente.retomar("last"):
@@ -444,10 +453,14 @@ Um `.zip` só, com a pasta inteira da execução — registro, curva, GIFs e o m
 múltiplos disparados em sequência, e a pasta da execução só faz sentido inteira — o
 `history.json` sem a curva e sem os GIFs perde metade do que ela responde.
 
-Se a aba do Colab não estiver aberta na hora em que isso rodar, o download automático não
-acontece (o navegador precisa estar lá para receber). Nesse caso o `.zip` fica salvo e a
-célula imprime o caminho — dá para baixar pelo painel de arquivos à esquerda, ou pelo Drive
-se `USAR_DRIVE = True`.
+A entrega muda com a plataforma, e o `.zip` existe nos dois casos:
+
+* **Colab** — dispara o download pelo navegador, o que exige a aba aberta. Se ela não
+  estiver, a célula imprime o caminho em vez de falhar: o download é conveniência, o
+  arquivo é o resultado.
+* **Kaggle** — não há o que disparar, e é por isso que ele aguenta execução headless: o
+  que está em `/kaggle/working` aparece sozinho no painel **Output**, à direita, e é
+  baixável de lá com a aba fechada.
 """),
         _code("""import shutil
 
@@ -467,13 +480,7 @@ for _raiz, _, _arqs in os.walk(PASTA_EXECUCAO):
     for _a in sorted(_arqs):
         print("   ", os.path.relpath(os.path.join(_raiz, _a), PASTA_EXECUCAO))
 
-try:
-    from google.colab import files
-    files.download(ZIP)
-except Exception as e:
-    print()
-    print(f"download automático não rolou ({type(e).__name__}: {e})")
-    print(f"o .zip está em {ZIP} — baixe pelo painel de arquivos")""",
+entregar_arquivo(ZIP)""",
               "Baixar tudo num .zip"),
     ]
 

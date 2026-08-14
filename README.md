@@ -305,11 +305,20 @@ Regenerar o gráfico e a tabela a partir de tudo que está em `runs/`:
 python -m snakeai.arena --all
 ```
 
-### Os notebooks são feitos para o Google Colab
+### Os notebooks rodam no Colab, no Kaggle e na sua máquina
 
-Este é o ambiente de execução de primeira classe do projeto — a linha de comando acima existe para
-CI e para quem tem GPU local, mas **todo notebook é escrito para abrir e rodar no Colab**, do zero,
-sem nada instalado.
+São o ambiente de execução de primeira classe do projeto — a linha de comando acima existe para
+CI e para quem tem GPU local, mas **todo notebook abre e roda do zero, sem nada instalado**, e é
+**o mesmo arquivo** nas três plataformas: `snakeai/plataforma.py` detecta onde está e escolhe a
+pasta que persiste em cada uma.
+
+Manter um `.ipynb` por serviço traria de volta exatamente o problema que este repositório existe
+para consertar — duas cópias do mesmo notebook que divergem em silêncio.
+
+No **Kaggle** vale usar *Save Version → Save & Run All*: roda headless, sem aba aberta, e a saída
+vira artefato versionado. Para continuar de onde parou, anexe a saída anterior em
+*Add Input → Your Work → Notebook Output* — a célula de parâmetros recupera os checkpoints
+sozinha.
 
 | Notebook | Abrir |
 |---|---|

@@ -260,8 +260,8 @@ def test_training_log_is_a_moving_average_not_the_last_iteration():
                        epochs=1, salvar_gif=False, salvar_grafico=False))
     assert ag.media_movel() is None, "sem episódio nenhum, não há média"
 
-    ag._janela.append((10.0 * 1, 1))     # uma iteração com 1 episódio de score 10
-    ag._janela.append((2.0 * 20, 20))    # outra com 20 episódios de score 2
+    ag._registra_episodios(10.0, 1)     # uma iteração com 1 episódio de score 10
+    ag._registra_episodios(2.0, 20)     # outra com 20 episódios de score 2
     # ponderado pela quantidade: (10 + 40) / 21, e não a média das médias (6,0)
     assert ag.media_movel() == pytest.approx(50 / 21)
 
@@ -308,3 +308,53 @@ def test_the_record_carries_both_results(tmp_path):
     assert "score_mean" in rec.record.final
     assert "score_mean" in rec.record.melhor
     assert "global_step" in rec.record.melhor, "sem o passo, o número fica sem endereço"
+
+
+def test_the_window_is_measured_in_episodes_not_in_iterations():
+    """A correção do defeito que a média móvel tinha na primeira versão.
+
+    A janela era de 200 **iterações**. Numa iteração de PPO cabem 512 × 96 = 49.152 passos
+    e ~200 episódios, então 200 iterações cobriam ~10 M passos: a execução inteira. A
+    "média móvel" era, na prática, **média acumulada** — e média acumulada é arrastada
+    para sempre pelos episódios ruins do começo. Foi por isso que um PPO com avaliação em
+    32,2 aparecia no log com "treino 15,76": o 15,76 incluía o score 1 dos primeiros
+    episódios.
+    """
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=8, rollout=4, minibatches=1,
+                       epochs=1, salvar_gif=False, salvar_grafico=False))
+    ag.JANELA_EPISODIOS = 500
+
+    for _ in range(10):                       # 10 iterações × 200 episódios ruins
+        ag._registra_episodios(1.0, 200)
+    for _ in range(3):                        # e agora o agente aprendeu
+        ag._registra_episodios(30.0, 200)
+
+    assert ag.episodios_na_janela() <= 800, "a janela não pode crescer sem limite"
+    assert ag.media_movel() > 25, \
+        f"a média móvel ficou em {ag.media_movel():.1f} — está arrastando o passado"
+
+
+def test_the_window_never_empties_even_with_huge_iterations():
+    """Se uma única iteração já produz mais episódios que a janela, a janela é ela.
+
+    Descartar mesmo assim deixaria a média sem nenhum episódio para calcular.
+    """
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=8, rollout=4, minibatches=1,
+                       epochs=1, salvar_gif=False, salvar_grafico=False))
+    ag.JANELA_EPISODIOS = 100
+    ag._registra_episodios(5.0, 5000)
+    ag._registra_episodios(9.0, 5000)
+
+    assert len(ag._janela) == 1
+    assert ag.media_movel() == pytest.approx(9.0), "a janela é a última iteração"
+
+
+def test_a_slow_algorithm_still_accumulates_a_meaningful_window():
+    """O outro extremo: uma iteração de DQN termina 2 ou 3 episódios. A janela precisa
+    juntar muitas iterações para o número não pular a cada log."""
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=8, rollout=4, minibatches=1,
+                       epochs=1, salvar_gif=False, salvar_grafico=False))
+    ag.JANELA_EPISODIOS = 500
+    for _ in range(400):
+        ag._registra_episodios(3.0, 2)
+    assert 500 <= ag.episodios_na_janela() <= 502

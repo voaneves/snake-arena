@@ -259,7 +259,7 @@ def test_every_notebook_ends_by_packing_the_run(caminho):
     """
     src = _celula_download(caminho)
     assert src is not None, "notebook sem a célula de download"
-    assert "make_archive" in src and "files.download" in src
+    assert "make_archive" in src and "entregar_arquivo" in src
 
 
 @pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
@@ -281,9 +281,12 @@ def test_the_download_cell_survives_outside_colab(caminho, tmp_path):
         (execucao / nome).write_text("x")
     (pasta / "export" / "modelo.tflite").write_text("y")
 
+    from snakeai.plataforma import entregar_arquivo  # noqa: PLC0415
+
     registro = types.SimpleNamespace(
         record=types.SimpleNamespace(algo="dqn", variant="base", seed=0))
     escopo = {"os": os, "PASTA": str(pasta), "registro": registro,
+              "entregar_arquivo": entregar_arquivo,
               "CAMINHO_REGISTRO": str(execucao / "history.json")}
     exec(compile(_celula_download(caminho), "celula", "exec"), escopo)
 
@@ -355,3 +358,38 @@ def test_the_two_acktr_notebooks_embed_byte_identical_code():
     b = bloco_gerado(carrega(os.path.join(
         RAIZ, "notebooks", "98_acktr_kl_max_corrigido.ipynb")))
     assert a == b
+
+
+# --------------------------------------------------- Colab e Kaggle, o mesmo arquivo
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_notebook_runs_on_colab_and_on_kaggle(caminho):
+    """Um `.ipynb` só para os dois serviços.
+
+    A quota gratuita do Colab não sustenta 27 execuções de 5 M passos; a do Kaggle é maior
+    e tem execução headless. Manter dois arquivos diferentes traria de volta exatamente o
+    problema que este repositório existe para consertar — duas cópias que divergem.
+    """
+    nb = carrega(caminho)
+    junto = "\n".join(codigo_de(nb))
+    assert "pasta_de_trabalho(" in junto, "a pasta tem que ser escolhida por detecção"
+    assert "semear_checkpoints(" in junto, "sem isto o Kaggle não retoma"
+    assert "entregar_arquivo(" in junto
+
+    # Nas células escritas à mão, nada de caminho ou import de uma plataforma só. O bloco
+    # gerado fica de fora porque é lá que `plataforma.py` mora, e é justamente o módulo
+    # cujo trabalho é conhecer os dois casos.
+    # Comentários fora: eles *explicam* as duas plataformas, e explicar é o objetivo.
+    # O que não pode é código com caminho fixo.
+    mao = "\n".join(
+        l for f in codigo_de(nb) if MARCA_INICIO not in f
+        for l in f.splitlines() if not l.lstrip().startswith("#"))
+    for proibido in ("/content/drive", "/kaggle/working", "from google.colab import"):
+        assert proibido not in mao, (
+            f"{os.path.basename(caminho)} tem {proibido!r} em código: a escolha da "
+            "plataforma é do `snakeai/plataforma.py`, não da célula")
+    assert "PASTA = pasta_de_trabalho(" in mao
+
+
+def test_the_platform_module_is_part_of_the_shared_core():
+    """Se cada notebook trouxesse a própria detecção, elas divergiriam."""
+    assert "snakeai/plataforma.py" in NUCLEO

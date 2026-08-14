@@ -27,9 +27,24 @@ gh repo create voaneves/snake-arena --public --source=. --push
 
 ## 3. Rodar o benchmark (é aqui que o gráfico se preenche)
 
-Cada notebook é autocontido: **suba o `.ipynb` no Colab e rode**. Nada de clonar.
+Cada notebook é autocontido: **suba o `.ipynb` e rode**. Nada de clonar. O mesmo arquivo
+roda no **Colab**, no **Kaggle** e na sua máquina — ele detecta onde está e escolhe a pasta
+que persiste em cada um.
 
-`Runtime → Change runtime type → GPU (T4)` antes de começar.
+**Kaggle costuma render mais no plano gratuito**, e por uma razão estrutural além da cota:
+ele tem execução *headless*. Em *Save Version → Save & Run All* o notebook roda inteiro sem
+aba aberta, e a saída vira um artefato versionado — não há o que "cair por inatividade".
+
+| | Colab | Kaggle |
+|---|---|---|
+| acelerador | `Runtime → Change runtime type → GPU` | `Settings → Accelerator → GPU` |
+| onde persiste | Google Drive (`USAR_DRIVE = True`) | `/kaggle/working`, automático |
+| retomar depois da queda | o Drive continua lá, rode a célula de novo | *Add Input → Your Work → Notebook Output*, apontando para a execução anterior |
+| baixar o resultado | download pelo navegador, exige a aba aberta | painel **Output**, funciona com a aba fechada |
+
+No Kaggle, `/kaggle/working` vira a **saída daquela versão** — ele não volta sozinho na
+sessão seguinte. Anexar a saída anterior é o que faz a retomada funcionar, e a célula de
+parâmetros recupera os checkpoints de lá sozinha.
 
 Ordem sugerida, por retorno sobre o tempo:
 
