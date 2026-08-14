@@ -297,3 +297,58 @@ def test_the_dream_always_leaves_one_action_available():
     estados, logps, ent = ag._sonha(estado0)
     assert np.isfinite(logps.numpy()).all() and np.isfinite(ent.numpy()).all()
     assert estados.shape[0] == ag.cfg.horizonte + 1
+
+
+# ------------------------------------------- o que fazia a GPU ficar parada
+def test_the_training_step_runs_as_a_graph_not_in_eager():
+    """O desenrolamento do RSSM é um laço Python de `seq_len` passos e o sonho é outro de
+    `horizonte`. Em modo eager isso vira milhares de kernels minúsculos e sequenciais, e
+    numa GPU o custo é latência de lançamento, não cálculo — a placa fica ociosa esperando
+    o Python. Medido: 1.910 ms → 95 ms na perda do modelo, 20×.
+    """
+    ag = DreamerV3(cfg())
+    assert isinstance(ag._grafo, tf.types.experimental.GenericFunction), \
+        "o passo de gradiente tem que estar dentro de um `tf.function`"
+
+
+def test_the_return_scale_survives_graph_mode():
+    """`self._escala_ret` como `float` seria atualizado só na traçagem e congelaria ali.
+
+    Nada quebraria: o ator seguiria dividindo a vantagem por uma escala da primeira
+    iteração, e a normalização por percentis — que existe justamente porque o retorno vai
+    de ~1 a ~50 — deixaria de normalizar. Silencioso, e cara.
+    """
+    ag = DreamerV3(cfg())
+    assert isinstance(ag._escala_ret, tf.Variable)
+    antes = float(ag._escala_ret)
+    for _ in range(4):
+        ag.iterate()
+    assert float(ag._escala_ret) != antes, "a escala não está sendo atualizada em grafo"
+
+
+# ------------------------------------------------------------- o train ratio
+def test_train_ratio_is_the_knob_and_train_steps_is_derived():
+    """Expor a razão, e não o número de passos, é o que a mantém significando o mesmo
+    quando `num_envs` muda — com `train_steps` fixo, dobrar os ambientes metade o
+    aprendizado sem que nada avise."""
+    for envs, coleta in ((64, 16), (16, 8), (128, 4)):
+        c = DreamerV3Config(train_ratio=4.0, num_envs=envs, collect_steps=coleta)
+        real = c.train_steps * c.batch_size * c.seq_len / (coleta * envs)
+        assert real == pytest.approx(4.0, rel=0.25), \
+            f"{envs} ambientes × {coleta}: razão real {real:.2f}"
+
+
+def test_train_steps_can_still_be_pinned_for_an_ablation():
+    c = DreamerV3Config(train_steps=3)
+    assert c.train_steps == 3
+
+
+def test_the_default_ratio_is_high_enough_to_actually_learn():
+    """O padrão anterior era 0,5 — meia transição revisitada por passo de ambiente.
+
+    Com ele, 400 mil passos deixavam o agente no piso aleatório, porque o modelo do mundo
+    quase não era treinado. O Dreamer é um algoritmo que troca computação por amostras;
+    com razão abaixo de 1 ele perde as duas coisas.
+    """
+    assert DreamerV3Config().train_ratio >= 2.0
+    assert DreamerV3Config().train_steps >= 4

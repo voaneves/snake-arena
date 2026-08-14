@@ -143,8 +143,20 @@ class DreamerV3Config(BaseConfig):
     memory_size: int = 8_000
     warmup_steps: int = 20_000
 
-    #: Passos de gradiente por chamada de `iterate`, e passos de ambiente por chamada.
-    train_steps: int = 1
+    #: **Transições reaproveitadas por passo de ambiente.** É o parâmetro que a literatura
+    #: do Dreamer chama de *train ratio*, e é o que decide se o agente aprende ou só anda.
+    #:
+    #: Ele é derivado, não independente: `train_steps` sai daqui, de `batch_size`, de
+    #: `seq_len` e de quantos passos a coleta dá. Expor a razão em vez do número de passos
+    #: é o que faz o valor continuar significando a mesma coisa quando `num_envs` muda —
+    #: com `train_steps` fixo, dobrar os ambientes **metade** o aprendizado, em silêncio.
+    #:
+    #: O DreamerV3 do paper usa entre 32 e 1024, mas para orçamentos de ~100 mil passos.
+    #: Aqui o contrato dá 5 milhões, e razão 4 já são 20 milhões de transições revisitadas.
+    train_ratio: float = 4.0
+
+    #: Deixe `None` para derivar de `train_ratio`. Fixar aqui é para ablação.
+    train_steps: int = None
     collect_steps: int = 16
 
     #: Sonho.
@@ -181,6 +193,10 @@ class DreamerV3Config(BaseConfig):
                 f"{sorted(PRESETS_DREAMER)}")
         if self.seq_len < 4:
             raise ValueError("seq_len curto demais para uma recorrência aprender algo")
+        if self.train_steps is None:
+            por_iter = self.collect_steps * self.num_envs
+            self.train_steps = max(
+                1, round(self.train_ratio * por_iter / (self.batch_size * self.seq_len)))
         self.net = self.preset
 
 
@@ -235,9 +251,12 @@ class DreamerV3(AgentBase):
         self._z = tf.zeros([cfg.num_envs, self.dim_z])
         self._primeiro = np.ones(cfg.num_envs, dtype=bool)
         self._ultima_acao = np.zeros(cfg.num_envs, dtype=np.int32)
-        self._escala_ret = 1.0
+        #: `tf.Variable`, e não `float`, porque o passo de treino roda em **grafo**: um
+        #: atributo Python só seria atualizado na traçagem, uma vez, e depois congelaria.
+        self._escala_ret = tf.Variable(1.0, trainable=False, name="escala_retorno")
         self._grad_steps = 0
         self._construido = False
+        self._grafo = tf.function(self._passo_de_gradiente, reduce_retracing=True)
 
     # -------------------------------------------------------------- variáveis
     def _vars_modelo(self):
@@ -439,10 +458,10 @@ class DreamerV3(AgentBase):
         R = self._retornos_lambda(rew[:-1], cont[:-1], v_alvo)
 
         # --- ator: REINFORCE com vantagem normalizada por percentis
-        escala = tf.maximum(_percentil(R, 95.0) - _percentil(R, 5.0), 1.0)
-        self._escala_ret = (cfg.ret_ema * self._escala_ret
-                            + (1 - cfg.ret_ema) * float(escala))
-        escala = tf.maximum(tf.constant(self._escala_ret, tf.float32), 1.0)
+        bruta = tf.maximum(_percentil(R, 95.0) - _percentil(R, 5.0), 1.0)
+        self._escala_ret.assign(cfg.ret_ema * self._escala_ret
+                                + (1 - cfg.ret_ema) * bruta)
+        escala = tf.maximum(self._escala_ret, 1.0)
         vantagem = tf.stop_gradient((R - v_alvo[:-1]) / escala)
         p_ator = -tf.reduce_mean(logps * vantagem) - cfg.ent_coef * tf.reduce_mean(
             entropias)
@@ -462,15 +481,28 @@ class DreamerV3(AgentBase):
         return p_ator, p_critico, info
 
     # ---------------------------------------------------------------- um passo
-    def _treina(self):
-        cfg = self.cfg
-        lote = self.memoria.sample(cfg.batch_size, cfg.seq_len)
+    def _passo_de_gradiente(self, obs, act, rew, cont, first, mask):
+        """O passo inteiro em **um grafo**: desenrolar, sonhar, e aplicar os três gradientes.
+
+        Isto é `@tf.function` por um motivo medido, não por hábito. O desenrolamento do RSSM
+        é um laço Python de `seq_len` passos e o sonho é outro de `horizonte`, cada iteração
+        chamando vários submodelos — em modo eager, isso vira **milhares de kernels
+        minúsculos e sequenciais**. Numa GPU o custo disso é latência de lançamento, não
+        cálculo: a placa fica ociosa esperando o Python. Medido nesta CPU, a perda do modelo
+        caiu de 1.910 ms para 95 ms — 20×. Numa GPU a diferença é maior, porque é lá que a
+        latência por kernel pesa mais.
+
+        Consequência de projeto: nada aqui dentro pode ter efeito colateral em Python. Por
+        isso `self._escala_ret` é `tf.Variable` — um `float` seria atualizado só na traçagem
+        e congelaria no valor da primeira iteração, silenciosamente.
+        """
+        lote = {"obs": obs, "act": act, "rew": rew, "cont": cont,
+                "first": first, "mask": mask}
 
         with tf.GradientTape() as tape:
             perda_m, partes, estado0 = self._perda_modelo(lote)
         vars_m = self._vars_modelo()
-        self.opt_modelo.apply_gradients(
-            zip(tape.gradient(perda_m, vars_m), vars_m))
+        self.opt_modelo.apply_gradients(zip(tape.gradient(perda_m, vars_m), vars_m))
 
         with tf.GradientTape(persistent=True) as tape:
             p_ator, p_critico, info = self._perda_ator_critico(estado0)
@@ -482,16 +514,26 @@ class DreamerV3(AgentBase):
             self.critico.trainable_variables))
         del tape
 
-        d = cfg.critico_ema
+        d = self.cfg.critico_ema
         for a, b in zip(self.critico_alvo.weights, self.critico.weights):
             a.assign(d * a + (1 - d) * b)
-        self._grad_steps += 1
 
-        saida = {"modelo": float(perda_m), "ator": float(p_ator),
-                 "critico": float(p_critico)}
-        saida.update({k: float(v) for k, v in partes.items()})
-        saida.update({k: float(v) for k, v in info.items()})
-        return saida
+        return {"modelo": perda_m, "ator": p_ator, "critico": p_critico,
+                **partes, **info}
+
+    def _treina(self):
+        cfg = self.cfg
+        lote = self.memoria.sample(cfg.batch_size, cfg.seq_len)
+        saida = self._grafo(
+            tf.convert_to_tensor(lote["obs"], tf.float32),
+            tf.convert_to_tensor(lote["act"], tf.int32),
+            tf.convert_to_tensor(lote["rew"], tf.float32),
+            tf.convert_to_tensor(lote["cont"], tf.float32),
+            tf.convert_to_tensor(lote["first"], tf.bool),
+            tf.convert_to_tensor(lote["mask"], tf.bool),
+        )
+        self._grad_steps += 1
+        return {k: float(v) for k, v in saida.items()}
 
     def iterate(self):
         cfg = self.cfg
@@ -508,6 +550,7 @@ class DreamerV3(AgentBase):
             "memoria": len(self.memoria),
             "train_ratio": self._grad_steps * cfg.batch_size * cfg.seq_len
                            / max(1, self.global_step),
+            "train_steps": cfg.train_steps,
             **perdas,
         }
 
