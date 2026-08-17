@@ -121,6 +121,7 @@ def evaluate(
     seed=123,
     max_steps=200_000,
     rng=None,
+    canal_fome=False,
 ):
     """Roda o protocolo oficial e devolve `(stats, scores)`.
 
@@ -138,11 +139,20 @@ def evaluate(
     seed : int
         Semente do ambiente. Fixa em 123 no contrato, para que a sequência de comidas
         seja a mesma para todos os algoritmos.
+    canal_fome : bool
+        Constrói o ambiente de avaliação com o 6º canal. **Fora do contrato** — só existe
+        para que uma política treinada com `canal_fome=True` receba a observação que a
+        rede espera. Se ficar `False` com uma rede de 6 canais, o erro aparece na primeira
+        chamada da política, como incompatibilidade de forma (5 vs 6). A dinâmica do jogo
+        é idêntica nos dois casos: o canal só muda a observação, não o ambiente, então o
+        número continua sendo do mesmo protocolo — o que muda é a entrada da rede, e por
+        isso a curva não é comparável com as de 5 canais.
 
     Cada ambiente contribui com o mesmo número de episódios — ver a nota sobre viés no
     topo do módulo.
     """
-    env = VecSnake(num_envs, board_size, rng=np.random.default_rng(seed))
+    env = VecSnake(num_envs, board_size, rng=np.random.default_rng(seed),
+                   canal_fome=canal_fome)
     rng = rng if rng is not None else np.random.default_rng(seed + 1)
     obs, mask = env.reset()
     apos_passo = getattr(policy, "apos_passo", None)
@@ -242,7 +252,8 @@ def random_baseline(board_size=10, episodes=1000, num_envs=250, seed=123):
 
 
 # ---------------------------------------------------------------------- veredito
-def verdict(policy, board_size=10, episodes=1000, num_envs=250, com_filtro=True, seed=123):
+def verdict(policy, board_size=10, episodes=1000, num_envs=250, com_filtro=True, seed=123,
+            canal_fome=False):
     """A resposta objetiva para "aprendeu mesmo?".
 
     Roda, na mesma execução, três regimes e devolve a tabela:
@@ -257,6 +268,9 @@ def verdict(policy, board_size=10, episodes=1000, num_envs=250, com_filtro=True,
 
     Se a linha do meio não estiver bem acima do piso, não aprendeu — e aí o problema é de
     hiperparâmetro ou de tempo de treino, não do código.
+
+    `canal_fome` acompanha o ambiente de treino — ver `evaluate`. O piso não muda: a
+    política aleatória não olha a observação, e o canal extra não altera a dinâmica.
     """
     linhas = []
 
@@ -264,14 +278,15 @@ def verdict(policy, board_size=10, episodes=1000, num_envs=250, com_filtro=True,
     linhas.append({"regime": "aleatório com máscara", "score_mean": piso})
 
     st, sc = evaluate(policy, board_size=board_size, episodes=episodes,
-                      num_envs=num_envs, greedy=True, seed=seed)
+                      num_envs=num_envs, greedy=True, seed=seed,
+                      canal_fome=canal_fome)
     linhas.append({"regime": "agente (greedy)", "scores": sc, **st})
 
     if com_filtro:
         # o flood-fill é laço Python: menos ambientes, para não ficar lento
         stf, scf = evaluate(policy, board_size=board_size, episodes=episodes,
                             num_envs=min(num_envs, 64), greedy=True, safety=True,
-                            seed=seed)
+                            seed=seed, canal_fome=canal_fome)
         linhas.append({"regime": "agente + filtro de segurança", "scores": scf, **stf})
 
     return {

@@ -39,7 +39,7 @@ def _quadro(env: VecSnake, i=0, escala=16):
 
 
 def quadros_do_episodio(politica, board_size=10, safety=False, max_steps=2000,
-                        seed=7, escala=16):
+                        seed=7, escala=16, canal_fome=False):
     """Roda um episódio com `politica` e devolve `(quadros, score, motivo)`.
 
     `politica` é a mesma interface de `snakeai.eval`: `politica(obs, mask) -> logits`.
@@ -47,7 +47,11 @@ def quadros_do_episodio(politica, board_size=10, safety=False, max_steps=2000,
     """
     from ..eval import MASK_NEG, apply_safety_filter
 
-    env = VecSnake(1, board_size, rng=np.random.default_rng(seed))
+    # `canal_fome` tem que acompanhar o ambiente de treino: uma rede de 6 canais
+    # recebendo observação de 5 quebra aqui, e o GIF é gerado no fim do treino — tarde
+    # demais para descobrir. Ver `snakeai.eval.evaluate`.
+    env = VecSnake(1, board_size, rng=np.random.default_rng(seed),
+                   canal_fome=canal_fome)
     obs, mask = env.reset()
     quadros = [_quadro(env, escala=escala)]
     score, motivo = 0, "limite de passos"

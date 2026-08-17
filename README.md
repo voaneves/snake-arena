@@ -143,20 +143,50 @@ junto no registro, para quem quiser a leitura antiga.
 
 Todos reimplementados em **Keras 3**, sobre o mesmo ambiente e a mesma API de agente.
 
-| Algoritmo | Notebook | Origem | Estado |
-|---|---|---|---|
-| **PPO** — clipping, GAE(λ), value clipping, early stop por KL | `01_ppo.ipynb` | novo, é a referência | ✅ implementado, 19 testes |
-| **DQN** — família unificada: ER/PER, double, dueling, n-step, noisy, C51 | `02_dqn.ipynb` | 6 notebooks do `colab-rl` | ✅ implementado, 8 variantes testadas |
-| **Rainbow** — os seis componentes juntos | `03_rainbow.ipynb` | novo | ✅ algoritmo próprio, com linha própria na arena |
-| **A2C** — actor-critic síncrono, o controle experimental do PPO | `04_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | ✅ implementado, herda o rollout do PPO |
-| **ACER** — Retrace(λ), IS truncado com correção de viés, região de confiança | `05_acer.ipynb` | 2 notebooks quebrados | ✅ reescrito e **convergindo** (16,8 em 151k passos) |
-| **AlphaZero** — MCTS sobre o simulador real | `06_alphazero.ipynb` | novo | ✅ implementado; a busca sozinha faz **30,3** |
-| **MuZero** — a mesma busca, sobre um modelo aprendido | `07_muzero.ipynb` | novo | ✅ implementado |
-| **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC reimplementado em Keras 3, 19 testes de curvatura |
-| **DreamerV3** — modelo do mundo, ator treinado no sonho | `09_dreamerv3.ipynb` | novo | ✅ RSSM categórico, symlog, two-hot, 28 testes |
-| ↳ **ACKTR calibrado** — a KL entregue converge para a pedida | `98_acktr_kl_max_corrigido.ipynb` | — | ✅ mesmo agente, `kl_calibrado=True`; é ablação, pode piorar |
-| ↳ **PPO com o sexto canal** — a observação passa a ver o relógio da fome | `97_ppo_canal_de_fome.ipynb` | — | ⚠️ `comparable=False`: muda a entrada da rede, não divide eixo com as curvas de 5 canais |
-| ↳ **eixo de otimizadores** (primeira ordem) | `99_ablacoes.ipynb` | — | ✅ Adam, AdamW, RMSprop, Lion e SGD como ablação medida |
+| Algoritmo | Paper | Notebook | Origem | Estado |
+|---|:---:|---|---|---|
+| **PPO** — clipping, GAE(λ), value clipping, early stop por KL | [📎](https://arxiv.org/abs/1707.06347) | `01_ppo.ipynb` | novo, é a referência | ✅ implementado, 19 testes |
+| **DQN** — família unificada: ER/PER, double, dueling, n-step, noisy, C51 | [📎](https://arxiv.org/abs/1312.5602) | `02_dqn.ipynb` | 6 notebooks do `colab-rl` | ✅ implementado, 8 variantes testadas |
+| **Rainbow** — os seis componentes juntos | [📎](https://arxiv.org/abs/1710.02298) | `03_rainbow.ipynb` | novo | ✅ algoritmo próprio, com linha própria na arena |
+| **A2C** — actor-critic síncrono, o controle experimental do PPO | [📎](https://arxiv.org/abs/1602.01783) | `04_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | ✅ implementado, herda o rollout do PPO |
+| **ACER** — Retrace(λ), IS truncado com correção de viés, região de confiança | [📎](https://arxiv.org/abs/1611.01224) | `05_acer.ipynb` | 2 notebooks quebrados | ✅ reescrito e **convergindo** (16,8 em 151k passos) |
+| **AlphaZero** — MCTS sobre o simulador real | [📎](https://arxiv.org/abs/1712.01815) | `06_alphazero.ipynb` | novo | ✅ implementado; a busca sozinha faz **30,3** |
+| **MuZero** — a mesma busca, sobre um modelo aprendido | [📎](https://arxiv.org/abs/1911.08265) | `07_muzero.ipynb` | novo | ✅ implementado |
+| **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | [📎](https://arxiv.org/abs/1708.05144) | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC reimplementado em Keras 3, 19 testes de curvatura |
+| **DreamerV3** — modelo do mundo, ator treinado no sonho | [📎](https://arxiv.org/abs/2301.04104) | `09_dreamerv3.ipynb` | novo | ✅ RSSM categórico, symlog, two-hot, 28 testes |
+| ↳ **ACKTR calibrado** — a KL entregue converge para a pedida | — | `98_acktr_kl_max_corrigido.ipynb` | — | ✅ mesmo agente, `kl_calibrado=True`; é ablação, pode piorar |
+| ↳ **PPO com o sexto canal** — a observação passa a ver o relógio da fome | — | `97_ppo_canal_de_fome.ipynb` | — | ⚠️ `comparable=False`: muda a entrada da rede, não divide eixo com as curvas de 5 canais |
+| ↳ **eixo de otimizadores** (primeira ordem) | — | `99_ablacoes.ipynb` | — | ✅ Adam, AdamW, RMSprop, Lion e SGD como ablação medida |
+
+<details>
+<summary><b>Referências completas</b> — e as peças que não têm linha própria na tabela</summary>
+
+Cada 📎 acima aponta para o paper que **define** o algoritmo. Várias implementações daqui
+compõem mais de um trabalho, e as linhas `↳` são ablações deste repositório, não algoritmos
+publicados — por isso não têm paper. A lista completa:
+
+| Peça | Onde é usada | Paper |
+|---|---|---|
+| PPO | `01`, e o rollout que o A2C e o ACKTR herdam | Schulman et al., 2017 — *Proximal Policy Optimization Algorithms* [📎](https://arxiv.org/abs/1707.06347) |
+| GAE(λ) | vantagem do PPO, A2C, ACKTR | Schulman et al., 2015 — *High-Dimensional Continuous Control Using Generalized Advantage Estimation* [📎](https://arxiv.org/abs/1506.02438) |
+| DQN | `02`, base do Rainbow | Mnih et al., 2013 — *Playing Atari with Deep Reinforcement Learning* [📎](https://arxiv.org/abs/1312.5602) · versão Nature 2015 [📎](https://www.nature.com/articles/nature14236) |
+| Double Q-learning | flag `double` | van Hasselt et al., 2015 — *Deep Reinforcement Learning with Double Q-learning* [📎](https://arxiv.org/abs/1509.06461) |
+| Dueling | flag `dueling` | Wang et al., 2015 — *Dueling Network Architectures for Deep Reinforcement Learning* [📎](https://arxiv.org/abs/1511.06581) |
+| Prioritized replay | flag `per` | Schaul et al., 2015 — *Prioritized Experience Replay* [📎](https://arxiv.org/abs/1511.05952) |
+| C51 (RL distribucional) | flag `c51`, e o mesmo motivo do two-hot do Dreamer | Bellemare et al., 2017 — *A Distributional Perspective on Reinforcement Learning* [📎](https://arxiv.org/abs/1707.06887) |
+| NoisyNet | flag `noisy` | Fortunato et al., 2017 — *Noisy Networks for Exploration* [📎](https://arxiv.org/abs/1706.10295) |
+| Rainbow | `03` — a composição canônica das seis | Hessel et al., 2017 — *Rainbow: Combining Improvements in Deep Reinforcement Learning* [📎](https://arxiv.org/abs/1710.02298) |
+| A3C / A2C | `04` | Mnih et al., 2016 — *Asynchronous Methods for Deep Reinforcement Learning* [📎](https://arxiv.org/abs/1602.01783) |
+| ACER | `05` | Wang et al., 2016 — *Sample Efficient Actor-Critic with Experience Replay* [📎](https://arxiv.org/abs/1611.01224) |
+| Retrace(λ) | o estimador off-policy do ACER | Munos et al., 2016 — *Safe and Efficient Off-Policy Reinforcement Learning* [📎](https://arxiv.org/abs/1606.02647) |
+| AlphaZero | `06` | Silver et al., 2017 — *Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm* [📎](https://arxiv.org/abs/1712.01815) |
+| MuZero | `07` | Schrittwieser et al., 2019 — *Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model* [📎](https://arxiv.org/abs/1911.08265) |
+| ACKTR | `08`, `98` | Wu et al., 2017 — *Scalable trust-region method for deep reinforcement learning using Kronecker-factored approximation* [📎](https://arxiv.org/abs/1708.05144) |
+| K-FAC | `snakeai/kfac.py` — as camadas densas | Martens & Grosse, 2015 — *Optimizing Neural Networks with Kronecker-factored Approximate Curvature* [📎](https://arxiv.org/abs/1503.05671) |
+| KFC | `snakeai/kfac.py` — as convoluções | Grosse & Martens, 2016 — *A Kronecker-factored Approximate Fisher Matrix for Convolution Layers* [📎](https://arxiv.org/abs/1602.01407) |
+| DreamerV3 | `09` | Hafner et al., 2023 — *Mastering Diverse Domains through World Models* [📎](https://arxiv.org/abs/2301.04104) |
+
+</details>
 
 **Sobre o Rainbow.** Ele não é um algoritmo novo — é o `DQN` deste repositório com as seis
 flags ligadas. Existe como classe própria por duas razões, as duas sobre honestidade do

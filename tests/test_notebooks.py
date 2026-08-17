@@ -466,3 +466,79 @@ def test_the_generator_refuses_a_renaming_relative_import():
 
     # sem apelido, segue sendo removido em silêncio, que é o certo
     assert "plataforma" not in _limpa("from ..plataforma import resumo\n", "fake.py")
+
+
+# ------------------------------------------------------ os papers na tabela
+#: Notebook → identificador arXiv do paper que **define** o algoritmo. Ablações deste
+#: repositório (`97`, `98`, `99`) não têm paper e por isso não entram aqui.
+PAPERS = {
+    "01_ppo.ipynb": "1707.06347",
+    "02_dqn.ipynb": "1312.5602",
+    "03_rainbow.ipynb": "1710.02298",
+    "04_a2c.ipynb": "1602.01783",
+    "05_acer.ipynb": "1611.01224",
+    "06_alphazero.ipynb": "1712.01815",
+    "07_muzero.ipynb": "1911.08265",
+    "08_acktr.ipynb": "1708.05144",
+    "09_dreamerv3.ipynb": "2301.04104",
+}
+
+#: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.
+#: Dar a elas o paper do algoritmo base sugeriria que a variação é do paper, e não é.
+SEM_PAPER = {"97_ppo_canal_de_fome.ipynb", "98_acktr_kl_max_corrigido.ipynb",
+             "99_ablacoes.ipynb"}
+
+
+def test_every_algorithm_notebook_is_classified_as_paper_or_ablation():
+    """Nenhum notebook pode ficar de fora das duas listas sem alguém decidir em qual entra.
+
+    Sem isto, um notebook novo entraria na tabela sem paper e sem ser ablação, e a coluna
+    passaria a significar "às vezes tem link" — que não significa nada.
+    """
+    declarados = {s["arquivo"] for s in NOTEBOOKS}
+    classificados = set(PAPERS) | SEM_PAPER
+    assert declarados == classificados, (
+        f"não classificados: {sorted(declarados - classificados)} · "
+        f"classificados que não existem: {sorted(classificados - declarados)}")
+
+
+@pytest.mark.parametrize("arquivo,arxiv", sorted(PAPERS.items()))
+def test_the_algorithm_table_links_the_defining_paper(arquivo, arxiv):
+    """Cada algoritmo aponta para o trabalho que o define, na mesma linha da tabela.
+
+    Os identificadores foram conferidos um a um contra o abstract no arXiv — um ID trocado
+    leva a um paper existente e plausível, que é o pior tipo de erro de citação: não quebra
+    nada e ninguém confere.
+    """
+    readme = _readme()
+    url = f"https://arxiv.org/abs/{arxiv}"
+    assert url in readme, f"{arquivo}: falta o link para {url}"
+
+    linha = next((l for l in readme.splitlines() if f"`{arquivo}`" in l), None)
+    assert linha is not None
+    assert url in linha, (
+        f"{arquivo}: o paper existe no README mas não na linha da tabela — a coluna 📎 "
+        "dessa linha está vazia ou aponta para outro trabalho")
+
+
+@pytest.mark.parametrize("arquivo", sorted(SEM_PAPER))
+def test_ablations_carry_no_paper(arquivo):
+    """Uma ablação daqui com um link de paper leria como se a variação fosse do paper."""
+    readme = _readme()
+    linha = next((l for l in readme.splitlines() if f"`{arquivo}`" in l), None)
+    assert linha is not None
+    assert "arxiv.org" not in linha, f"{arquivo} é ablação deste repositório, não tem paper"
+
+
+def test_every_arxiv_link_is_well_formed():
+    """`abs`, nunca `pdf`: a página do abstract tem BibTeX, versões e a lista de citações.
+    E `https`, porque `http://arxiv.org` redireciona e alguns leitores de markdown não
+    seguem o redirecionamento."""
+    import re  # noqa: PLC0415
+
+    links = re.findall(r"https?://(?:www\.)?arxiv\.org/\S*?(?=[)\s])", _readme())
+    assert links, "nenhum link do arXiv no README"
+    for u in links:
+        assert u.startswith("https://arxiv.org/abs/"), f"link mal formado: {u}"
+        assert re.fullmatch(r"https://arxiv\.org/abs/\d{4}\.\d{4,5}", u), \
+            f"identificador do arXiv fora do formato: {u}"

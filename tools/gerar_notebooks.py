@@ -390,7 +390,8 @@ segurança. Se a coluna do meio não estiver bem acima do piso, não aprendeu �
 problema é hiperparâmetro ou tempo de treino, não código.
 """),
         _code("""print("=== last · modelo do último passo (é o que entra na arena) ===")
-resultado = verdict(agente.politica(), episodes=1000)
+_fome = getattr(agente.env, "canal_fome", False)
+resultado = verdict(agente.politica(), episodes=1000, canal_fome=_fome)
 print(format_verdict(resultado))
 
 melhor = agente.modelo_melhor()
@@ -400,7 +401,8 @@ if melhor is not None:
           f"{registro.record.melhor.get('global_step', 0):,} ===")
     _guardado, agente.model = agente.model, melhor
     try:
-        print(format_verdict(verdict(agente.politica(), episodes=1000)))
+        print(format_verdict(verdict(agente.politica(), episodes=1000,
+                                     canal_fome=_fome)))
     finally:
         agente.model = _guardado
 
@@ -416,7 +418,8 @@ diferentes.
 
 for semente in (7, 21, 42):
     caminho, score, motivo = render_episode(
-        agente.politica(), caminho=f"episodio_last_s{semente}.gif", seed=semente)
+        agente.politica(), caminho=f"episodio_last_s{semente}.gif", seed=semente,
+        canal_fome=getattr(agente.env, "canal_fome", False))
     print(f"last · semente {semente}: score {score}, terminou por {motivo}")
     display(Image(filename=caminho))""", "GIF"),
         _md("""## Exportar — os dois

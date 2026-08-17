@@ -217,6 +217,8 @@ class AgentBase:
             greedy=CONTRATO["eval_greedy"],
             safety=safety,
             seed=CONTRATO["eval_seed"],
+            # o ambiente de avaliação tem que ter os mesmos canais que o de treino
+            canal_fome=getattr(self.env, "canal_fome", False),
         )
         return stats
 
@@ -471,6 +473,7 @@ class AgentBase:
                     caminho, score, motivo = render_episode(
                         politica, caminho=os.path.join(destino, f"episodio_s{seed}.gif"),
                         board_size=self.cfg.board_size, seed=seed,
+                        canal_fome=getattr(self.env, "canal_fome", False),
                     )
                     saida[f"gif_s{seed}"] = {"caminho": caminho, "score": score,
                                              "fim": motivo}

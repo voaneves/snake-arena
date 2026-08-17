@@ -442,6 +442,18 @@ def test_the_network_input_follows_the_environment_not_the_constant():
     ag.iterate()                                          # o buffer da coleta também
 
 
+def test_evaluation_builds_the_environment_with_the_same_channels_as_training():
+    """O treino ia até o primeiro `eval` e morria: a rede de 6 canais recebia a
+    observação de 5 que `evaluate` construía por padrão. O erro aparecia só depois de
+    250 mil passos, e falava de formas, não de canal de fome."""
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=4, rollout=4, canal_fome=True,
+                       comparable=False, caveat="6 canais", total_steps=100,
+                       eval_episodes=4, eval_envs=4,
+                       salvar_gif=False, salvar_grafico=False))
+    stats = ag.avaliar()
+    assert stats["episodes"] >= 4
+
+
 # ============================================= estatísticas por causa de fim
 def test_the_window_separates_starvation_from_collision():
     """Um agente parado em 1,2 ponto pode estar batendo em tudo ou andando em círculo até
