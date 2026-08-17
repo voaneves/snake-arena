@@ -1,0 +1,44 @@
+{
+ "bernoulli": {
+  "modo": "bernoulli",
+  "peso": 1.0,
+  "lr": 0.0003,
+  "acerto_argmax_comida": 0.784,
+  "kl_crua_nats": 5.218,
+  "erro_por_canal": {
+   "corpo": 16512.059,
+   "cabeca": 18992.061,
+   "decaimento": 0.262,
+   "comida": 10062.162,
+   "comprimento": 0.102
+  }
+ },
+ "recon_x10": {
+  "modo": "mse",
+  "peso": 10.0,
+  "lr": 0.0003,
+  "acerto_argmax_comida": 0.0102,
+  "kl_crua_nats": 3.871,
+  "erro_por_canal": {
+   "corpo": 0.365,
+   "cabeca": 0.099,
+   "decaimento": 0.143,
+   "comida": 0.489,
+   "comprimento": 0.017
+  }
+ },
+ "bernoulli_x3": {
+  "modo": "bernoulli",
+  "peso": 3.0,
+  "lr": 0.0003,
+  "acerto_argmax_comida": 0.9223,
+  "kl_crua_nats": 7.626,
+  "erro_por_canal": {
+   "corpo": 25916.323,
+   "cabeca": 23949.249,
+   "decaimento": 0.231,
+   "comida": 17511.635,
+   "comprimento": 0.067
+  }
+ }
+}

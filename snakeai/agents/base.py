@@ -51,7 +51,18 @@ class BaseConfig:
     salvar_gif: bool = True
     gif_seeds: tuple = (7, 21, 42)
 
+    #: Marque `False` numa execução que muda o ambiente ou o protocolo de propósito — uma
+    #: ablação. Ela continua sendo gravada e plotada, mas **fora da arena**, e `caveat`
+    #: passa a ser obrigatório: uma curva incomparável sem o motivo escrito é pior que
+    #: nenhuma curva, porque alguém vai compará-la mesmo assim.
+    comparable: bool = True
+    caveat: str = ""
+
     def __post_init__(self):
+        if not self.comparable and not self.caveat:
+            raise ValueError(
+                "comparable=False exige `caveat` dizendo por que esta execução não "
+                "compete. Sem isso a curva vira uma armadilha para quem ler depois.")
         if self.board_size != CONTRATO["board_size"]:
             raise ValueError(
                 f"board_size={self.board_size} viola o contrato "
@@ -100,31 +111,89 @@ class AgentBase:
         #: a "média móvel" viraria **média acumulada**, arrastada para baixo pelos
         #: episódios ruins do começo para sempre.
         self._janela = deque()
+        self._registrou_causas = False
         os.makedirs(cfg.ckpt_dir, exist_ok=True)
 
     # ----------------------------------------------------------- agendamentos
-    def _registra_episodios(self, media, n):
+    #: Os campos somados na janela. Todos são **contagens ou somas** por bloco, nunca
+    #: médias: só assim a média da janela pode ser ponderada pelo número de episódios de
+    #: cada bloco, que é o que impede uma iteração com 2 episódios de pesar igual a uma
+    #: com 200.
+    CAMPOS_JANELA = ("score", "vitorias", "fome", "colisao", "passos")
+
+    def _registra_episodios(self, media, n, **somas):
         """Guarda `n` episódios de score médio `media` e descarta o que saiu da janela.
 
         Descarta pela esquerda enquanto o que sobra ainda cobre `JANELA_EPISODIOS`, e
         nunca esvazia: com um algoritmo cuja iteração já produz mais episódios que a
         janela inteira, o certo é a janela ser aquela iteração — e não ficar vazia.
         """
-        self._janela.append((media * n, n))
-        total = sum(k for _, k in self._janela)
-        while len(self._janela) > 1 and total - self._janela[0][1] >= self.JANELA_EPISODIOS:
-            total -= self._janela.popleft()[1]
+        bloco = {"n": n, "score": media * n}
+        bloco.update({c: float(somas.get(c, 0.0)) for c in self.CAMPOS_JANELA
+                      if c != "score"})
+        self._janela.append(bloco)
+        total = sum(b["n"] for b in self._janela)
+        while len(self._janela) > 1 and total - self._janela[0]["n"] >= self.JANELA_EPISODIOS:
+            total -= self._janela.popleft()["n"]
+
+    def registra_fim(self, info):
+        """Contabiliza os episódios que acabaram neste passo, **por causa**.
+
+        Chamado de dentro do laço de coleta de cada agente, com o `info` que `VecSnake.step`
+        devolve. É o único lugar onde a causa da morte existe: a memória de treino guarda
+        `cont = 0` e nada mais, e depois do reset não há como saber se a cobra bateu ou
+        passou fome.
+
+        E a diferença entre as duas é justamente o que o score sozinho esconde. Um agente
+        preso em 1,2 pontos pode estar batendo em tudo (não aprendeu a sobreviver) ou
+        andando em círculo até morrer de fome (aprendeu a sobreviver e não a comer) — dois
+        problemas opostos, com o mesmo número na curva. Foi exatamente essa ambiguidade que
+        custou horas no diagnóstico do Dreamer.
+        """
+        n = int(info["scores"].size)
+        if not n:
+            return
+        self._registrou_causas = True
+        self._registra_episodios(
+            float(info["scores"].mean()), n,
+            vitorias=info["wins"],
+            fome=info["starved"],
+            # `deaths` conta colisão; vitória e fome não entram nele
+            colisao=info["deaths"],
+            passos=float(info["lengths"].sum()),
+        )
 
     def media_movel(self):
         """Score médio dos últimos ~`JANELA_EPISODIOS` episódios, ponderado.
 
         `None` só quando nenhum episódio terminou ainda.
         """
-        n = sum(k for _, k in self._janela)
-        return sum(soma for soma, _ in self._janela) / n if n else None
+        n = self.episodios_na_janela()
+        return sum(b["score"] for b in self._janela) / n if n else None
 
     def episodios_na_janela(self):
-        return sum(k for _, k in self._janela)
+        return sum(b["n"] for b in self._janela)
+
+    def resumo_janela(self):
+        """As frações que o score sozinho não conta, sobre a mesma janela de episódios.
+
+        `{}` enquanto nenhum episódio terminou. As causas só aparecem se o agente chamar
+        `registra_fim` — quem ainda não chama continua reportando só o score, sem inventar
+        um zero que pareceria "nunca morre de fome".
+        """
+        n = self.episodios_na_janela()
+        if not n:
+            return {}
+        soma = {c: sum(b.get(c, 0.0) for b in self._janela) for c in self.CAMPOS_JANELA}
+        r = {"janela_episodios": n, "train_score_mean": soma["score"] / n}
+        if self._registrou_causas:
+            r.update({
+                "win_rate": soma["vitorias"] / n,
+                "frac_fome": soma["fome"] / n,
+                "frac_colisao": soma["colisao"] / n,
+                "passos_por_episodio": soma["passos"] / n,
+            })
+        return r
 
     def frac(self):
         """Fração do orçamento já gasta, em [0, 1]. Base de todo agendamento linear."""
@@ -216,8 +285,11 @@ class AgentBase:
             stats = self.iterate()
             self.iteration += 1
 
+            # Quem chama `registra_fim` no laço de coleta já contabilizou os episódios com
+            # a causa da morte junto; registrar de novo aqui contaria cada um duas vezes e
+            # a média móvel ficaria certa por acidente, mas as frações, não.
             m, k = stats.get("train_score_mean"), stats.get("n_episodes") or 0
-            if m is not None and k:
+            if not self._registrou_causas and m is not None and k:
                 self._registra_episodios(m, k)
 
             if self.global_step >= self._proximo_log:
@@ -228,7 +300,8 @@ class AgentBase:
                 ponto = {"episodes": self.episodes,
                          "train_score_mean": self.media_movel(),
                          "train_score_iter": stats.get("train_score_mean"),
-                         **{k: v for k, v in stats.items() if k != "train_score_mean"}}
+                         **{k: v for k, v in stats.items() if k != "train_score_mean"},
+                         **self.resumo_janela()}
                 self.history.append({"global_step": self.global_step, **ponto})
                 rec.log(self.global_step, **ponto)
                 if verbose:
@@ -259,12 +332,20 @@ class AgentBase:
         # número da avaliação periódica: aquele veio de outra amostra, e comparar duas
         # medições ruidosas favorece sistematicamente quem foi medido mais vezes.
         melhor = self.avaliar_melhor(verbose=verbose)
-        rec.finish(final, melhor_stats=melhor)
+        rec.finish(final, melhor_stats=melhor,
+                   comparable=getattr(self.cfg, "comparable", True),
+                   caveat=getattr(self.cfg, "caveat", ""))
         rec.record.meta["baseline"] = self.baseline
         # Onde este número foi produzido. Uma curva do Kaggle e outra do Colab são
         # comparáveis — o contrato garante isso — mas o **tempo de parede** não é, e
         # `wall_s_total` é lido com frequência como se fosse.
         rec.record.meta.update(resumo_plataforma())
+        # Quantos canais a rede realmente viu. Fica no metadado porque é a diferença que
+        # torna uma curva incomparável com outra, e "comparable=False + caveat em prosa"
+        # não é conferível por máquina — este número é.
+        if getattr(self, "env", None) is not None:
+            rec.record.meta["obs_channels"] = int(
+                getattr(self.env, "n_channels", CONTRATO.get("obs_channels", 5)))
         self.salvar("last")
 
         # O registro é gravado SEMPRE. Estourar no fim de um treino de horas e perder a
@@ -403,9 +484,23 @@ class AgentBase:
         return saida
 
     def _imprimir(self, stats):
-        """Uma linha por log. Média móvel, não a iteração isolada — ver `self._janela`."""
+        """Uma linha por log, sobre a janela de episódios — ver `self._janela`.
+
+        O score sozinho é ambíguo: 1,2 pontos pode ser "bate em tudo" ou "anda em círculo
+        até morrer de fome", e a curva fica igual nos dois casos. Por isso a linha traz a
+        **repartição das causas de fim**, que separa os dois de imediato, mais o
+        comprimento médio do episódio, que é o sinal mais precoce de todos — uma cobra que
+        aprende a sobreviver alonga os episódios antes de o score subir.
+        """
+        r = self.resumo_janela()
         m = self.media_movel()
-        m = f"{m:.2f}" if m is not None else "—"
-        n = self.episodios_na_janela()
-        print(f"passo {self.global_step:>10,} · ep {self.episodes:>8,} · "
-              f"treino {m:>6} (média de {n} episódios)")
+        partes = [f"passo {self.global_step:>10,}",
+                  f"ep {self.episodes:>8,}",
+                  f"treino {(f'{m:.2f}' if m is not None else '—'):>6}"]
+        if "win_rate" in r:
+            partes.append(f"vit {r['win_rate']:6.1%}")
+            partes.append(f"fome {r['frac_fome']:5.1%}")
+            partes.append(f"colisão {r['frac_colisao']:5.1%}")
+            partes.append(f"{r['passos_por_episodio']:5.0f} passos/ep")
+        partes.append(f"(janela de {self.episodios_na_janela()} episódios)")
+        print(" · ".join(partes))

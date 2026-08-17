@@ -70,8 +70,14 @@ def build_backbone(entrada, net="resnet_small"):
     return fn(entrada), canonico
 
 
-def _entrada(board_size):
-    return keras.Input(shape=(board_size, board_size, N_CHANNELS), name="board")
+def _entrada(board_size, canais=N_CHANNELS):
+    """A entrada do tronco. `canais` só sai de 5 numa ablação declarada.
+
+    O contrato fixa 5 canais, e mudar isso muda a **entrada da rede** — nenhuma curva de 5
+    canais é comparável a uma de 6. O parâmetro existe para `VecSnake(canal_fome=True)`,
+    que é uma ablação `comparable=False`, e não para configuração casual.
+    """
+    return keras.Input(shape=(board_size, board_size, canais), name="board")
 
 
 def _e_espacial(t):
@@ -80,7 +86,7 @@ def _e_espacial(t):
 
 
 def build_actor_critic(board_size=10, net="resnet_small", largura_densa=None,
-                       n_actions=N_ACTIONS, nome=None):
+                       n_actions=N_ACTIONS, nome=None, canais=N_CHANNELS):
     """Modelo de duas saídas `[logits, valor]` — o que PPO, A2C e ACER consomem.
 
     Em troncos que preservam a estrutura espacial (as ResNets), as cabeças são
@@ -92,7 +98,7 @@ def build_actor_critic(board_size=10, net="resnet_small", largura_densa=None,
     do treino a política precisa ser quase uniforme, senão o PPO gasta as primeiras
     iterações desfazendo uma preferência aleatória.
     """
-    inp = _entrada(board_size)
+    inp = _entrada(board_size, canais)
     x, canonico = build_backbone(inp, net)
     largura = LARGURA_DENSA_PADRAO if largura_densa is None else int(largura_densa)
 
@@ -127,7 +133,7 @@ def build_actor_critic(board_size=10, net="resnet_small", largura_densa=None,
 
 def build_q_network(board_size=10, net="cnn_rainbow", largura_densa=None,
                     n_actions=N_ACTIONS, dueling=False, noisy=False, n_atoms=0,
-                    nome=None):
+                    nome=None, canais=N_CHANNELS):
     """A família DQN inteira num construtor só.
 
     `dueling`, `noisy` e `n_atoms` são os eixos que separam o DQN base do Rainbow — e são
@@ -139,7 +145,7 @@ def build_q_network(board_size=10, net="cnn_rainbow", largura_densa=None,
     `(lote, n_ações)` no modo normal; `(lote, n_ações, n_atoms)` de **logits** quando
     `n_atoms > 0` (C51).
     """
-    inp = _entrada(board_size)
+    inp = _entrada(board_size, canais)
     x, canonico = build_backbone(inp, net)
     largura = LARGURA_DENSA_PADRAO if largura_densa is None else int(largura_densa)
     densa = "noisy" if noisy else "dense"
@@ -167,7 +173,7 @@ def build_q_network(board_size=10, net="cnn_rainbow", largura_densa=None,
 
 
 def build_policy_q(board_size=10, net="resnet_small", largura_densa=None,
-                   n_actions=N_ACTIONS, nome=None):
+                   n_actions=N_ACTIONS, nome=None, canais=N_CHANNELS):
     """Modelo de duas saídas `[logits, Q(s,·)]` — o que o ACER consome.
 
     Diferente do actor-critic comum: aqui o crítico devolve **um valor por ação**, não um
@@ -175,7 +181,7 @@ def build_policy_q(board_size=10, net="resnet_small", largura_densa=None,
     sem uma terceira cabeça e sem inconsistência entre V e Q, que é uma fonte clássica de
     bug silencioso em ACER.
     """
-    inp = _entrada(board_size)
+    inp = _entrada(board_size, canais)
     x, canonico = build_backbone(inp, net)
     largura = LARGURA_DENSA_PADRAO if largura_densa is None else int(largura_densa)
 

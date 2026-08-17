@@ -161,6 +161,27 @@ NOTEBOOKS = [
                   "instabilidade. Pode piorar. É essa a medição.",
     },
     {
+        "arquivo": "97_ppo_canal_de_fome.ipynb",
+        "titulo": "PPO com o sexto canal — quanto custa não ver o relógio da fome",
+        "modulos": ["snakeai/agents/ppo.py"],
+        "agente": "PPO",
+        "config": "PPOConfig",
+        "extra_cfg": ("    canal_fome=True,\n"
+                      "    comparable=False,\n"
+                      '    caveat="observação com 6 canais (fome), fora do contrato de 5",'),
+        "resumo": "A observação do contrato tem 5 canais e **nenhum deles é a fome**, "
+                  "enquanto o limite é `100 + 2·comprimento` passos sem comer. Dois "
+                  "estados visualmente idênticos, um com fome 5 e outro com fome 105, "
+                  "valem coisas diferentes — e a rede não tem como saber. Aqui o sexto "
+                  "canal traz `fome / limite`, e a pergunta é **quanto** isso vale: o "
+                  "PPO já fecha ~90% de vitória cego para ela, então a hipótese é que o "
+                  "ganho seja pequeno e apareça na *eficiência* (passos até 40 pontos), "
+                  "não no teto. Compare com `01_ppo` **na mesma semente**: é a única "
+                  "diferença entre os dois. Esta execução nasce `comparable=False` — ela "
+                  "muda a entrada da rede e não pode dividir eixo com as curvas de 5 "
+                  "canais.",
+    },
+    {
         "arquivo": "09_dreamerv3.ipynb",
         "titulo": "DreamerV3 — treinar dentro de um modelo do mundo",
         "modulos": ["snakeai/memory/sequencia.py", "snakeai/nets/dreamer.py",

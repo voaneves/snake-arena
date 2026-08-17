@@ -232,6 +232,7 @@ class AlphaZero(AgentBase):
             a = (pi.cumsum(1) > self.rng.random((N, 1))).argmax(1).astype(np.int32)
 
             self.obs, self.mask, r, d, info = self.env.step(a)
+            self.registra_fim(info)
             rew_b[t], done_b[t] = r, d.astype(np.float32)
             scores.extend(info["scores"].tolist())
             vitorias += info["wins"]

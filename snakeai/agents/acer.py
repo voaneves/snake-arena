@@ -183,6 +183,7 @@ class ACER(AgentBase):
             act_buf[t] = a
 
             self.obs, self.mask, r, d, info = self.env.step(a)
+            self.registra_fim(info)
             rew_buf[t], done_buf[t] = r, d.astype(np.float32)
             scores.extend(info["scores"].tolist())
             vitorias += info["wins"]

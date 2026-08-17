@@ -40,6 +40,7 @@ from ..env.vec_snake import N_ACTIONS, N_CHANNELS, VecSnake
 from ..eval import MASK_NEG
 from ..memory.replay import PrioritizedReplayBuffer, ReplayBuffer
 from ..nets import build_q_network, q_de_distribuicao
+from ..otimizadores import cria_otimizador
 from .base import AgentBase, BaseConfig
 
 __all__ = ["DQNConfig", "DQN"]
@@ -60,6 +61,8 @@ class DQNConfig(BaseConfig):
 
     gamma: float = 0.995
     lr: float = 3e-4
+    #: O eixo que substitui o K-FAC. Ver `snakeai/otimizadores.py`.
+    optimizer: str = "adam"
     batch_size: int = 512
     memory_size: int = 200_000
     learn_every: int = 4          # passos de ambiente por atualização de gradiente
@@ -97,7 +100,8 @@ class DQN(AgentBase):
         self.target = construir()
         self.target.set_weights(self.model.get_weights())
 
-        self.optimizer = keras.optimizers.Adam(cfg.lr, clipnorm=cfg.max_grad_norm)
+        self.optimizer = cria_otimizador(cfg.optimizer, cfg.lr,
+                                         clipnorm=cfg.max_grad_norm)
         self.optimizer.build(self.model.trainable_variables)
 
         self.env = VecSnake(cfg.num_envs, cfg.board_size,
@@ -127,13 +131,18 @@ class DQN(AgentBase):
                                   ("per", cfg.per), ("noisy", cfg.noisy),
                                   (f"{cfg.n_steps}steps", cfg.n_steps > 1),
                                   ("c51", cfg.n_atoms > 0)) if on]
-        return "+".join(partes) if partes else "base"
+        nome = "+".join(partes) if partes else "base"
+        # o otimizador só entra no nome quando não é o padrão — senão toda variante
+        # ganharia um "+adam" que não informa nada
+        if cfg.optimizer != "adam":
+            nome += f"+{cfg.optimizer}"
+        return nome
 
     def on_model_reloaded(self):
         self.target = keras.models.clone_model(self.model)
         self.target.set_weights(self.model.get_weights())
-        self.optimizer = keras.optimizers.Adam(self.cfg.lr,
-                                               clipnorm=self.cfg.max_grad_norm)
+        self.optimizer = cria_otimizador(self.cfg.optimizer, self.cfg.lr,
+                                         clipnorm=self.cfg.max_grad_norm)
         self.optimizer.build(self.model.trainable_variables)
 
     # ------------------------------------------------------------- exploração
@@ -277,6 +286,7 @@ class DQN(AgentBase):
             obs_ant, mask_ant = self.obs, self.mask
             acoes = self._escolher(obs_ant, mask_ant)
             self.obs, self.mask, r, d, info = self.env.step(acoes)
+            self.registra_fim(info)
 
             self.memoria.add_batch(obs_ant, acoes, r, self.obs, d.astype(np.float32),
                                    self.mask)

@@ -1,0 +1,72 @@
+{
+ "atual": {
+  "peso_recon": 1.0,
+  "kl_free": 1.0,
+  "lr": 0.0001,
+  "acerto_argmax_comida": 0.0122,
+  "kl_crua_nats": 1.071,
+  "erro_por_canal": {
+   "corpo": 1.397,
+   "cabeca": 0.483,
+   "decaimento": 0.958,
+   "comida": 0.494,
+   "comprimento": 0.033
+  }
+ },
+ "sem_free_bits": {
+  "peso_recon": 1.0,
+  "kl_free": 0.0,
+  "lr": 0.0001,
+  "acerto_argmax_comida": 0.0113,
+  "kl_crua_nats": 0.349,
+  "erro_por_canal": {
+   "corpo": 1.471,
+   "cabeca": 0.486,
+   "decaimento": 1.003,
+   "comida": 0.488,
+   "comprimento": 0.034
+  }
+ },
+ "recon_x10": {
+  "peso_recon": 10.0,
+  "kl_free": 1.0,
+  "lr": 0.0001,
+  "acerto_argmax_comida": 0.0111,
+  "kl_crua_nats": 10.285,
+  "erro_por_canal": {
+   "corpo": 0.918,
+   "cabeca": 0.418,
+   "decaimento": 0.619,
+   "comida": 0.499,
+   "comprimento": 0.041
+  }
+ },
+ "lr_3e-4": {
+  "peso_recon": 1.0,
+  "kl_free": 1.0,
+  "lr": 0.0003,
+  "acerto_argmax_comida": 0.0108,
+  "kl_crua_nats": 2.086,
+  "erro_por_canal": {
+   "corpo": 1.175,
+   "cabeca": 0.451,
+   "decaimento": 0.786,
+   "comida": 0.496,
+   "comprimento": 0.029
+  }
+ },
+ "recon_x10_sem_fb": {
+  "peso_recon": 10.0,
+  "kl_free": 0.0,
+  "lr": 0.0003,
+  "acerto_argmax_comida": 0.0104,
+  "kl_crua_nats": 3.812,
+  "erro_por_canal": {
+   "corpo": 0.373,
+   "cabeca": 0.105,
+   "decaimento": 0.145,
+   "comida": 0.489,
+   "comprimento": 0.017
+  }
+ }
+}

@@ -60,11 +60,18 @@ from ..env.vec_snake import N_ACTIONS, N_CHANNELS
 
 __all__ = [
     "symlog", "symexp", "two_hot", "de_two_hot", "bins_simetricos",
-    "unimix", "amostra_straight_through",
+    "unimix", "amostra_straight_through", "erro_de_reconstrucao",
     "build_encoder", "build_decoder", "build_rssm_prior", "build_rssm_post",
-    "build_cabecas", "build_ator", "build_critico", "CelulaRecorrente",
-    "PRESETS_DREAMER",
+    "build_cabecas", "build_cabeca_mascara", "build_ator", "build_critico",
+    "CelulaRecorrente", "CANAIS_BINARIOS", "CANAIS_CONTINUOS", "PRESETS_DREAMER",
 ]
+
+#: Índices dos canais **binários** da observação do contrato — corpo, cabeça, comida — e
+#: dos contínuos, decaimento e comprimento. A separação existe porque a lei de cada um é
+#: diferente, e usar a errada nos binários cegou o modelo do mundo por completo; veja
+#: `erro_de_reconstrucao`.
+CANAIS_BINARIOS = (0, 1, 3)
+CANAIS_CONTINUOS = (2, 4)
 
 #: Tamanhos, do menor ao maior. `deter` é a largura de `h`; `grupos × classes` é `z`.
 PRESETS_DREAMER = {
@@ -83,9 +90,62 @@ def symexp(x):
     return tf.sign(x) * (tf.exp(tf.abs(x)) - 1.0)
 
 
-def bins_simetricos(n=41, limite=20.0):
-    """Grade de bins no espaço de `symlog`. `symexp(20) ≈ 4,9×10⁸` — teto de sobra."""
+def bins_simetricos(n=255, limite=20.0):
+    """Grade de bins no espaço de `symlog`. `symexp(20) ≈ 4,9×10⁸` — teto de sobra.
+
+    255 bins, não 41. O número não é estético: com 41 bins em ±20 o espaçamento é **1 nat**,
+    e como a saída volta ao espaço real por `symexp`, errar um único bin vira um fator `e`
+    na recompensa prevista. Com 255 o espaçamento cai para 0,157 e o mesmo erro de um bin
+    vale 17%. É o valor do DreamerV3 de referência
+    (`sven1977/dreamer_v3`, `models/components/reward_predictor_layer.py`: `num_buckets=255,
+    lower_bound=-20.0, upper_bound=20.0`).
+    """
     return tf.linspace(-limite, limite, n)
+
+
+def erro_de_reconstrucao(recon, obs):
+    """Bernoulli nos canais binários, erro quadrático nos contínuos. Somado, como no paper.
+
+    Por que não erro quadrático em tudo
+    -----------------------------------
+    Era assim, e **cegava o modelo do mundo por completo**. Três dos cinco canais são
+    binários com suporte mínimo: a comida é uma célula acesa em cem. Nesse canal, prever
+    zero em todo lugar custa `symlog(1)² = 0,48`, e acertar a célula economiza no máximo
+    esses 0,48 — contra `0,5·kl_dyn + 0,1·kl_rep = 0,6` que os termos de KL cobram
+    sozinhos por guardar qualquer coisa no latente. Guardar a posição da comida
+    literalmente **não se pagava**.
+
+    O resultado medido, oito variantes sobre o mesmo buffer, acerto do `argmax` do canal de
+    comida (acaso = 0,0100; ver `docs/diag_latente.json` e `docs/diag_verossimilhanca.json`)::
+
+        atual (quadrático)     0,0122     kl crua  1,07 nats
+        sem free bits          0,0113     kl crua  0,35
+        recon ×10              0,0111     kl crua 10,29
+        lr 3e-4                0,0108     kl crua  2,09
+        recon ×10, sem fb      0,0104     kl crua  3,81
+        recon ×10, lr 3e-4     0,0102     kl crua  3,87
+        **bernoulli**          0,7840     kl crua  5,22
+        **bernoulli ×3**       0,9223     kl crua  7,63
+
+    Não era escala, nem learning rate, nem orçamento de KL: as seis variantes quadráticas
+    ficam no acaso e aprendem **tudo menos a comida** (corpo 1,397 → 0,365, cabeça
+    0,483 → 0,099). O corpo e a cabeça andam devagar e o prior os acerta quase de graça; a
+    comida é a única coisa que precisa ser *guardada* do quadro, e a verossimilhança errada
+    fazia guardar não valer a pena. Trocada a lei, 1,2% → 78%, com peso 1,0 e nada ajustado.
+
+    Consequência de tipo: nos canais binários o decoder emite **logits**, não valores em
+    `symlog`. Quem for inspecionar reconstrução precisa passar por `sigmoid` nesses três.
+    """
+    b = tf.reduce_sum(
+        tf.nn.sigmoid_cross_entropy_with_logits(
+            tf.gather(obs, CANAIS_BINARIOS, axis=-1),
+            tf.gather(recon, CANAIS_BINARIOS, axis=-1)),
+        axis=[1, 2, 3])
+    c = tf.reduce_sum(
+        tf.square(tf.gather(recon, CANAIS_CONTINUOS, axis=-1)
+                  - symlog(tf.gather(obs, CANAIS_CONTINUOS, axis=-1))),
+        axis=[1, 2, 3])
+    return b + c
 
 
 def two_hot(x, bins):
@@ -228,20 +288,54 @@ def build_rssm_post(deter, dim_emb, grupos, classes, largura, nome="post"):
 
 
 def build_cabecas(dim_estado, largura, n_bins, n_actions=N_ACTIONS, nome="cab"):
-    """`(h, z)` → `[recompensa (two-hot), continuação, máscara de ações]`.
+    """`(h, z, a)` → `[recompensa (two-hot), continuação]`. **Condicionadas à ação.**
 
-    A cabeça de máscara não está no DreamerV3 original — está aqui porque este ambiente
-    tem máscara de morte imediata, e sem prevê-la o ator treinaria num sonho onde
-    movimentos suicidas continuam disponíveis e depois agiria num mundo onde não estão.
-    Essa diferença entre o sonho e o jogo é exatamente o que faz um agente baseado em
-    modelo aprender uma política que não transfere.
+    Por que a ação entra aqui
+    -------------------------
+    O DreamerV3 de referência não passa ação para estas cabeças, e não precisa: lá `r_t` é a
+    recompensa **recebida ao chegar** em `s_t` (`sven1977/dreamer_v3`,
+    `utils/episode_replay_buffer.py`: `rewards[B].append(episode.rewards[episode_ts - 1])`),
+    e os retornos λ consomem `rewards[1:]`/`continues[1:]`
+    (`losses/critic_loss.py`). Como `h_t` já contém `a_{t-1}` pela recorrência, a ação está
+    lá implícita e a observação de chegada mostra a consequência.
+
+    Aqui essa convenção não se sustenta, por uma propriedade do ambiente: `VecSnake` **congela
+    a cabeça** quando a cobra morre (`new_head = where(dead, self.head, new_head)`) e reseta
+    sozinho. A observação terminal de uma colisão é, portanto, **idêntica** à anterior — uma
+    cabeça que só vê o estado não tem como distinguir "aqui eu continuo" de "aqui eu morri",
+    e o estado terminal nem chega a ser guardado. Medido: `p_cont = 0,9929` nos terminais e
+    `0,9929` nos não-terminais, indistinguíveis.
+
+    Condicionar à ação recupera exatamente a mesma grandeza pela outra parametrização:
+    `R(s_t, a_t)` **é** a recompensa que a referência prevê ao chegar em `s_{t+1}`. E aqui é
+    determinística e fácil: comer é entrar na célula da comida, morrer é escolher a ação
+    letal — as duas coisas que o estado sozinho não podia dizer. Sem isso a cabeça previa
+    `0,0010` para `r=+1` e `0,0010` para `r=0`, e **dar-lhe a ação sem consertar a
+    verossimilhança não mudava nada** (0,0014 contra 0,0014): os dois consertos são
+    necessários, e nenhum dos dois basta sozinho.
+    """
+    e = keras.Input(shape=(dim_estado,), name="estado")
+    a = keras.Input(shape=(n_actions,), name="acao")
+    x = _mlp(layers.Concatenate()([e, a]), largura, camadas=2, nome=f"{nome}_m")
+    r = layers.Dense(n_bins, name=f"{nome}_rec")(x)
+    c = layers.Dense(1, name=f"{nome}_cont")(x)
+    return keras.Model([e, a], [r, c], name=nome)
+
+
+def build_cabeca_mascara(dim_estado, largura, n_actions=N_ACTIONS, nome="masc"):
+    """`(h, z)` → logits da máscara de morte imediata. **Não** leva ação, de propósito.
+
+    Não está no DreamerV3 original: está aqui porque este ambiente tem máscara de morte
+    imediata, e sem prevê-la o ator treinaria num sonho onde movimentos suicidas continuam
+    disponíveis e depois agiria num mundo onde não estão. Essa diferença entre o sonho e o
+    jogo é o que faz um agente baseado em modelo aprender política que não transfere.
+
+    Ela é do **estado**, e é por isso que fica separada de `build_cabecas`: no sonho a
+    máscara tem que existir *antes* de escolher a ação, senão não há o que mascarar.
     """
     inp = keras.Input(shape=(dim_estado,), name="estado")
     x = _mlp(inp, largura, camadas=2, nome=f"{nome}_m")
-    r = layers.Dense(n_bins, name=f"{nome}_rec")(x)
-    c = layers.Dense(1, name=f"{nome}_cont")(x)
-    m = layers.Dense(n_actions, name=f"{nome}_mask")(x)
-    return keras.Model(inp, [r, c, m], name=nome)
+    return keras.Model(inp, layers.Dense(n_actions, name=f"{nome}_out")(x), name=nome)
 
 
 def build_ator(dim_estado, largura, n_actions=N_ACTIONS, nome="ator"):

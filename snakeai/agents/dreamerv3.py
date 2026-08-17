@@ -62,10 +62,10 @@ from ..env.vec_snake import N_ACTIONS, N_CHANNELS, VecSnake
 from ..eval import MASK_NEG
 from ..memory.sequencia import SequenceBuffer
 from ..nets.dreamer import (PRESETS_DREAMER, CelulaRecorrente, amostra_straight_through,
-                            bins_simetricos, build_ator, build_cabecas, build_critico,
-                            build_decoder, build_encoder, build_rssm_post,
-                            build_rssm_prior, de_two_hot, symexp, symlog, two_hot,
-                            unimix)
+                            bins_simetricos, build_ator, build_cabeca_mascara,
+                            build_cabecas, build_critico, build_decoder, build_encoder,
+                            build_rssm_post, build_rssm_prior, de_two_hot,
+                            erro_de_reconstrucao, symexp, symlog, two_hot, unimix)
 from ..otimizadores import cria_otimizador
 from .base import AgentBase, BaseConfig
 
@@ -175,7 +175,10 @@ class DreamerV3Config(BaseConfig):
     kl_dyn: float = 0.5
     kl_rep: float = 0.1
     unimix: float = 0.01
-    n_bins: int = 41
+
+    #: 255, como no DreamerV3 de referência. Com 41 o espaçamento em `symlog` é 1 nat, e
+    #: como a saída volta ao espaço real por `symexp`, errar um bin vira um fator `e`.
+    n_bins: int = 255
 
     #: Ator e crítico.
     ent_coef: float = 3e-4
@@ -230,6 +233,7 @@ class DreamerV3(AgentBase):
                                     d["largura"])
         self.decoder = build_decoder(self.dim_estado, cfg.board_size, d["canais"])
         self.cabecas = build_cabecas(self.dim_estado, d["largura"], cfg.n_bins)
+        self.mascara = build_cabeca_mascara(self.dim_estado, d["largura"])
         self.ator = build_ator(self.dim_estado, d["largura"])
         self.critico = build_critico(self.dim_estado, d["largura"], cfg.n_bins)
         self.critico_alvo = build_critico(self.dim_estado, d["largura"], cfg.n_bins,
@@ -268,7 +272,7 @@ class DreamerV3(AgentBase):
     # -------------------------------------------------------------- variáveis
     def _vars_modelo(self):
         partes = [self.encoder, self.entrada_gru, self.gru, self.prior, self.post,
-                  self.decoder, self.cabecas]
+                  self.decoder, self.cabecas, self.mascara]
         return [v for m in partes for v in m.trainable_variables]
 
     # ------------------------------------------------------------------- RSSM
@@ -345,6 +349,7 @@ class DreamerV3(AgentBase):
             obs_ant, mask_ant, primeiro = self.obs, self.mask, self._primeiro.copy()
             acoes = self._escolher(obs_ant, mask_ant)
             self.obs, self.mask, r, d, info = self.env.step(acoes)
+            self.registra_fim(info)
 
             self.memoria.add(obs_ant, acoes, r, 1.0 - d.astype(np.float32),
                              primeiro, mask_ant)
@@ -393,12 +398,17 @@ class DreamerV3(AgentBase):
 
         recon = self.decoder(plano)
         alvo_obs = tf.reshape(obs, tf.shape(recon))
-        # A observação é contínua e limitada; erro quadrático em symlog é o que o
-        # DreamerV3 usa e evita ter que escolher uma verossimilhança por ambiente.
-        p_recon = tf.reduce_mean(
-            tf.reduce_sum(tf.square(recon - symlog(alvo_obs)), axis=[1, 2, 3]))
+        # Bernoulli nos três canais binários, quadrático nos dois contínuos. Erro
+        # quadrático em tudo era o que impedia o latente de guardar a comida — o
+        # diagnóstico inteiro está em `erro_de_reconstrucao`.
+        p_recon = tf.reduce_mean(erro_de_reconstrucao(recon, alvo_obs))
 
-        r_lg, c_lg, m_lg = self.cabecas(plano)
+        # As cabeças de recompensa e continuação levam a **ação**: comer é entrar na célula
+        # da comida e morrer é escolher a ação letal, e nenhuma das duas é função do estado
+        # sozinho neste ambiente. Ver `build_cabecas`.
+        a_1h = tf.reshape(tf.one_hot(act, N_ACTIONS), [-1, N_ACTIONS])
+        r_lg, c_lg = self.cabecas([plano, a_1h])
+        m_lg = self.mascara(plano)
         alvo_r = two_hot(symlog(tf.reshape(lote["rew"], [-1])), self.bins)
         p_rec = tf.reduce_mean(
             tf.nn.softmax_cross_entropy_with_logits(alvo_r, r_lg))
@@ -427,15 +437,20 @@ class DreamerV3(AgentBase):
         Nenhuma observação entra aqui. Se o modelo do mundo estiver ruim, é exatamente
         neste ponto que o treino do ator degenera — e o jeito de ver isso é comparar a
         recompensa imaginada com a real, que é o que `stats["rew_sonho"]` reporta.
+
+        Devolve `H+1` estados mas apenas `H` recompensas e continuações: cada uma delas é
+        avaliada em `(s_t, a_t)`, com a ação que o ator acabou de amostrar. É a mesma
+        grandeza que o DreamerV3 de referência obtém prevendo a recompensa de chegada em
+        `s_{t+1}` e consumindo `rewards[1:]`; aqui a parametrização difere porque a
+        observação terminal deste ambiente é degenerada (ver `build_cabecas`).
         """
         cfg = self.cfg
         h, z = tf.split(estado0, [self.deter, self.dim_z], axis=-1)
-        estados, logps, entropias = [], [], []
+        estados, logps, entropias, rews, conts = [], [], [], [], []
 
         for _ in range(cfg.horizonte):
             estado = tf.concat([h, z], axis=-1)
-            _, _, m_lg = self.cabecas(estado)
-            mask = m_lg > 0.0
+            mask = self.mascara(estado) > 0.0
             # um estado sem nenhuma ação viável é um artefato do modelo, não do jogo:
             # nesse caso libera todas, senão o softmax vira NaN
             mask = tf.where(tf.reduce_any(mask, axis=-1, keepdims=True), mask,
@@ -451,12 +466,18 @@ class DreamerV3(AgentBase):
                 p * tf.where(mask, logp_all, tf.zeros_like(logp_all)), axis=-1))
             estados.append(estado)
 
-            h = self._avanca(h, z, tf.one_hot(a, N_ACTIONS))
+            a_1h = tf.one_hot(a, N_ACTIONS)
+            r_lg, c_lg = self.cabecas([estado, a_1h])
+            rews.append(symexp(de_two_hot(r_lg, self.bins)))
+            conts.append(tf.sigmoid(c_lg[:, 0]))
+
+            h = self._avanca(h, z, a_1h)
             z, _ = self._prior(h)
 
         estados.append(tf.concat([h, z], axis=-1))
-        return (tf.stack(estados, axis=0), tf.stack(logps, axis=0),
-                tf.stack(entropias, axis=0))
+        empilha = lambda xs: tf.stack(xs, axis=0)
+        return (empilha(estados), empilha(logps), empilha(entropias),
+                empilha(rews), empilha(conts))
 
     def _retornos_lambda(self, rew, cont, valores):
         """`R_t = r_t + γc_t[(1-λ)V_{t+1} + λR_{t+1}]`, com `R_H = V_H`."""
@@ -471,16 +492,23 @@ class DreamerV3(AgentBase):
 
     def _perda_ator_critico(self, estado0):
         cfg = self.cfg
-        estados, logps, entropias = self._sonha(estado0)
+        estados, logps, entropias, rew, cont = self._sonha(estado0)
         plano = tf.reshape(estados, [-1, self.dim_estado])
-
-        r_lg, c_lg, _ = self.cabecas(plano)
-        rew = tf.reshape(symexp(de_two_hot(r_lg, self.bins)), tf.shape(estados)[:2])
-        cont = tf.reshape(tf.sigmoid(c_lg[:, 0]), tf.shape(estados)[:2])
 
         v_alvo = tf.reshape(symexp(de_two_hot(self.critico_alvo(plano), self.bins)),
                             tf.shape(estados)[:2])
-        R = self._retornos_lambda(rew[:-1], cont[:-1], v_alvo)
+        R = self._retornos_lambda(rew, cont, v_alvo)
+
+        # Peso de cada passo imaginado: o produto acumulado da continuação **prevista**.
+        # Depois de uma morte imaginada o rollout continua rodando, mas aqueles estados não
+        # existem — treinar ator e crítico neles é ensinar sobre um mundo que não há. O
+        # `sven1977/dreamer_v3` faz o mesmo em `models/dreamer_model.py`
+        # (`dream_loss_weights = cumprod(gamma * c_dreamed) / gamma`); aqui fica sem o `γ`,
+        # que já está dentro dos retornos, então o peso é só "este estado é alcançável".
+        pesos = tf.stop_gradient(tf.math.cumprod(
+            tf.concat([tf.ones_like(cont[:1]), cont[:-1]], axis=0), axis=0))
+        media = lambda x: tf.reduce_sum(pesos * x) / tf.maximum(
+            tf.reduce_sum(pesos), 1e-8)
 
         # --- ator: REINFORCE com vantagem normalizada por percentis
         bruta = tf.maximum(_percentil(R, 95.0) - _percentil(R, 5.0), 1.0)
@@ -488,21 +516,21 @@ class DreamerV3(AgentBase):
                                 + (1 - cfg.ret_ema) * bruta)
         escala = tf.maximum(self._escala_ret, 1.0)
         vantagem = tf.stop_gradient((R - v_alvo[:-1]) / escala)
-        p_ator = -tf.reduce_mean(logps * vantagem) - cfg.ent_coef * tf.reduce_mean(
-            entropias)
+        p_ator = -media(logps * vantagem) - cfg.ent_coef * media(entropias)
 
         # --- crítico: two-hot no retorno, mais regularização para o alvo EMA
         estados_v = tf.reshape(estados[:-1], [-1, self.dim_estado])
         lg_v = self.critico(estados_v)
+        pesos_v = tf.reshape(pesos, [-1])
         alvo = two_hot(symlog(tf.stop_gradient(tf.reshape(R, [-1]))), self.bins)
-        p_critico = tf.reduce_mean(
-            tf.nn.softmax_cross_entropy_with_logits(alvo, lg_v))
         alvo_ema = tf.nn.softmax(tf.stop_gradient(self.critico_alvo(estados_v)))
-        p_critico += cfg.critico_reg * tf.reduce_mean(
-            tf.nn.softmax_cross_entropy_with_logits(alvo_ema, lg_v))
+        ce = (tf.nn.softmax_cross_entropy_with_logits(alvo, lg_v)
+              + cfg.critico_reg * tf.nn.softmax_cross_entropy_with_logits(alvo_ema, lg_v))
+        p_critico = tf.reduce_sum(pesos_v * ce) / tf.maximum(tf.reduce_sum(pesos_v), 1e-8)
 
-        info = {"rew_sonho": tf.reduce_mean(rew), "retorno": tf.reduce_mean(R),
-                "escala_ret": escala, "ent_sonho": tf.reduce_mean(entropias)}
+        info = {"rew_sonho": media(rew), "retorno": media(R), "escala_ret": escala,
+                "ent_sonho": media(entropias),
+                "cont_sonho": media(cont), "peso_sonho": tf.reduce_mean(pesos)}
         return p_ator, p_critico, info
 
     # ---------------------------------------------------------------- um passo

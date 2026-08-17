@@ -36,6 +36,7 @@ import tensorflow as tf
 from ..env.vec_snake import N_ACTIONS, N_CHANNELS, VecSnake
 from ..eval import MASK_NEG
 from ..nets import build_actor_critic
+from ..otimizadores import cria_otimizador
 from .base import AgentBase, BaseConfig
 
 __all__ = ["PPOConfig", "PPO", "compute_gae"]
@@ -56,6 +57,8 @@ class PPOConfig(BaseConfig):
     max_grad_norm: float = 0.5
     lr_start: float = 3e-4
     lr_end: float = 5e-5
+    #: O eixo que substitui o K-FAC. Ver `snakeai/otimizadores.py`.
+    optimizer: str = "adam"
     epochs: int = 3
     minibatches: int = 8
     target_kl: float = 0.03
@@ -64,6 +67,18 @@ class PPOConfig(BaseConfig):
     #: Decair a zero é o que garante que a política ótima final seja a do problema real.
     shaping_start: float = 0.5
     shaping_frac: float = 0.25
+
+    #: Sexto canal com o relógio da fome. **Fora do contrato** — ver `VecSnake`. Ligar isto
+    #: sem marcar `comparable=False` levanta erro, porque a entrada da rede muda e a curva
+    #: deixa de ser comparável com qualquer outra do repositório.
+    canal_fome: bool = False
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.canal_fome and self.comparable:
+            raise ValueError(
+                "canal_fome=True muda a observação de 5 para 6 canais e portanto a "
+                "entrada da rede. Marque comparable=False e escreva o caveat.")
 
     @property
     def batch_size(self):
@@ -116,8 +131,8 @@ def make_optimizer(cfg, model):
     Na prática isso quebrava o segundo `PPO(...)` da sessão: retomar de um checkpoint, ou
     simplesmente rodar a célula de treino duas vezes no Colab.
     """
-    opt = keras.optimizers.Adam(learning_rate=cfg.lr_start, epsilon=1e-5,
-                                clipnorm=cfg.max_grad_norm)
+    opt = cria_otimizador(getattr(cfg, "optimizer", "adam"), cfg.lr_start,
+                          clipnorm=cfg.max_grad_norm)
     opt.build(model.trainable_variables)
     return opt
 
@@ -129,10 +144,15 @@ class PPO(AgentBase):
         cfg = cfg or PPOConfig()
         super().__init__(cfg, variant=variant or cfg.net)
         keras.utils.set_random_seed(cfg.seed)
-        self.model = model or build_actor_critic(cfg.board_size, cfg.net)
-        self.optimizer = make_optimizer(cfg, self.model)
         self.env = VecSnake(cfg.num_envs, cfg.board_size,
-                            rng=np.random.default_rng(cfg.seed))
+                            rng=np.random.default_rng(cfg.seed),
+                            canal_fome=getattr(cfg, "canal_fome", False))
+        # A rede é construída a partir do **ambiente**, não de uma constante: se as duas
+        # fontes discordarem, o erro aparece só na primeira multiplicação de matriz, com
+        # uma mensagem sobre formas que não diz nada sobre canal de fome.
+        self.model = model or build_actor_critic(cfg.board_size, cfg.net,
+                                                 canais=self.env.n_channels)
+        self.optimizer = make_optimizer(cfg, self.model)
         self.obs, self.mask = self.env.reset()
 
     def on_model_reloaded(self):
@@ -153,7 +173,9 @@ class PPO(AgentBase):
     def collect(self):
         cfg = self.cfg
         T, N = cfg.rollout, cfg.num_envs
-        b, c = cfg.board_size, N_CHANNELS
+        # do ambiente, não da constante: com `canal_fome` são 6, e um buffer de 5 falharia
+        # só aqui, com uma mensagem sobre formas que não menciona o canal de fome
+        b, c = cfg.board_size, self.env.n_channels
 
         obs_buf = np.empty((T, N, b, b, c), dtype=np.float32)
         mask_buf = np.empty((T, N, N_ACTIONS), dtype=bool)
@@ -176,6 +198,7 @@ class PPO(AgentBase):
             act_buf[t], logp_buf[t], val_buf[t] = a, lp.numpy(), v.numpy()
 
             self.obs, self.mask, r, d, info = self.env.step(a, shaping, cfg.gamma)
+            self.registra_fim(info)
             rew_buf[t] = r
             done_buf[t] = d.astype(np.float32)
 

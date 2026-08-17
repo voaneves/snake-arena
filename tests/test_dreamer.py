@@ -18,10 +18,12 @@ import tensorflow as tf
 from snakeai.agents import DreamerV3, DreamerV3Config
 from snakeai.agents.dreamerv3 import PoliticaRecorrente, _percentil
 from snakeai.memory.sequencia import SequenceBuffer
-from snakeai.nets.dreamer import (PRESETS_DREAMER, CelulaRecorrente,
+from snakeai.env.vec_snake import N_ACTIONS, N_CHANNELS
+from snakeai.nets.dreamer import (CANAIS_BINARIOS, PRESETS_DREAMER, CelulaRecorrente,
                                   amostra_straight_through, bins_simetricos,
-                                  build_decoder, build_encoder, de_two_hot, symexp,
-                                  symlog, two_hot, unimix)
+                                  build_cabecas, build_decoder, build_encoder,
+                                  de_two_hot, erro_de_reconstrucao, symexp, symlog,
+                                  two_hot, unimix)
 from snakeai.plot import ORDEM_ALGORITMOS, familia_de
 
 
@@ -32,6 +34,86 @@ def cfg(**kw):
                 salvar_gif=False, salvar_grafico=False)
     base.update(kw)
     return DreamerV3Config(**base)
+
+
+# --------------------------------------------- a verossimilhança da reconstrução
+#
+# Estes quatro testes trancam o defeito que cegou o modelo do mundo por completo, e que
+# nenhum teste anterior pegava porque a perda *caía* — ela só caía até o valor de prever
+# zero. O diagnóstico está em `snakeai/nets/dreamer.erro_de_reconstrucao` e os números
+# brutos em `docs/diag_latente.json` e `docs/diag_verossimilhanca.json`.
+
+def _obs_de_teste(comida_em=(3, 7)):
+    """Uma observação do formato do contrato: canais binários com quase nada aceso."""
+    o = np.zeros((1, 10, 10, N_CHANNELS), np.float32)
+    o[0, 5, 5, 0] = 1.0                                   # corpo
+    o[0, 5, 4, 1] = 1.0                                   # cabeça
+    o[0, 5, 5, 2] = 1.0                                   # decaimento da cauda
+    o[0, comida_em[0], comida_em[1], 3] = 1.0             # comida
+    o[0, :, :, 4] = 0.03                                  # plano de comprimento
+    return tf.convert_to_tensor(o)
+
+
+def _saida_perfeita(obs, logit=12.0):
+    """O que um decoder que aprendeu emitiria: **logit** nos binários, `symlog` nos contínuos.
+
+    Montar isto à mão é o teste do contrato de tipo — passar logit onde se espera valor (ou
+    o contrário) não levanta erro nenhum, só produz um número errado.
+    """
+    saida = symlog(obs).numpy()
+    for c in CANAIS_BINARIOS:
+        saida[..., c] = np.where(obs.numpy()[..., c] > 0.5, logit, -logit)
+    return tf.convert_to_tensor(saida)
+
+
+def test_squared_error_barely_punishes_a_blank_food_channel():
+    """O custo de *não saber* onde está a comida, sob erro quadrático: 0,48.
+
+    Contra `0,5·kl_dyn + 0,1·kl_rep = 0,6` que os termos de KL cobram só por guardar algo
+    no latente. Guardar a comida não se pagava, e o latente ficava com 1,07 nats quando
+    localizar uma célula entre cem exige `ln 100 = 4,6`.
+    """
+    obs = _obs_de_teste()
+    branco = tf.zeros_like(obs)
+    custo = float(tf.reduce_sum(tf.square(branco - symlog(obs))[..., 3]))
+    assert custo == pytest.approx(float(symlog(tf.constant(1.0))) ** 2, rel=1e-5)
+    assert custo < 0.5
+
+
+def test_bernoulli_punishes_a_blank_food_channel_by_orders_of_magnitude_more():
+    """A mesma ignorância, sob a lei certa. É esta diferença que move o argmax de 1,2%
+    para 78% — com peso 1,0 e nada ajustado."""
+    obs = _obs_de_teste()
+    err_branco = float(tf.reduce_sum(erro_de_reconstrucao(tf.zeros_like(obs), obs)))
+    err_bom = float(tf.reduce_sum(erro_de_reconstrucao(_saida_perfeita(obs), obs)))
+    assert err_branco > 20 * err_bom
+    # e em termos absolutos: ignorar a comida custa dezenas de nats, não 0,48
+    assert err_branco > 30.0
+
+
+def test_reconstruction_uses_logits_on_binary_channels_and_symlog_on_the_rest():
+    """Contrato de tipo, porque errar isto é silencioso: nos três canais binários a saída do
+    decoder é **logit**, nos dois contínuos é valor em `symlog`. Passar logit onde se espera
+    valor não levanta erro, só produz número errado.
+    """
+    obs = _obs_de_teste()
+    assert float(tf.reduce_sum(erro_de_reconstrucao(_saida_perfeita(obs, logit=30.0), obs))) < 1e-3
+
+    # trocar as duas leis de lugar tem que piorar, e muito: `symlog(1) = 0,69` como logit
+    # é uma probabilidade de 0,67, e `12` como valor em `symlog` é um número absurdo
+    trocado = tf.where(
+        tf.constant([c in CANAIS_BINARIOS for c in range(N_CHANNELS)]),
+        symlog(obs), tf.where(obs > 0.5, 12.0, -12.0))
+    assert float(tf.reduce_sum(erro_de_reconstrucao(trocado, obs))) > 100.0
+
+
+def test_bins_resolution_keeps_a_one_bin_error_from_becoming_a_factor_of_e():
+    """41 bins em ±20 dão espaçamento de **1 nat**, e como a saída volta por `symexp`, errar
+    um bin virava um fator `e` = 2,7× na recompensa. Com 255 o mesmo erro vale ~17%."""
+    b41, b255 = bins_simetricos(41).numpy(), bins_simetricos(255).numpy()
+    assert np.exp(b41[1] - b41[0]) == pytest.approx(np.e, rel=1e-4)
+    assert np.exp(b255[1] - b255[0]) < 1.2
+    assert DreamerV3Config().n_bins == 255
 
 
 # ------------------------------------------------------------------- symlog
@@ -294,9 +376,78 @@ def test_the_dream_always_leaves_one_action_available():
     ag = DreamerV3(cfg())
     ag.iterate()
     estado0 = tf.zeros([6, ag.dim_estado])
-    estados, logps, ent = ag._sonha(estado0)
+    estados, logps, ent, rew, cont = ag._sonha(estado0)
     assert np.isfinite(logps.numpy()).all() and np.isfinite(ent.numpy()).all()
     assert estados.shape[0] == ag.cfg.horizonte + 1
+    # `H+1` estados mas `H` recompensas: cada uma é avaliada em `(s_t, a_t)`, e do último
+    # estado não sai ação nenhuma — dele sai só o valor que fecha o retorno λ.
+    assert rew.shape[0] == cont.shape[0] == ag.cfg.horizonte
+    assert np.isfinite(rew.numpy()).all()
+    assert ((cont.numpy() >= 0.0) & (cont.numpy() <= 1.0)).all()
+
+
+# ------------------------------------------- as cabeças precisam ver a ação
+def test_reward_and_continue_heads_depend_on_the_action():
+    """Sem a ação, estas duas cabeças previam a média sobre ações — e a média é inútil aqui.
+
+    Comer é entrar na célula da comida; morrer é escolher a ação letal. As duas dependem
+    **inteiramente** de qual das 3 ações foi tomada. Uma cabeça que só vê o estado, com a
+    comida ao lado, não pode dizer mais que "1/3 de chance", e no sonho ir na direção da
+    comida não rende mais que fugir dela. Medido antes do conserto: previsão `0,0010` para
+    `r=+1` e `0,0010` para `r=0`, em 30 mil estados de teste.
+    """
+    cab = build_cabecas(dim_estado=32, largura=16, n_bins=41)
+    estado = tf.random.stateless_normal([4, 32], seed=(1, 2))
+    saidas = [cab([estado, tf.one_hot(tf.fill([4], a), N_ACTIONS)]) for a in range(3)]
+    for i in range(1, 3):
+        assert not np.allclose(saidas[0][0].numpy(), saidas[i][0].numpy())
+        assert not np.allclose(saidas[0][1].numpy(), saidas[i][1].numpy())
+
+
+def test_the_mask_head_does_not_take_the_action():
+    """A máscara é do **estado**: no sonho ela tem que existir antes de escolher a ação,
+    senão não há o que mascarar. É por isso que mora separada das outras duas."""
+    ag = DreamerV3(cfg())
+    estado = tf.zeros([3, ag.dim_estado])
+    assert ag.mascara(estado).shape == (3, N_ACTIONS)
+    assert ag.mascara in [m for m in [ag.mascara]]          # existe como modelo próprio
+    assert all(v is not None for v in ag.mascara.trainable_variables)
+
+
+def test_the_mask_head_is_trained():
+    """`_vars_modelo` tem que incluir a cabeça de máscara. Se ela ficar de fora, o sonho roda
+    com a máscara da inicialização para sempre — e sem erro nenhum."""
+    ag = DreamerV3(cfg())
+    ids = {id(v) for v in ag._vars_modelo()}
+    assert {id(v) for v in ag.mascara.trainable_variables} <= ids
+    assert {id(v) for v in ag.cabecas.trainable_variables} <= ids
+
+
+# ------------------------------------- o sonho depois de uma morte imaginada
+def test_dreamed_steps_after_a_predicted_death_get_zero_weight():
+    """Depois de uma morte imaginada o rollout continua rodando, mas aqueles estados não
+    existem. Treinar ator e crítico neles é ensinar sobre um mundo que não há.
+
+    O peso é o produto acumulado da continuação prevista, deslocado de um: o primeiro passo
+    sempre conta (ele é o estado de partida, que veio do posterior e é real), e a partir daí
+    cada passo herda a probabilidade de ter sobrevivido aos anteriores.
+    """
+    cont = tf.constant([[1.0], [1.0], [0.0], [1.0], [1.0]])
+    pesos = tf.math.cumprod(
+        tf.concat([tf.ones_like(cont[:1]), cont[:-1]], axis=0), axis=0).numpy()[:, 0]
+    np.testing.assert_allclose(pesos, [1.0, 1.0, 1.0, 0.0, 0.0])
+
+
+def test_the_dream_weights_appear_in_the_stats():
+    """`peso_sonho` e `cont_sonho` no registro: sem eles, um sonho onde tudo morre no passo 1
+    fica indistinguível de um onde nada morre, e os dois dão perdas parecidas."""
+    ag = DreamerV3(cfg())
+    for _ in range(3):
+        st = ag.iterate()
+    for chave in ("peso_sonho", "cont_sonho"):
+        assert chave in st and np.isfinite(st[chave])
+    assert 0.0 <= st["peso_sonho"] <= 1.0
+    assert 0.0 <= st["cont_sonho"] <= 1.0
 
 
 # ------------------------------------------- o que fazia a GPU ficar parada

@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["VecSnake", "DIRS", "TURN", "N_ACTIONS", "N_CHANNELS", "DEFAULT_SEED"]
+__all__ = ["VecSnake", "DIRS", "TURN", "N_ACTIONS", "N_CHANNELS",
+           "N_CHANNELS_COM_FOME", "DEFAULT_SEED"]
 
 # Direções: 0=cima(-y), 1=direita(+x), 2=baixo(+y), 3=esquerda(-x)  (sentido horário)
 DIRS = np.array([[-1, 0], [0, 1], [1, 0], [0, -1]], dtype=np.int32)
@@ -36,7 +37,14 @@ DIRS = np.array([[-1, 0], [0, 1], [1, 0], [0, -1]], dtype=np.int32)
 TURN = np.array([-1, 0, 1], dtype=np.int32)
 
 N_ACTIONS = 3
+
+#: O contrato oficial. Não mude este número — versione o contrato.
 N_CHANNELS = 5
+
+#: Com o canal de fome ligado (`VecSnake(canal_fome=True)`). **Fora do contrato**, e é para
+#: ser: qualquer execução assim tem que ir para a arena com `comparable=False`.
+N_CHANNELS_COM_FOME = 6
+
 DEFAULT_SEED = 42
 
 
@@ -66,11 +74,28 @@ class VecSnake:
         `starve_base + 2 * comprimento`. Padrão: `board_size ** 2`.
     rng : np.random.Generator, opcional
         Gerador próprio. Passe um com semente fixa para reprodutibilidade.
+    canal_fome : bool, opcional
+        Liga um **sexto** canal com o relógio da fome. Padrão `False`, que é o contrato.
+
+        Existe porque os 5 canais do contrato não contêm o contador de fome, e o limite é
+        `starve_base + 2·comprimento` passos sem comer. Ou seja: dois estados visualmente
+        idênticos, um com fome 5 e outro com fome 105, valem coisas diferentes e a rede não
+        tem como saber. Os algoritmos sem modelo toleram — o retorno **real** pune andar em
+        círculo, mesmo que o crítico não veja a causa. Um modelo do mundo não tem essa
+        sorte: ele só pode sonhar o que a observação carrega, e inanição simplesmente não
+        existe no sonho.
+
+        Ligar isto **quebra a comparabilidade** com todas as curvas de 5 canais: a entrada
+        da rede muda. Use apenas em execuções marcadas `comparable=False`, com o motivo em
+        `caveat`.
     """
 
-    def __init__(self, num_envs=256, board_size=10, starve_base=None, rng=None):
+    def __init__(self, num_envs=256, board_size=10, starve_base=None, rng=None,
+                 canal_fome=False):
         if board_size < 6:
             raise ValueError("tabuleiro pequeno demais para o corpo inicial (mínimo 6)")
+        self.canal_fome = bool(canal_fome)
+        self.n_channels = N_CHANNELS_COM_FOME if self.canal_fome else N_CHANNELS
         self.n = int(num_envs)
         self.b = int(board_size)
         self.cells = self.b * self.b
@@ -129,8 +154,12 @@ class VecSnake:
         return self.obs(), self.action_mask()
 
     # -------------------------------------------------------------- observação
+    def limite_de_fome(self):
+        """`(N,)` passos sem comer que matam. Cresce com o corpo: comer fica mais difícil."""
+        return self.starve_base + 2 * self.length
+
     def _raw_planes(self):
-        """Os 5 canais no referencial do tabuleiro, antes da rotação egocêntrica."""
+        """Os 5 canais no referencial do tabuleiro (6 com `canal_fome`), antes da rotação."""
         b, n = self.b, self.n
         occ = self.occ
         body = (occ > 0).astype(np.float32)
@@ -144,7 +173,18 @@ class VecSnake:
         lenpl = np.broadcast_to(
             (self.length.astype(np.float32) / self.cells)[:, None, None], (n, b, b)
         )
-        return np.stack([body, head, decay, food, lenpl], axis=-1)
+        planos = [body, head, decay, food, lenpl]
+
+        if self.canal_fome:
+            # Plano constante com a fração do relógio já gasta: 0 = acabou de comer,
+            # 1 = morre de fome neste passo. Normalizado pelo limite **efetivo**, que
+            # cresce com o corpo — assim o número significa a mesma coisa do começo ao fim,
+            # que é a mesma razão de o canal de comprimento existir.
+            fome = self.hunger.astype(np.float32) / np.maximum(
+                self.limite_de_fome().astype(np.float32), 1.0)
+            planos.append(np.broadcast_to(fome[:, None, None], (n, b, b)))
+
+        return np.stack(planos, axis=-1)
 
     def obs(self):
         """Planos rotacionados para o referencial da cabeça (sempre olhando p/ cima)."""
@@ -252,8 +292,7 @@ class VecSnake:
         if need_food.any():
             self._spawn_food(np.nonzero(need_food)[0])
 
-        starve_limit = self.starve_base + 2 * self.length
-        starved = (self.hunger >= starve_limit) & ~dead & ~won
+        starved = (self.hunger >= self.limite_de_fome()) & ~dead & ~won
 
         # ---- recompensa
         reward = np.zeros(n, dtype=np.float32)
@@ -364,7 +403,8 @@ class VecSnake:
             "score deve ser comprimento - 3"
 
     def __repr__(self):
+        extra = ", canal_fome=True" if self.canal_fome else ""
         return (
             f"VecSnake(num_envs={self.n}, board_size={self.b}, "
-            f"starve_base={self.starve_base})"
+            f"starve_base={self.starve_base}{extra})"
         )

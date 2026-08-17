@@ -16,7 +16,9 @@ import pytest
 import tensorflow as tf
 
 from snakeai.agents import PPO, PPOConfig, compute_gae
+from snakeai.agents.base import AgentBase
 from snakeai.agents.ppo import policy_forward
+from snakeai.env.vec_snake import N_CHANNELS, N_CHANNELS_COM_FOME, VecSnake
 from snakeai.eval import MASK_NEG
 from snakeai.record import CONTRATO, validate
 
@@ -266,12 +268,20 @@ def test_training_log_is_a_moving_average_not_the_last_iteration():
     assert ag.media_movel() == pytest.approx(50 / 21)
 
 
-def test_the_curve_records_the_moving_average_and_keeps_the_raw_value():
+def test_the_curve_records_the_moving_average_and_keeps_the_raw_value(tmp_path):
     """A curva precisa do número estável; o valor cru continua disponível para quem
-    quiser ver a variância entre iterações."""
+    quiser ver a variância entre iterações.
+
+    `ckpt_dir` e `runs_dir` apontam para `tmp_path` porque sem isso este teste escrevia em
+    `runs/ppo/resnet_tiny/seed0/` **dentro do repositório** — sobrescrevendo um artefato
+    versionado a cada rodada da suíte. O diff só aparecia em `wall_s`, o que faz parecer
+    ruído inofensivo; num diretório de resultados de verdade seria uma execução real
+    apagada por um teste de 400 passos.
+    """
     ag = PPO(PPOConfig(net="resnet_tiny", num_envs=16, rollout=4, minibatches=1,
                        epochs=1, total_steps=400, eval_every_steps=10 ** 9,
-                       log_every_steps=1, salvar_gif=False, salvar_grafico=False))
+                       log_every_steps=1, salvar_gif=False, salvar_grafico=False,
+                       ckpt_dir=str(tmp_path / "ckpt"), runs_dir=str(tmp_path / "runs")))
     ag.train(verbose=False)
     pontos = [p for p in ag.history if "train_score_mean" in p]
     assert pontos, "nada foi registrado"
@@ -358,3 +368,161 @@ def test_a_slow_algorithm_still_accumulates_a_meaningful_window():
     for _ in range(400):
         ag._registra_episodios(3.0, 2)
     assert 500 <= ag.episodios_na_janela() <= 502
+
+# ======================================================================= fome
+# O sexto canal e as estatísticas por causa de fim. Os dois nasceram da mesma
+# descoberta: o score sozinho é ambíguo, e o relógio da fome é invisível.
+
+def test_the_contract_observation_has_no_hunger_channel():
+    """O fato que motiva tudo isto, escrito como teste para não virar folclore.
+
+    O limite é `starve_base + 2·comprimento` passos sem comer, e nenhum dos 5 canais o
+    contém. Dois estados visualmente idênticos com fome 5 e fome 105 valem coisas
+    diferentes, e a rede não tem como distinguir.
+    """
+    env = VecSnake(4, 10, rng=np.random.default_rng(0))
+    assert env.n_channels == N_CHANNELS == 5
+    antes = env.obs().copy()
+    for _ in range(40):                                   # anda sem comer
+        env.hunger += 1
+    np.testing.assert_array_equal(env.obs(), antes)
+
+
+def test_the_sixth_channel_makes_the_hunger_clock_visible():
+    env = VecSnake(4, 10, rng=np.random.default_rng(0), canal_fome=True)
+    assert env.n_channels == N_CHANNELS_COM_FOME == 6
+    antes = env.obs().copy()
+    env.hunger += 40
+    depois = env.obs()
+    np.testing.assert_array_equal(depois[..., :5], antes[..., :5])
+    assert (depois[..., 5] > antes[..., 5]).all()
+
+
+def test_the_hunger_channel_is_normalised_by_the_effective_limit():
+    """`fome / limite`, e o limite cresce com o corpo. Normalizar pelo `starve_base` fixo
+    faria o número significar coisas diferentes no começo e no fim — que é exatamente o
+    motivo de o canal de comprimento existir."""
+    env = VecSnake(2, 10, rng=np.random.default_rng(0), canal_fome=True)
+    env.length[:] = np.array([3, 50])
+    env.hunger[:] = env.limite_de_fome()                  # à beira da inanição
+    plano = env.obs()[..., 5]
+    np.testing.assert_allclose(plano.reshape(2, -1).max(axis=1), 1.0, atol=1e-5)
+    assert env.limite_de_fome().tolist() == [106, 200]
+
+
+def test_the_hunger_channel_is_off_by_default():
+    """O contrato são 5 canais. Um `canal_fome` que ligasse sozinho invalidaria em
+    silêncio todas as curvas já medidas."""
+    assert VecSnake(2, 10).n_channels == 5
+    assert VecSnake(2, 10).obs().shape[-1] == 5
+
+
+def test_six_channels_require_declaring_the_run_incomparable():
+    """A entrada da rede muda; nenhuma curva de 6 canais divide eixo com uma de 5."""
+    with pytest.raises(ValueError, match="comparable=False"):
+        PPOConfig(canal_fome=True)
+    ok = PPOConfig(canal_fome=True, comparable=False, caveat="6 canais")
+    assert ok.canal_fome and not ok.comparable
+
+
+def test_incomparable_runs_must_say_why():
+    with pytest.raises(ValueError, match="caveat"):
+        PPOConfig(comparable=False)
+
+
+def test_the_network_input_follows_the_environment_not_the_constant():
+    """Se as duas fontes discordarem, o erro só aparece na primeira multiplicação de
+    matriz — com uma mensagem sobre formas que não menciona canal de fome."""
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=4, rollout=4, canal_fome=True,
+                       comparable=False, caveat="6 canais", total_steps=100,
+                       salvar_gif=False, salvar_grafico=False))
+    assert ag.env.n_channels == 6
+    assert ag.model.input_shape[-1] == 6
+    assert ag.obs.shape[-1] == 6
+    ag.iterate()                                          # o buffer da coleta também
+
+
+# ============================================= estatísticas por causa de fim
+def test_the_window_separates_starvation_from_collision():
+    """Um agente parado em 1,2 ponto pode estar batendo em tudo ou andando em círculo até
+    morrer de fome. Dois problemas opostos, o mesmo número na curva — e foi essa
+    ambiguidade que custou horas no diagnóstico do Dreamer."""
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=64, rollout=64, total_steps=10 ** 9,
+                       minibatches=1, epochs=1, eval_every_steps=10 ** 9,
+                       salvar_gif=False, salvar_grafico=False))
+    for _ in range(4):
+        ag.iterate()
+
+    r = ag.resumo_janela()
+    assert r["janela_episodios"] > 0
+    soma = r["win_rate"] + r["frac_fome"] + r["frac_colisao"]
+    assert soma == pytest.approx(1.0, abs=1e-6), "toda morte tem exatamente uma causa"
+    # uma política quase aleatória com máscara passa fome na vasta maioria das vezes
+    assert r["frac_fome"] > 0.5
+    assert r["passos_por_episodio"] > 1
+
+
+def test_the_window_reports_nothing_instead_of_a_misleading_zero():
+    """Sem episódio nenhum, `{}` — e não `frac_fome=0`, que se leria como "nunca passa
+    fome" em vez de "ainda não sei"."""
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=4, rollout=4, total_steps=100,
+                       salvar_gif=False, salvar_grafico=False))
+    assert ag.resumo_janela() == {}
+    assert ag.media_movel() is None
+
+
+def test_episodes_are_counted_once_not_twice():
+    """`registra_fim` no laço de coleta e `_registra_episodios` no `train` contariam cada
+    episódio duas vezes. A média móvel ficaria certa por acidente — as frações, não.
+
+    Exercitado sobre a janela direto: rodar PPO até acumular episódios custaria minutos
+    para provar uma aritmética de duas linhas.
+    """
+    ag = PPO(cfg_min())
+    ag.registra_fim({"scores": np.array([2.0, 4.0]), "lengths": np.array([10, 20]),
+                     "wins": 0, "starved": 1, "deaths": 1})
+    assert ag._registrou_causas
+    assert ag.episodios_na_janela() == 2
+    assert ag.media_movel() == pytest.approx(3.0)
+
+    # o guarda do `train`: com as causas já registradas, não conta de novo
+    if not ag._registrou_causas:
+        ag._registra_episodios(3.0, 2)
+    assert ag.episodios_na_janela() == 2
+
+
+def test_the_window_weights_blocks_by_how_many_episodes_they_hold():
+    """Uma iteração com 2 episódios não pode pesar igual a uma com 200 — senão a média
+    móvel vira média das médias, que é outra coisa."""
+    ag = PPO(cfg_min())
+    ag.registra_fim({"scores": np.full(1, 10.0), "lengths": np.array([1]),
+                     "wins": 0, "starved": 1, "deaths": 0})
+    ag.registra_fim({"scores": np.full(20, 40.0), "lengths": np.ones(20),
+                     "wins": 20, "starved": 0, "deaths": 0})
+    assert ag.media_movel() == pytest.approx((10 + 20 * 40) / 21)
+    r = ag.resumo_janela()
+    assert r["win_rate"] == pytest.approx(20 / 21)
+    assert r["frac_fome"] == pytest.approx(1 / 21)
+
+
+def test_the_window_stays_bounded_by_episodes_not_iterations():
+    """A janela é em episódios. Um limite em iterações cobriria a execução inteira num
+    algoritmo e alguns segundos em outro — e no primeiro viraria média acumulada."""
+    ag = PPO(cfg_min())
+    for _ in range(200):
+        ag.registra_fim({"scores": np.ones(10), "lengths": np.ones(10),
+                         "wins": 0, "starved": 10, "deaths": 0})
+    n = ag.episodios_na_janela()
+    assert n >= AgentBase.JANELA_EPISODIOS
+    assert n < AgentBase.JANELA_EPISODIOS + 10, "a janela não pode crescer sem limite"
+
+
+def test_a_block_bigger_than_the_window_becomes_the_window():
+    """Com uma iteração que já produz mais episódios que a janela inteira, o certo é a
+    janela ser aquela iteração — e não ficar vazia."""
+    ag = PPO(cfg_min())
+    grande = AgentBase.JANELA_EPISODIOS * 3
+    ag.registra_fim({"scores": np.full(grande, 7.0), "lengths": np.ones(grande),
+                     "wins": 0, "starved": grande, "deaths": 0})
+    assert ag.episodios_na_janela() == grande
+    assert ag.media_movel() == pytest.approx(7.0)

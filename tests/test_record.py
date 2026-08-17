@@ -228,3 +228,33 @@ def test_contract_constant_is_the_documented_one():
     assert CONTRATO["eval_episodes"] == 1000
     assert CONTRATO["eval_seed"] == 123
     assert CONTRATO["eval_safety"] is False
+
+
+def test_no_test_writes_run_artifacts_into_the_repository():
+    """Nenhum teste pode chamar `train()` sem redirecionar `runs_dir` e `ckpt_dir`.
+
+    Isto é um meta-teste porque a falha é invisível pelo caminho normal: um teste sem esses
+    dois parâmetros usa os padrões e escreve em `runs/<algo>/<variante>/seed0/` **dentro do
+    repositório**. Foi o que aconteceu com `runs/ppo/resnet_tiny/seed0/`, e o diff aparecia
+    só em `wall_s` — parece ruído, e por isso ninguém olhava. Num diretório com resultado de
+    verdade, seria uma execução de 5 M passos sobrescrita por um teste de 400.
+
+    A varredura é textual de propósito: exercitar isto de verdade exigiria rodar a suíte
+    inteira duas vezes e comparar o `git status`, o que custa vinte minutos para proteger
+    algo que uma expressão regular pega em milissegundos.
+    """
+    import pathlib
+    import re
+
+    faltando = []
+    for caminho in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
+        texto = caminho.read_text(encoding="utf-8")
+        for m in re.finditer(r"def (test_\w+)\([^)]*\)[^\n]*\n(.*?)(?=\ndef |\Z)",
+                             texto, re.S):
+            nome, corpo = m.groups()
+            if ".train(" in corpo and "runs_dir" not in corpo:
+                faltando.append(f"{caminho.name}::{nome}")
+
+    assert not faltando, (
+        "estes testes chamam train() sem isolar o disco e vão sujar o repositório:\n  "
+        + "\n  ".join(faltando))
