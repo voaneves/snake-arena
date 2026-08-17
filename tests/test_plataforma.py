@@ -6,6 +6,8 @@ gratuita sem cair pelo menos uma vez, então "continuar de onde parou" não é c
 """
 
 import os
+import sys
+import types
 
 import pytest
 
@@ -52,6 +54,47 @@ def test_detection_is_by_capability_not_by_a_variable():
         assert detecta() == LOCAL
     finally:
         os.environ.pop("KAGGLE_KERNEL_RUN_TYPE", None)
+
+
+@pytest.fixture
+def google_colab_importavel(monkeypatch):
+    """Faz `import google.colab` funcionar — como acontece **também no Kaggle**."""
+    google = sys.modules.get("google") or types.ModuleType("google")
+    colab = types.ModuleType("google.colab")
+
+    def mount(*a, **k):                              # exatamente o que o Kaggle faz
+        raise NotImplementedError("Mounting drive is unsupported in this environment.")
+
+    colab.drive = types.SimpleNamespace(mount=mount)
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.colab", colab)
+    monkeypatch.setattr(google, "colab", colab, raising=False)
+    return colab
+
+
+def test_kaggle_wins_even_though_it_can_import_google_colab(google_colab_importavel,
+                                                            monkeypatch):
+    """O bug que custou uma execução: o Kaggle importa `google.colab`.
+
+    O módulo existe lá como camada de compatibilidade e o `drive.mount` dele levanta
+    `NotImplementedError`. Com o Colab testado primeiro, o Kaggle era classificado como
+    Colab, a montagem falhava, e o fallback mandava tudo para `/content` — que no Kaggle
+    **não aparece no painel Output**. O treino terminava e o resultado não existia. Os dois
+    sinais estão presentes ao mesmo tempo aqui de propósito: é essa a situação real.
+    """
+    monkeypatch.setattr(plataforma, "_gravavel", lambda p: p in ("/kaggle/working",
+                                                                "/content"))
+    assert detecta() == KAGGLE
+
+
+def test_colab_needs_a_writable_content_not_just_the_import(google_colab_importavel,
+                                                            monkeypatch):
+    """Importabilidade de um stub não é capacidade — a pasta gravável é."""
+    monkeypatch.setattr(plataforma, "_gravavel", lambda p: p == "/content")
+    assert detecta() == COLAB
+
+    monkeypatch.setattr(plataforma, "_gravavel", lambda p: False)
+    assert detecta() == LOCAL
 
 
 # ---------------------------------------------------------------------- pasta

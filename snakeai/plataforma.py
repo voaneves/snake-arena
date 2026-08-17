@@ -14,10 +14,21 @@ retomar depois da queda  o Drive continua lá             anexar a saída da exe
 baixar o resultado      ``google.colab.files.download``  painel *Output*, sem código
 ======================  ==============================  ==============================
 
-A detecção é por **capacidade observada**, não por variável de ambiente decorada: `colab`
-só se o módulo `google.colab` existir de fato, `kaggle` só se `/kaggle/working` for
-gravável. Um notebook rodando em qualquer outro lugar cai no caso `local` e continua
-funcionando — o que também é o que faz a suíte de testes conseguir exercitar isto aqui.
+A detecção é por **capacidade observada**, não por variável de ambiente decorada: `kaggle`
+só se `/kaggle/working` for gravável, `colab` só se além de `google.colab` importar
+existir um `/content` gravável. Um notebook rodando em qualquer outro lugar cai no caso
+`local` e continua funcionando — o que também é o que faz a suíte de testes conseguir
+exercitar isto aqui.
+
+E a ordem importa, por um motivo que só aparece rodando: **o Kaggle também consegue
+importar `google.colab`**. Ele traz um módulo de compatibilidade cujo `drive.mount` existe
+e levanta `NotImplementedError: Mounting drive is unsupported in this environment`. Uma
+detecção que perguntasse "`google.colab` importa?" primeiro chamaria o Kaggle de Colab,
+tentaria montar o Drive, falharia, e cairia no fallback `/content` — que no Kaggle não é
+só volátil, é **invisível**: o painel *Output* mostra `/kaggle/working` e mais nada. O
+treino roda até o fim e o resultado não existe em lugar nenhum. Daí a regra: quem tem
+pasta persistente própria é perguntado primeiro, e importabilidade de um stub nunca conta
+como capacidade.
 
 O problema que o Kaggle resolve
 -------------------------------
@@ -43,16 +54,26 @@ __all__ = ["detecta", "pasta_de_trabalho", "semear_checkpoints", "entregar_arqui
 COLAB, KAGGLE, LOCAL = "colab", "kaggle", "local"
 
 
+def _gravavel(caminho):
+    return os.path.isdir(caminho) and os.access(caminho, os.W_OK)
+
+
 def detecta():
-    """`"colab"`, `"kaggle"` ou `"local"`, por capacidade observada."""
+    """`"colab"`, `"kaggle"` ou `"local"`, por capacidade observada.
+
+    O Kaggle é testado **primeiro** de propósito: ele importa `google.colab` (um módulo de
+    compatibilidade cujo `drive.mount` só levanta `NotImplementedError`), então perguntar
+    pelo Colab antes o classificaria errado e mandaria o treino escrever em `/content` —
+    fora do painel *Output*, ou seja, resultado nenhum no fim. Importar não é capacidade;
+    ter pasta persistente é.
+    """
+    if _gravavel("/kaggle/working"):
+        return KAGGLE
     try:
         import google.colab  # noqa: F401,PLC0415
-        return COLAB
     except Exception:
-        pass
-    if os.path.isdir("/kaggle/working") and os.access("/kaggle/working", os.W_OK):
-        return KAGGLE
-    return LOCAL
+        return LOCAL
+    return COLAB if _gravavel("/content") else LOCAL
 
 
 def pasta_de_trabalho(usar_drive="auto", nome="snake-arena", verbose=True):
