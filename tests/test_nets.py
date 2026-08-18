@@ -178,3 +178,20 @@ def test_resumo_covers_every_trunk():
     for d in linhas:
         assert d["params_tronco"] > 0
         assert d["params_actor_critic"] > d["params_tronco"]
+
+
+# ---------------------------------------------------------------- exportação
+def test_export_reads_the_channel_count_from_the_network():
+    """O exportador não pode assumir os 5 canais do contrato: uma execução com
+    `canal_fome=True` treina uma rede de 6, e a constante quebrava a medição de latência
+    — na última célula do notebook, depois do treino inteiro."""
+    from snakeai.export import canais_do_modelo, medir_latencia
+
+    m5 = build_actor_critic(net="resnet_tiny")
+    m6 = build_actor_critic(net="resnet_tiny", canais=6)
+    assert canais_do_modelo(m5) == N_CHANNELS == 5
+    assert canais_do_modelo(m6) == 6
+
+    # a medição alimenta a rede de verdade: com o canal errado, isto levantaria ValueError
+    medir_latencia(lambda x: m6(x, training=False), repeticoes=2, aquecimento=1,
+                   canais=canais_do_modelo(m6))

@@ -21,12 +21,30 @@ import numpy as np
 
 from .env.vec_snake import N_ACTIONS, N_CHANNELS
 
-__all__ = ["export_model", "medir_latencia", "conferir_paridade"]
+__all__ = ["export_model", "medir_latencia", "conferir_paridade", "canais_do_modelo"]
 
 
-def medir_latencia(fn, board_size=10, repeticoes=200, aquecimento=20):
+def canais_do_modelo(modelo, padrao=N_CHANNELS):
+    """Quantos canais a rede espera na entrada — **perguntando à rede**, não à constante.
+
+    O contrato são 5 canais, mas uma execução com `canal_fome=True` treina uma rede de 6.
+    Exportar essa rede alimentando-a com a constante quebra na primeira inferência, com
+    uma mensagem sobre formas — e isso acontece **depois** do treino inteiro, na última
+    célula do notebook. Ver `snakeai.eval.evaluate`, que tem o mesmo cuidado.
+    """
+    try:
+        forma = modelo.input_shape
+        if isinstance(forma, (list, tuple)) and forma and isinstance(forma[0], (list, tuple)):
+            forma = forma[0]                      # modelos de múltiplas entradas
+        canais = forma[-1]
+        return int(canais) if canais else padrao
+    except Exception:                             # rede sem `input_shape` conhecido
+        return padrao
+
+
+def medir_latencia(fn, board_size=10, repeticoes=200, aquecimento=20, canais=N_CHANNELS):
     """Latência de inferência com lote 1 — o que importa se o modelo for para o jogo."""
-    x = np.zeros((1, board_size, board_size, N_CHANNELS), dtype=np.float32)
+    x = np.zeros((1, board_size, board_size, canais), dtype=np.float32)
     for _ in range(aquecimento):
         fn(x)
     t0 = time.perf_counter()
@@ -35,7 +53,7 @@ def medir_latencia(fn, board_size=10, repeticoes=200, aquecimento=20):
     return (time.perf_counter() - t0) / repeticoes * 1000.0
 
 
-def conferir_paridade(modelo, blob_tflite, board_size=10, n=200, seed=0):
+def conferir_paridade(modelo, blob_tflite, board_size=10, n=200, seed=0, canais=None):
     """O `.tflite` escolhe a mesma ação que o `.keras`, em `n` estados aleatórios?
 
     Não basta comparar os logits: o que importa para o jogo é a **ação escolhida**. Uma
@@ -44,7 +62,8 @@ def conferir_paridade(modelo, blob_tflite, board_size=10, n=200, seed=0):
     import tensorflow as tf
 
     rng = np.random.default_rng(seed)
-    x = rng.normal(size=(n, board_size, board_size, N_CHANNELS)).astype(np.float32)
+    canais = canais or canais_do_modelo(modelo)
+    x = rng.normal(size=(n, board_size, board_size, canais)).astype(np.float32)
 
     saida = modelo(x, training=False)
     logits_keras = np.asarray(saida[0] if isinstance(saida, (list, tuple)) else saida)
@@ -82,13 +101,16 @@ def export_model(modelo, out_dir="export", board_size=10, formatos=("fp16", "int
     import tensorflow as tf
 
     os.makedirs(out_dir, exist_ok=True)
+    canais = canais_do_modelo(modelo)
     caminho_keras = os.path.join(out_dir, "modelo.keras")
     modelo.save(caminho_keras)
 
     resultado = {
         "params": int(modelo.count_params()),
         "keras_kb": round(os.path.getsize(caminho_keras) / 1024, 1),
-        "tf_ms": round(medir_latencia(lambda x: modelo(x, training=False), board_size), 4),
+        "canais": canais,
+        "tf_ms": round(medir_latencia(lambda x: modelo(x, training=False), board_size,
+                                      canais=canais), 4),
     }
 
     sm_dir = os.path.join(out_dir, "saved_model")
@@ -118,10 +140,12 @@ def export_model(modelo, out_dir="export", board_size=10, formatos=("fp16", "int
             _itp.set_tensor(_ent["index"], xi)
             _itp.invoke()
 
-        resultado[f"{nome}_ms"] = round(medir_latencia(roda, board_size), 4)
+        resultado[f"{nome}_ms"] = round(medir_latencia(roda, board_size,
+                                                       canais=canais), 4)
 
         if validar:
-            resultado[f"{nome}_paridade"] = conferir_paridade(modelo, blob, board_size)
+            resultado[f"{nome}_paridade"] = conferir_paridade(modelo, blob, board_size,
+                                                              canais=canais)
             if resultado[f"{nome}_kb"] < resultado["params"] / 4096:
                 resultado[f"{nome}_alerta"] = (
                     "arquivo pequeno demais para esse número de parâmetros — "
