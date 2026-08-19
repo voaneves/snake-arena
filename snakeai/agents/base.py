@@ -49,6 +49,12 @@ class BaseConfig:
     #: Artefatos gerados no fim do treino. O GIF custa segundos e responde a pergunta que
     #: nenhuma curva responde: *como* o agente joga.
     salvar_grafico: bool = True
+    #: Sufixo acrescentado à variante. Serve para que uma execução que muda
+    #: hiperparâmetros — e portanto **compete**, mas não é a mesma coisa — não divida a
+    #: identidade `(algo, variant, seed)` com a do padrão. `load_all` agrupa por essa
+    #: tripla, então identidade repetida vira uma curva só, com as duas misturadas.
+    sufixo_variante: str = ""
+
     salvar_gif: bool = True
     gif_seeds: tuple = (7, 21, 42)
 
@@ -96,9 +102,9 @@ class AgentBase:
 
     def __init__(self, cfg, variant="default"):
         self.cfg = cfg
-        if getattr(cfg, "canal_fome", False) and not variant.endswith(self.SUFIXO_FOME):
-            variant += self.SUFIXO_FOME
-        self.variant = variant
+        if getattr(cfg, "canal_fome", False):
+            variant = self._com_sufixo(variant, self.SUFIXO_FOME)
+        self.variant = self._com_sufixo(variant, getattr(cfg, "sufixo_variante", ""))
         self.model = None
         self.global_step = 0
         self.episodes = 0
@@ -366,6 +372,14 @@ class AgentBase:
         self._proximo_eval = self.global_step + self.cfg.eval_every_steps
         self._proximo_log = self.global_step
         return True
+
+    @staticmethod
+    def _com_sufixo(variant, sufixo):
+        """Acrescenta `sufixo` à variante, sem duplicar quando ela já o traz."""
+        if not sufixo:
+            return variant
+        sufixo = sufixo if sufixo.startswith("_") else f"_{sufixo}"
+        return variant if variant.endswith(sufixo) else variant + sufixo
 
     def on_model_reloaded(self):
         """Gancho: o otimizador antigo aponta para as variáveis do modelo antigo."""

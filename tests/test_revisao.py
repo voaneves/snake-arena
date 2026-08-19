@@ -216,6 +216,22 @@ def test_the_dense_preset_really_produces_the_updates_it_promises():
     assert abs(denso / padrao / esperado - 1) < 0.1
 
 
+def test_a_different_hyperparameter_set_gets_a_different_identity():
+    """`denso()` muda o orçamento de gradiente, não o contrato — então ele compete. Mas
+    competir com a **mesma** identidade `(algo, variant, seed)` do padrão faria `load_all`
+    fundir as duas numa curva só, que é o mesmo defeito do canal de fome noutra roupa."""
+    comum = dict(net="resnet_tiny", num_envs=4, rollout=4, total_steps=100,
+                 salvar_gif=False, salvar_grafico=False)
+    assert PPO(PPOConfig(**comum)).variant == "resnet_tiny"
+
+    denso = PPOConfig.denso(**{k: v for k, v in comum.items() if k != "rollout"})
+    assert PPO(denso).variant == "resnet_tiny_denso"
+
+    juntos = PPOConfig.denso(canal_fome=True, comparable=False, caveat="6 canais",
+                             **{k: v for k, v in comum.items() if k != "rollout"})
+    assert PPO(juntos).variant == "resnet_tiny_fome_denso"
+
+
 def test_the_record_counts_the_gradient_updates(tmp_path):
     ag = PPO(PPOConfig(net="resnet_tiny", num_envs=4, rollout=4, epochs=2, minibatches=2,
                        total_steps=32, eval_episodes=4, eval_envs=4,

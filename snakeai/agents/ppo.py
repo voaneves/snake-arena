@@ -100,7 +100,13 @@ class PPOConfig(BaseConfig):
         escolha não justificada por outra. É uma execução, três sementes, contra as três
         que já existem — e o `history.json` de qualquer execução agora traz
         `meta["atualizacoes"]`, então a comparação é conferível depois.
+
+        A variante ganha o sufixo `_denso`: a execução compete (mesmo ambiente, mesma
+        observação, mesmo orçamento de passos), mas não é a mesma configuração — e duas
+        configurações com a identidade `(algo, variant, seed)` idêntica viram uma curva só
+        na arena.
         """
+        kw.setdefault("sufixo_variante", "denso")
         return cls(rollout=32, epochs=4, minibatches=32, **kw)
 
     def __post_init__(self):
