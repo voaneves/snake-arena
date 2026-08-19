@@ -56,22 +56,22 @@ produziu os números.
 
 ### 2. DQN semente 0 — medida do agente com o defeito que acabamos de corrigir
 
-Duas coisas de uma vez:
+A execução já está em `runs/dqn/base/seed0/` e a arena a incluiu — **mas ela é
+pré-correção**, e três evidências independentes dizem isso: `created_at` de 18/08 às 14:48,
+ausência de `meta["atualizacoes"]` (que só o código corrigido grava) e o notebook daquela
+execução (`44d39e0`) sem `desfaz_truncamento`.
 
-**Não está no repositório.** `runs/` não tem nenhuma execução de DQN. O que foi commitado
-(`44d39e0`) é o notebook executado; o `history.json` ficou na saída do Kaggle. Enquanto ele
-não estiver em `runs/dqn/base/seed0/`, não existe para a arena nem para o artigo.
-
-**É pré-correção.** O notebook daquela execução não contém `desfaz_truncamento` — conferi.
-Ela treinou com a fome gravada como terminação **e** com a observação do episódio seguinte
-no lugar do estado final. E o resultado tem exatamente a assinatura disso:
+Ou seja: ela treinou com a fome gravada como terminação **e** com a observação do episódio
+seguinte no lugar do estado final. O resultado tem exatamente a assinatura disso:
 
 | | DQN semente 0 (pré-correção) | PPO (3 sementes) |
 |---|---:|---:|
 | score final | 57,43 | 51,4 – 70,6 |
-| morte por fome | **34%** | 1,9 – 4,7% |
+| morte por fome | **34,3%** | 1,9 – 4,7% |
+| tabuleiro cheio | 0,3% | 0 – 13,1% |
 | melhor checkpoint | 65,66 (passo 4,50 M) | 62,7 |
 | avaliação em 4,75 M | 27,98 | — |
+| horas de parede | 2,4 | 0,4 |
 
 Trinta e quatro por cento dos episódios terminando por inanição, contra 2–5% do PPO, é o
 sintoma que a correção do truncamento ataca: sem bootstrap, o alvo de TD ensina que
@@ -82,6 +82,12 @@ pergunta que um revisor faria — e a resposta honesta seria "não sabemos".
 O 65,66 → 27,98 → 57,43 nas últimas avaliações é instabilidade real de DQN, mas a revisão
 também aponta uma causa mecânica não medida (§2.4: a rede alvo tem ~8 atualizações de
 defasagem, não ~2.000). Vale saber qual é qual antes de escrever a interpretação.
+
+Uma boa notícia no meio: essa execução **foi medida com a régua atual** — tem as chaves de
+causa de fim e `score_max = 97`. O problema dela é o agente, não o instrumento. E o custo
+de refazer é conhecido: **2,4 horas** de parede (contra 0,4 h do PPO), porque `learn_every`
+faz uma atualização a cada 256 passos de ambiente com laço Python na memória. Três sementes
+de DQN são ~7 horas — o suficiente para valer decidir §2.4 antes de gastá-las.
 
 ### 3. A ablação do canal de fome não aparece na arena
 
@@ -115,8 +121,9 @@ já calcula) resolveria: ela identifica o pacote inteiro.
 
 ## Ordem sugerida
 
-1. **Baixar o `history.json` do DQN** para `runs/dqn/base/seed0/`, mesmo sendo
-   pré-correção — como registro do defeito, com `caveat`. Ele é a evidência do "antes".
+1. **Marcar a execução de DQN que já está lá como o "antes"** — ela é evidência útil do
+   defeito, desde que o registro diga isso. Hoje ela entra na arena como resultado oficial,
+   ao lado do PPO, sem nada que a distinga.
 2. **Uma execução de decisão do PPO** com `denso()`, semente 0, e a variância explicada
    ligada. Compara com a `seed0` que já existe (mesma semente, mesmo tudo).
 3. **Decidir a configuração final** à luz de (2) e corrigir o truncamento dos sequenciais.

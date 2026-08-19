@@ -324,7 +324,11 @@ os {len(NOTEBOOKS)} notebooks rodem exatamente o mesmo jogo, com a mesma régua.
 
 Para mudar algo aqui, mude no pacote e rode `python tools/gerar_notebooks.py`.
 """),
-        _code(f"{MARCA_INICIO}\n# assinatura: {marca}\n\n{fonte}\n\n{MARCA_FIM}"),
+        # A assinatura vai como **constante**, não só como comentário: `record._ambiente`
+        # a lê do namespace do notebook e grava em `meta["assinatura_pacote"]`. No Kaggle
+        # não há clone git, e sem isso a curva nasce sem procedência nenhuma.
+        _code(f"{MARCA_INICIO}\n# assinatura: {marca}\n\n{fonte}\n\n"
+              f'ASSINATURA_PACOTE = "{marca}"\n\n{MARCA_FIM}'),
         _md(f"""## Configuração
 
 Os padrões abaixo são os do **contrato**: tabuleiro 10×10, 5 M passos de orçamento,

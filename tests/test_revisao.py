@@ -192,6 +192,30 @@ def test_the_dense_budget_preset_keeps_the_contract_and_multiplies_updates():
     assert atualizacoes(denso) > 10 * atualizacoes(padrao)
 
 
+def test_the_dense_preset_really_produces_the_updates_it_promises():
+    """A conta da tabela do docstring, medida em vez de calculada: o `denso()` só vale a
+    execução de decisão se o número de atualizações por passo de ambiente for mesmo o que
+    ele promete. Comparação com o padrão, no mesmo orçamento de ambiente."""
+    def mede(cfg):
+        ag = PPO(cfg)
+        passos, updates = 0, 0
+        for _ in range(3):
+            s = ag.iterate()
+            updates += s["atualizacoes"]
+        passos = ag.global_step
+        return updates / passos                      # atualizações por passo de ambiente
+
+    comum = dict(net="resnet_tiny", num_envs=8, total_steps=10 ** 6, target_kl=10.0,
+                 salvar_gif=False, salvar_grafico=False)
+    padrao = mede(PPOConfig(rollout=96, epochs=3, minibatches=8, **comum))
+    denso = mede(PPOConfig(rollout=32, epochs=4, minibatches=32, **comum))
+
+    assert denso > 10 * padrao, f"padrão {padrao:.2e}, denso {denso:.2e}"
+    # e a razão bate com a aritmética do docstring, dentro de 10%
+    esperado = (4 * 32 / 32) / (3 * 8 / 96)
+    assert abs(denso / padrao / esperado - 1) < 0.1
+
+
 def test_the_record_counts_the_gradient_updates(tmp_path):
     ag = PPO(PPOConfig(net="resnet_tiny", num_envs=4, rollout=4, epochs=2, minibatches=2,
                        total_steps=32, eval_episodes=4, eval_envs=4,
@@ -263,3 +287,50 @@ def test_the_value_target_bootstraps_everywhere_but_the_last_step(agente):
     fonte = inspect.getsource((az.AlphaZero if agente == "alphazero" else mz.MuZero).collect)
     assert "min(cfg.n_step, T - 1 - t)" in fonte
     assert "t + k + 1 < T" not in fonte
+
+
+# ================================================================== §1.9 / arena
+def _registro(tmp_path, algo, seed, **kw):
+    from snakeai.record import ORCAMENTO_OFICIAL, RunRecord, save
+    base = dict(algo=algo, variant="v", seed=seed, net="resnet_small", params=1,
+                curve=[{"global_step": ORCAMENTO_OFICIAL}],
+                config={"total_steps": ORCAMENTO_OFICIAL},
+                final={"episodes": 1000, "completo": True, "score_mean": 8.0,
+                       "fim_fome": 0.02, "fim_colisao": 0.85,
+                       "fim_tabuleiro_cheio": 0.13})
+    base.update(kw)
+    r = RunRecord(**base)
+    save(r, str(tmp_path / algo / "v" / f"seed{seed}" / "history.json"))
+    return r
+
+
+def test_the_arena_revalidates_instead_of_trusting_the_stamp(tmp_path):
+    """`meta["contract_violations"]` é escrito por **quem treinou**, com o código daquele
+    dia. Uma execução de agosto passou a régua antiga e continuou entrando na arena como
+    oficial porque ninguém reconferiu na hora de montar. Ver `docs/ANTES_DO_ARTIGO.md`."""
+    from snakeai.arena import carregar
+
+    _registro(tmp_path, "ppo", 0)
+    # medida com o protocolo anterior: sem as chaves de causa de fim, e sem carimbo
+    _registro(tmp_path, "acktr", 0,
+              final={"episodes": 1000, "completo": True, "score_mean": 83.9})
+
+    oficiais, fora, _ = carregar(str(tmp_path), legado="não_existe")
+    assert [r.algo for r in oficiais] == ["ppo"]
+    assert [r.algo for r in fora] == ["acktr"]
+    assert any("fim_fome" in p for p in fora[0].meta["contract_violations"])
+
+
+def test_runs_outside_the_contract_are_listed_not_hidden(tmp_path):
+    """`comparable=False` sumia das três listas: nem no gráfico, nem na tabela, nem na
+    seção de excluídas. O `COMPARABILITY.md` diz que excluir em silêncio é pior que
+    incluir — e a ablação do canal de fome é exatamente esse caso."""
+    from snakeai.arena import carregar
+
+    _registro(tmp_path, "ppo", 0)
+    _registro(tmp_path, "ppo_fome", 0, comparable=False, caveat="6 canais (fome)")
+
+    oficiais, fora, _ = carregar(str(tmp_path), legado="não_existe")
+    assert [r.algo for r in oficiais] == ["ppo"]
+    assert [r.algo for r in fora] == ["ppo_fome"]
+    assert "6 canais" in " ".join(fora[0].meta["contract_violations"])

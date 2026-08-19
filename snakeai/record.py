@@ -29,6 +29,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "CONTRATO",
     "ORCAMENTO_OFICIAL",
+    "SEMENTES_OFICIAIS",
     "ContractViolation",
     "RunRecord",
     "Recorder",
@@ -36,6 +37,7 @@ __all__ = [
     "save",
     "load",
     "load_all",
+    "configuracoes_incompletas",
     "from_legacy_csv",
 ]
 
@@ -64,6 +66,12 @@ CONTRATO = {
 #: outro que treinou 500 mil não mede algoritmo, mede paciência. Validado a partir de
 #: `config["total_steps"]`.
 ORCAMENTO_OFICIAL = 5_000_000
+
+#: Sementes por configuração. Era convenção escrita no `COMPARABILITY.md` e nada mais —
+#: e foi assim que a arena publicou um ACKTR de **uma** semente ao lado de um PPO de três,
+#: com a amplitude entre sementes do PPO valendo 19 pontos. Convenção que ninguém confere
+#: não é contrato. Ver `configuracoes_incompletas`.
+SEMENTES_OFICIAIS = 3
 
 #: Piso e teto do 10x10, medidos e documentados no README.
 PISO_ALEATORIO = 1.21
@@ -263,6 +271,20 @@ def load(path) -> RunRecord:
     return RunRecord(**d, schema_version=SCHEMA_VERSION)
 
 
+def configuracoes_incompletas(registros, minimo=SEMENTES_OFICIAIS):
+    """As configurações `(algo, variant)` com menos de `minimo` sementes distintas.
+
+    É uma propriedade do **conjunto**, não de uma execução — por isso não cabe em
+    `validate`, que olha uma por vez. A arena chama isto para não publicar uma linha de
+    uma semente com a mesma tipografia de uma de três.
+    """
+    grupos = {}
+    for r in registros:
+        grupos.setdefault((r.algo, r.variant), set()).add(r.seed)
+    return [{"algo": a, "variant": v, "sementes": len(s), "faltam": minimo - len(s)}
+            for (a, v), s in sorted(grupos.items()) if len(s) < minimo]
+
+
 def load_all(root="runs"):
     """Carrega todo `history.json` sob `root`, ordenado por algoritmo/variante/seed."""
     achados = []
@@ -316,6 +338,16 @@ def validate(record: RunRecord, strict_eval=True):
                      f"contrato exige {CONTRATO['eval_episodes']}")
         if not f.get("completo", True):
             p.append("avaliação final incompleta (bateu `max_steps`)")
+        # As chaves de causa de fim entraram junto com a correção do protocolo — o mesmo
+        # commit que passou a contar a maçã final do episódio vencedor. Um registro sem
+        # elas foi medido com a régua **anterior**, e `episodes`/`completo` continuam
+        # iguais nos dois casos: é a única marca que distingue. Ver
+        # `docs/ANTES_DO_ARTIGO.md`.
+        faltando = [k for k in ("fim_fome", "fim_colisao", "fim_tabuleiro_cheio")
+                    if k not in f]
+        if faltando:
+            p.append(f"`final` sem {', '.join(faltando)} — medido com um protocolo "
+                     "anterior ao atual; remeça com o `evaluate` desta versão")
         media = f.get("score_mean")
         if media is None:
             p.append("`final.score_mean` ausente")
@@ -462,6 +494,15 @@ def _ambiente():
         ).strip()
     except Exception:
         meta["commit"] = "desconhecido"
+
+    # No Colab e no Kaggle não existe clone git: o `commit` sai "desconhecido" e a curva
+    # fica sem procedência — que é justamente onde quase todas as execuções deste
+    # repositório nascem. O gerador de notebooks injeta `ASSINATURA_PACOTE` no bloco de
+    # código gerado, e ela identifica o pacote inteiro (é o hash do fonte embutido). Como
+    # o notebook é um namespace só, esta busca a encontra lá e não a encontra aqui.
+    assinatura = globals().get("ASSINATURA_PACOTE")
+    if assinatura:
+        meta["assinatura_pacote"] = str(assinatura)
     for mod in ("tensorflow", "keras"):
         try:
             meta[mod] = __import__(mod).__version__

@@ -7,7 +7,6 @@ Gerado por `python -m snakeai.arena --all`. Não editar à mão.
 | algoritmo | rede | params | sementes | passos | score médio (last) | melhor ckpt | passos até 40 | horas | amplitude | mediana | máx | cheio |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | 1 | — | 0% |
-| acktr · resnet_small | `resnet_small` | 180,464 | 1 | 5,005,312 | **83.91** | — | 1,531,904 | 0.7 | ±0.00 | 96 | 96 | 67.2% |
 | ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
 
 Score perfeito no 10×10: **97**.
@@ -26,3 +25,17 @@ de DQN custa uma passada de rede. São duas perguntas diferentes, e nenhuma das
 duas é a resposta da outra.
 
 ![arena por tempo](../assets/arena_tempo_light.png)
+
+## Execuções que não entraram na arena
+
+Estão registradas em `runs/`, com curva e artefatos, mas não competem. O
+motivo é conferido na hora de montar a arena, com esta versão do código —
+não é o carimbo que ficou gravado no dia do treino. Execuções marcadas
+`comparable=False` também aparecem aqui: elas não competem por construção,
+e some-las seria pior do que incluí-las.
+
+- `acktr/resnet_small/seed0`: `final` sem fim_fome, fim_colisao, fim_tabuleiro_cheio — medido com um protocolo anterior ao atual; remeça com o `evaluate` desta versão
+- `dqn/base/seed0`: comparable=False: treinada antes da correção do truncamento por fome (§1.1 da revisão): a fome entrava no buffer como terminação e o `next_obs` gravado era o do episódio seguinte. 34,3% dos episódios finais terminaram por inanição — o sintoma que a correção ataca. Mantida como registro do 'antes'; refazer com o pacote corrigido.
+- `ppo/resnet_small_fome/seed0`: comparable=False: observação com 6 canais (fome), fora do contrato de 5
+- `ppo/resnet_small_fome/seed1`: comparable=False: observação com 6 canais (fome), fora do contrato de 5
+- `ppo/resnet_small_fome/seed2`: comparable=False: observação com 6 canais (fome), fora do contrato de 5

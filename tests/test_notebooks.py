@@ -542,3 +542,13 @@ def test_every_arxiv_link_is_well_formed():
         assert u.startswith("https://arxiv.org/abs/"), f"link mal formado: {u}"
         assert re.fullmatch(r"https://arxiv\.org/abs/\d{4}\.\d{4,5}", u), \
             f"identificador do arXiv fora do formato: {u}"
+
+
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=[s["arquivo"] for s in NOTEBOOKS])
+def test_the_notebook_carries_the_package_signature_as_a_constant(caminho):
+    """A assinatura precisa ser legível **em tempo de execução**, não só num comentário:
+    é ela que vira `meta["assinatura_pacote"]` no registro, no lugar do `commit` que o
+    Kaggle não tem. Ver `docs/ANTES_DO_ARTIGO.md`."""
+    nb = carrega(caminho)
+    marca = nb["metadata"]["snake_arena"]["assinatura"]
+    assert f'ASSINATURA_PACOTE = "{marca}"' in bloco_gerado(nb)

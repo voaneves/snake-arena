@@ -1,0 +1,9 @@
+# Fim de linha normalizado: o repositório é LF, inclusive quando a ferramenta que
+# escreve é o Windows. Sem isto, um arquivo volta com CRLF e o diff mostra o
+# arquivo inteiro reescrito em vez das três linhas que mudaram.
+* text=auto eol=lf
+*.ipynb text eol=lf
+*.png binary
+*.gif binary
+*.keras binary
+*.npz binary

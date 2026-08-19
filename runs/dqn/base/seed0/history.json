@@ -1938,8 +1938,8 @@
     "fim_tabuleiro_cheio": 0.035,
     "global_step": 4502272
   },
-  "comparable": true,
-  "caveat": "",
+  "comparable": false,
+  "caveat": "treinada antes da correção do truncamento por fome (§1.1 da revisão): a fome entrava no buffer como terminação e o `next_obs` gravado era o do episódio seguinte. 34,3% dos episódios finais terminaram por inanição — o sintoma que a correção ataca. Mantida como registro do 'antes'; refazer com o pacote corrigido.",
   "meta": {
     "python": "3.12.13",
     "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",

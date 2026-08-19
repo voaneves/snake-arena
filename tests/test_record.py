@@ -41,7 +41,10 @@ def registro_valido(**kw):
             {"global_step": ORCAMENTO_OFICIAL, "train_score_mean": 9.0,
              "eval_score_mean": 8.1},
         ],
-        final={"episodes": 1000, "score_mean": 8.1, "completo": True},
+        # as chaves de causa de fim fazem parte do protocolo atual — sem elas, o
+        # registro é de uma régua anterior e `validate` reprova
+        final={"episodes": 1000, "score_mean": 8.1, "completo": True,
+               "fim_fome": 0.02, "fim_colisao": 0.85, "fim_tabuleiro_cheio": 0.13},
         config={"total_steps": ORCAMENTO_OFICIAL},
     )
     base.update(kw)
@@ -51,6 +54,51 @@ def registro_valido(**kw):
 # ------------------------------------------------------------------- validação
 def test_a_valid_record_passes():
     assert validate(registro_valido()) == []
+
+
+def test_the_record_must_say_how_the_episodes_ended():
+    """As chaves de causa de fim nasceram com o protocolo atual (a maçã final do episódio
+    vencedor veio no mesmo commit). Exigi-las reprova sozinha qualquer registro medido com
+    a régua antiga — que é a única forma de pegar isso, porque `episodes` e `completo`
+    continuam iguais. Ver `docs/ANTES_DO_ARTIGO.md`."""
+    r = registro_valido()
+    problemas = validate(r)
+    assert problemas == [], problemas
+
+    antigo = registro_valido()
+    antigo.final = {"episodes": 1000, "completo": True, "score_mean": 83.9,
+                    "win_rate": 0.672, "score_max": 96}
+    assert any("fim_fome" in p for p in validate(antigo))
+
+
+def test_the_package_signature_stands_in_for_the_commit():
+    """No Kaggle não há clone git e o `commit` sai como `desconhecido`. A assinatura que o
+    gerador calcula identifica o pacote inteiro e vive dentro do próprio notebook."""
+    import snakeai.record as rec_mod
+
+    meta = rec_mod._ambiente()
+    assert meta.get("assinatura_pacote") in (None, "")
+
+    rec_mod.ASSINATURA_PACOTE = "0ff4681ca5371696"
+    try:
+        meta = rec_mod._ambiente()
+        assert meta["assinatura_pacote"] == "0ff4681ca5371696"
+    finally:
+        del rec_mod.ASSINATURA_PACOTE
+
+
+def test_configurations_with_fewer_than_three_seeds_are_named():
+    """O contrato pede três sementes por configuração, mas isso era convenção escrita: a
+    arena publicava um ACKTR de uma semente ao lado de um PPO de três."""
+    from snakeai.record import SEMENTES_OFICIAIS, configuracoes_incompletas
+
+    assert SEMENTES_OFICIAIS == 3
+    registros = [registro_valido(algo="ppo", variant="resnet_small", seed=s)
+                 for s in range(3)]
+    registros.append(registro_valido(algo="acktr", variant="resnet_small", seed=0))
+    faltando = configuracoes_incompletas(registros)
+    assert [(c["algo"], c["variant"], c["sementes"]) for c in faltando] == \
+           [("acktr", "resnet_small", 1)]
 
 
 def test_env_spec_must_match_the_contract():
@@ -129,7 +177,8 @@ def test_recorder_roundtrip(tmp_path):
     rec.log(0, train_score_mean=1.0)
     rec.log(50_000, train_score_mean=np.float32(4.0), eval_score_mean=3.5)
     rec.log(ORCAMENTO_OFICIAL, train_score_mean=9.0, eval_score_mean=8.1)
-    rec.finish({"episodes": 1000, "score_mean": np.float64(8.1), "completo": True})
+    rec.finish({"episodes": 1000, "score_mean": np.float64(8.1), "completo": True,
+                "fim_fome": 0.02, "fim_colisao": 0.85, "fim_tabuleiro_cheio": 0.13})
     caminho = rec.save()
 
     assert os.path.exists(caminho)
@@ -155,7 +204,8 @@ def test_numpy_types_survive_serialization(tmp_path):
                    config={"total_steps": ORCAMENTO_OFICIAL}, root=str(tmp_path))
     rec.log(np.int64(0), x=np.float32(1.5), y=np.int32(3), z=np.array([1, 2]))
     rec.log(ORCAMENTO_OFICIAL, x=np.float32(2.5))
-    rec.finish({"episodes": 1000, "score_mean": np.float64(5.0), "completo": True})
+    rec.finish({"episodes": 1000, "score_mean": np.float64(5.0), "completo": True,
+                "fim_fome": 0.02, "fim_colisao": 0.85, "fim_tabuleiro_cheio": 0.13})
     caminho = rec.save()
     bruto = json.load(open(caminho, encoding="utf-8"))
     ponto = bruto["curve"][0]
