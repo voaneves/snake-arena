@@ -11,6 +11,7 @@ puderam ser sobrepostas.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections import deque
@@ -85,8 +86,18 @@ class AgentBase:
     #: episódio de sorte, pequeno o bastante para acompanhar o agente melhorando.
     JANELA_EPISODIOS = 500
 
+    #: Sufixo da variante para execuções fora do contrato de observação. A identidade de
+    #: uma execução é `(algo, variant, seed)` — é por ela que `load_all` agrupa, não pelo
+    #: caminho. Sem o sufixo, uma execução com `canal_fome=True` fica com a **mesma
+    #: identidade** da execução de contrato da mesma rede e semente: hoje elas só não se
+    #: misturam porque `comparable=False` as tira da arena, o que é proteção por acidente,
+    #: não por construção. Ver `docs/CANAL_DE_FOME.md`.
+    SUFIXO_FOME = "_fome"
+
     def __init__(self, cfg, variant="default"):
         self.cfg = cfg
+        if getattr(cfg, "canal_fome", False) and not variant.endswith(self.SUFIXO_FOME):
+            variant += self.SUFIXO_FOME
         self.variant = variant
         self.model = None
         self.global_step = 0
@@ -98,6 +109,7 @@ class AgentBase:
         self.melhor = -np.inf
         self._proximo_eval = 0
         self._proximo_log = 0
+        self._atualizacoes = 0
         #: Janela de episódios recentes para a média móvel do treino. Sem ela, o log
         #: imprime a média dos episódios que por acaso terminaram **naquela** iteração —
         #: uma amostra de tamanho 0 a 3. É o que produzia a sequência
@@ -202,15 +214,62 @@ class AgentBase:
     def linear(self, inicio, fim):
         return inicio + self.frac() * (fim - inicio)
 
+    # ----------------------------------------------------------- truncamento
+    @staticmethod
+    def desfaz_truncamento(info, prox_obs, prox_mask, done):
+        """Devolve `(prox_obs, prox_mask, done)` com a morte por fome tratada como o que
+        ela é: **truncamento**, não terminação.
+
+        O `VecSnake` marca `done` para fome porque o episódio de fato acaba ali, mas
+        exporta `trunc_idx`, `final_obs` e `final_mask` justamente para que o agente possa
+        continuar o valor. Quem guarda a transição crua — DQN, Rainbow — tinha dois
+        problemas de uma vez: gravava `done=1`, jogando fora o `γ·V(s')`, e gravava como
+        `s'` a observação **do episódio seguinte**, porque o ambiente já resetou. O
+        segundo é o pior: não havia como corrigir depois, o estado certo não estava no
+        buffer.
+
+        Aqui os dois somem: `s'` volta a ser o estado final verdadeiro e `done` volta a
+        ser 0, que é exatamente o alvo de TD correto. Ver `docs/REVISAO_ALGORITMOS.md`
+        §1.1.
+
+        Não altera as entradas — devolve cópias.
+        """
+        ti = info.get("trunc_idx")
+        if ti is None or len(ti) == 0:
+            return prox_obs, prox_mask, done
+        prox_obs = np.array(prox_obs, copy=True)
+        prox_mask = np.array(prox_mask, copy=True)
+        done = np.array(done, copy=True)
+        prox_obs[ti] = info["final_obs"]
+        prox_mask[ti] = info["final_mask"]
+        done[ti] = 0.0
+        return prox_obs, prox_mask, done
+
     # -------------------------------------------------------------- avaliação
     def politica(self):
         """A função de política que `snakeai.eval` consome. Sobrescreva se precisar."""
         return keras_policy(self.model)
 
-    def avaliar(self, episodes=None, safety=False):
+    def politica_do_modelo(self, modelo):
+        """A política de um modelo que veio **de fora** — um checkpoint, tipicamente.
+
+        Existe porque `avaliar_melhor` trocava `self.model` e chamava `avaliar()`, o que
+        só funciona para quem joga por `self.model`. O MuZero declara `model` como
+        propriedade com setter vazio e o DreamerV3 joga por `self.ator` dentro de uma
+        política recorrente: nos dois, a troca não fazia nada e a coluna `melhor` do
+        registro virava uma segunda medição do modelo **final**, gravada com o passo do
+        checkpoint `best`. Ver `docs/REVISAO_ALGORITMOS.md` §1.4.
+
+        Quem não consegue jogar a partir de um `.keras` sozinho deve levantar
+        `NotImplementedError` com o motivo — `avaliar_melhor` transforma isso numa coluna
+        ausente e explicada, que é honesto, em vez de um número errado.
+        """
+        return keras_policy(modelo)
+
+    def avaliar(self, episodes=None, safety=False, politica=None):
         """Roda o protocolo oficial. **Nunca** com exploração — é o número honesto."""
         stats, _ = evaluate(
-            self.politica(),
+            politica or self.politica(),
             board_size=self.cfg.board_size,
             episodes=episodes or self.cfg.eval_episodes,
             num_envs=self.cfg.eval_envs,
@@ -234,8 +293,48 @@ class AgentBase:
     def _caminho(self, tag, ext):
         return os.path.join(self.cfg.ckpt_dir, f"{self.algo}_{tag}.{ext}")
 
+    def modelos_extra(self):
+        """Modelos/camadas além de `self.model` sem os quais a execução não se reproduz.
+
+        O `salvar()` grava `self.model`, o que basta para quem joga com uma rede só. O
+        DreamerV3 não é assim: `self.model` é o **ator**, e um ator sem o modelo do mundo
+        não joga nada — a pasta da execução guardava um `.keras` que não reproduz o número
+        da curva, e `retomar()` voltava com o RSSM aleatório enquanto o `global_step`
+        continuava contando. Ver `docs/REVISAO_ALGORITMOS.md` §1.4.
+
+        Devolve `{nome: modelo}`. Os pesos vão para um `.npz` ao lado do `.keras`, em vez
+        de um `.keras` por peça: preserva a identidade dos objetos, e portanto as
+        `tf.function` já traçadas que os capturaram.
+        """
+        return {}
+
+    def _pesos_extra(self):
+        return {f"{nome}/{i}": np.asarray(v)
+                for nome, m in self.modelos_extra().items()
+                for i, v in enumerate(m.weights)}
+
+    def _salvar_extra(self, tag):
+        pesos = self._pesos_extra()
+        if pesos:
+            np.savez(self._caminho(tag, "npz"), **pesos)
+
+    def _carregar_extra(self, tag):
+        """Devolve `True` se havia pesos extras para carregar."""
+        caminho = self._caminho(tag, "npz")
+        extras = self.modelos_extra()
+        if not extras or not os.path.exists(caminho):
+            return False
+        with np.load(caminho) as dados:
+            for nome, m in extras.items():
+                for i, v in enumerate(m.weights):
+                    chave = f"{nome}/{i}"
+                    if chave in dados:
+                        v.assign(dados[chave])
+        return True
+
     def salvar(self, tag="last"):
         self.model.save(self._caminho(tag, "keras"))
+        self._salvar_extra(tag)
         estado = {
             "global_step": self.global_step, "episodes": self.episodes,
             "iteration": self.iteration, "history": self.history,
@@ -253,6 +352,7 @@ class AgentBase:
         if not (os.path.exists(m) and os.path.exists(s)):
             return False
         self.model = keras.models.load_model(m)
+        self._carregar_extra(tag)
         self.on_model_reloaded()
         with open(s, encoding="utf-8") as f:
             estado = json.load(f)
@@ -277,15 +377,30 @@ class AgentBase:
     def train(self, verbose=True, ate_passos=None):
         """Roda até o orçamento, avaliando na cadência oficial. Devolve o `RunRecord`."""
         alvo = ate_passos or self.cfg.total_steps
+        # O `env_spec` descreve o ambiente que **de fato** rodou, não o contrato: uma
+        # execução com `canal_fome=True` gravava `n_channels: 5` no registro, e o
+        # arquivo mentia sobre a própria observação. Ele continua idêntico ao contrato
+        # em qualquer execução de 5 canais, que é o caso normal.
+        env_spec = dict(CONTRATO)
+        canais = getattr(getattr(self, "env", None), "n_channels", None)
+        if canais:
+            env_spec["n_channels"] = int(canais)
+
         rec = Recorder(self.algo, variant=self.variant, seed=self.cfg.seed,
                        net=self.cfg.net,
                        params=self.model.count_params() if self.model else 0,
-                       config=asdict(self.cfg), root=self.cfg.runs_dir)
+                       config=asdict(self.cfg), env_spec=env_spec,
+                       root=self.cfg.runs_dir)
         self.piso()
 
         while self.global_step < alvo:
             stats = self.iterate()
             self.iteration += 1
+            # Quantos passos de gradiente o orçamento de ambiente comprou. Fica no
+            # metadado porque é o eixo do §2.1 da revisão e não dá para reconstruir do
+            # `config` — o early-stop por KL corta épocas. Zero significa "o agente não
+            # reporta", não "não atualizou".
+            self._atualizacoes += int(stats.get("atualizacoes", 0) or 0)
 
             # Quem chama `registra_fim` no laço de coleta já contabilizou os episódios com
             # a causa da morte junto; registrar de novo aqui contaria cada um duas vezes e
@@ -347,7 +462,9 @@ class AgentBase:
         # não é conferível por máquina — este número é.
         if getattr(self, "env", None) is not None:
             rec.record.meta["obs_channels"] = int(
-                getattr(self.env, "n_channels", CONTRATO.get("obs_channels", 5)))
+                getattr(self.env, "n_channels", CONTRATO["n_channels"]))
+        if self._atualizacoes:
+            rec.record.meta["atualizacoes"] = int(self._atualizacoes)
         self.salvar("last")
 
         # O registro é gravado SEMPRE. Estourar no fim de um treino de horas e perder a
@@ -383,17 +500,34 @@ class AgentBase:
             return None
         return keras.models.load_model(caminho)
 
+    @contextlib.contextmanager
+    def politica_de_checkpoint(self, tag="best"):
+        """Uma política que joga pelo checkpoint `tag`, válida dentro do bloco.
+
+        `None` quando o checkpoint não existe. É um gerenciador de contexto porque há
+        agentes — o DreamerV3 — que só conseguem jogar um checkpoint **trocando os pesos
+        dos próprios submodelos**, e nesse caso a restauração precisa acontecer mesmo se a
+        avaliação levantar.
+        """
+        m = self.modelo_melhor() if tag == "best" else None
+        yield None if m is None else self.politica_do_modelo(m)
+
     def avaliar_melhor(self, verbose=True):
-        """Roda o protocolo oficial sobre o melhor checkpoint. `{}` se não houver."""
-        m = self.modelo_melhor()
-        if m is None:
-            return {}
-        atual = self.model
+        """Roda o protocolo oficial sobre o melhor checkpoint. `{}` se não houver.
+
+        Avalia **pelo modelo carregado**, sem tocar em `self.model`: a troca de atributo
+        era silenciosamente ineficaz em dois agentes (ver `politica_do_modelo`).
+        """
         try:
-            self.model = m
-            stats = self.avaliar()
-        finally:
-            self.model = atual
+            with self.politica_de_checkpoint("best") as pol:
+                if pol is None:
+                    return {}
+                stats = self.avaliar(politica=pol)
+        except NotImplementedError as e:
+            if verbose:
+                print(f"  [melhor] não avaliado: {e}")
+            return {"indisponivel": str(e),
+                    "global_step": int(self._passo_do_melhor())}
         stats["global_step"] = int(self._passo_do_melhor())
         if verbose:
             print(f"  [melhor] checkpoint do passo {stats['global_step']:,} · "
@@ -427,11 +561,14 @@ class AgentBase:
         os.makedirs(pasta, exist_ok=True)
         copiados = {}
         for tag in ("last", "best"):
-            origem = self._caminho(tag, "keras")
-            if os.path.exists(origem):
-                alvo = os.path.join(pasta, f"{tag}.keras")
-                shutil.copyfile(origem, alvo)
-                copiados[tag] = alvo
+            # o `.npz` acompanha o `.keras`: para o DreamerV3 é ele que carrega o modelo
+            # do mundo, e sem ele a pasta guarda um ator que não joga (§1.4 da revisão)
+            for ext in ("keras", "npz"):
+                origem = self._caminho(tag, ext)
+                if os.path.exists(origem):
+                    alvo = os.path.join(pasta, f"{tag}.{ext}")
+                    shutil.copyfile(origem, alvo)
+                    copiados[tag if ext == "keras" else f"{tag}+pesos"] = alvo
         if verbose and copiados:
             mb = sum(os.path.getsize(c) for c in copiados.values()) / 1e6
             print(f"  [modelos] {', '.join(sorted(copiados))} em {pasta} ({mb:.1f} MB)")

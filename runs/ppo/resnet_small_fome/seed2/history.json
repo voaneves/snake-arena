@@ -1,6 +1,6 @@
 {
   "algo": "ppo",
-  "variant": "resnet_small",
+  "variant": "resnet_small_fome",
   "seed": 2,
   "net": "resnet_small",
   "params": 180896,

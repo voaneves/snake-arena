@@ -442,6 +442,22 @@ def test_the_network_input_follows_the_environment_not_the_constant():
     ag.iterate()                                          # o buffer da coleta também
 
 
+def test_the_hunger_channel_gets_its_own_variant():
+    """A identidade de uma execução é `(algo, variant, seed)` — `load_all` agrupa por ela.
+    Sem sufixo, uma execução de 6 canais tem a mesma identidade da de 5 com a mesma rede e
+    semente, e só não se misturam porque `comparable=False` as tira da arena. Proteção por
+    acidente não é proteção."""
+    comum = dict(net="resnet_tiny", num_envs=4, rollout=4, total_steps=100,
+                 salvar_gif=False, salvar_grafico=False)
+    assert PPO(PPOConfig(**comum)).variant == "resnet_tiny"
+    fome = PPO(PPOConfig(canal_fome=True, comparable=False, caveat="6 canais", **comum))
+    assert fome.variant == "resnet_tiny_fome"
+    # e não duplica quando a variante já vem explícita
+    dado = PPO(PPOConfig(canal_fome=True, comparable=False, caveat="6 canais", **comum),
+               variant="resnet_tiny_fome")
+    assert dado.variant == "resnet_tiny_fome"
+
+
 def test_evaluation_builds_the_environment_with_the_same_channels_as_training():
     """O treino ia até o primeiro `eval` e morria: a rede de 6 canais recebia a
     observação de 5 que `evaluate` construía por padrão. O erro aparecia só depois de

@@ -330,6 +330,15 @@ def validate(record: RunRecord, strict_eval=True):
                  f"{ORCAMENTO_OFICIAL:,}. Comparar treinos de tamanhos diferentes mede "
                  "paciência, não algoritmo")
 
+    # O `config` diz o orçamento **pretendido**; a curva diz o que foi **gasto**. Conferir
+    # só o primeiro deixava passar uma execução interrompida na metade com o `config`
+    # intacto — `train(ate_passos=...)` faz exatamente isso, e uma sessão do Colab caindo
+    # também. Ver `docs/REVISAO_ALGORITMOS.md` §1.3.
+    gasto = max((int(ponto.get("global_step", 0)) for ponto in record.curve), default=0)
+    if gasto < ORCAMENTO_OFICIAL:
+        p.append(f"a curva vai até {gasto:,} passos, abaixo dos {ORCAMENTO_OFICIAL:,} do "
+                 "contrato — o orçamento declarado em `config` não é o que foi gasto")
+
     if record.params <= 0:
         p.append("`params` deve ser o número de parâmetros treináveis")
     if not record.net:

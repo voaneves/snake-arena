@@ -49,6 +49,7 @@ em dados ou só devagar.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass
 
@@ -610,6 +611,55 @@ class DreamerV3(AgentBase):
     # ------------------------------------------------------------- avaliação
     def politica(self):
         return PoliticaRecorrente(self)
+
+    def modelos_extra(self):
+        """Tudo que o ator precisa para jogar — sem isto, o `.keras` não reproduz nada.
+
+        `self.model` é o **ator**, e o ator consome `(h, z)`, que só existem depois do
+        encoder, da GRU e do posterior. O crítico e o alvo entram porque `retomar()` sem
+        eles recomeça o ator contra um crítico aleatório. Ver
+        `docs/REVISAO_ALGORITMOS.md` §1.4.
+        """
+        return {
+            "encoder": self.encoder, "entrada_gru": self.entrada_gru, "gru": self.gru,
+            "prior": self.prior, "post": self.post, "decoder": self.decoder,
+            "cabecas": self.cabecas, "mascara": self.mascara,
+            "critico": self.critico, "critico_alvo": self.critico_alvo,
+        }
+
+    @contextlib.contextmanager
+    def politica_de_checkpoint(self, tag="best"):
+        """Joga pelo checkpoint trocando os pesos no lugar, e devolve como estavam.
+
+        O caminho do `AgentBase` — carregar o `.keras` e embrulhar em `keras_policy` — não
+        serve aqui: a política é recorrente e mora em cinco submodelos, não num modelo só.
+        A troca acontece sobre os próprios objetos, o que preserva as `tf.function` já
+        traçadas; o `finally` garante que `self.model` volte a ser o do último passo, que
+        é quem define a curva.
+        """
+        caminho, extra = self._caminho(tag, "keras"), self._caminho(tag, "npz")
+        if not (os.path.exists(caminho) and os.path.exists(extra)):
+            yield None
+            return
+
+        guardados = ([np.asarray(v) for v in self.ator.weights], self._pesos_extra())
+        try:
+            self.ator.set_weights(keras.models.load_model(caminho).get_weights())
+            self.model = self.ator
+            self._carregar_extra(tag)
+            yield self.politica()
+        finally:
+            pesos_ator, pesos_extra = guardados
+            for v, valor in zip(self.ator.weights, pesos_ator):
+                v.assign(valor)
+            for nome, m in self.modelos_extra().items():
+                for i, v in enumerate(m.weights):
+                    # uma camada construída preguiçosamente durante a avaliação não estava
+                    # no retrato; ela nasceu depois e não há o que restaurar nela
+                    valor = pesos_extra.get(f"{nome}/{i}")
+                    if valor is not None:
+                        v.assign(valor)
+            self.model = self.ator
 
     def on_model_reloaded(self):
         self.ator = self.model

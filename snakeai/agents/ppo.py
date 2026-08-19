@@ -39,7 +39,7 @@ from ..nets import build_actor_critic
 from ..otimizadores import cria_otimizador
 from .base import AgentBase, BaseConfig
 
-__all__ = ["PPOConfig", "PPO", "compute_gae"]
+__all__ = ["PPOConfig", "PPO", "compute_gae", "variancia_explicada"]
 
 
 @dataclass
@@ -73,6 +73,36 @@ class PPOConfig(BaseConfig):
     #: deixa de ser comparável com qualquer outra do repositório.
     canal_fome: bool = False
 
+    @classmethod
+    def denso(cls, **kw):
+        """O mesmo orçamento de ambiente, gasto em **~16× mais passos de gradiente**.
+
+        Os 5 M passos do contrato são de *ambiente*; quantas atualizações de gradiente se
+        tira deles é escolha livre, e a escolha atual gasta pouquíssimo:
+
+        =========================  ==============  ==============
+        \                          padrão          `denso()`
+        =========================  ==============  ==============
+        `rollout`                  96              32
+        amostras por iteração      49.152          16.384
+        iterações em 5 M passos    ~102            ~305
+        `epochs` × `minibatches`   3 × 8           4 × 32
+        tamanho do minilote        6.144           512
+        **atualizações no total**  **~2.400**      **~39.000**
+        =========================  ==============  ==============
+
+        Um PPO de referência em Atari faz da ordem de 10⁵ atualizações em 10 M frames; o
+        padrão daqui faz duas ordens de grandeza menos, e ainda decai o `lr` até 5e-5 ao
+        longo delas. A hipótese — ver `docs/REVISAO_ALGORITMOS.md` §2.1 — é que o teto de
+        ~62 pontos é orçamento de otimização, não algoritmo.
+
+        Isto **não** é o padrão de propósito: trocar o padrão sem medir substituiria uma
+        escolha não justificada por outra. É uma execução, três sementes, contra as três
+        que já existem — e o `history.json` de qualquer execução agora traz
+        `meta["atualizacoes"]`, então a comparação é conferível depois.
+        """
+        return cls(rollout=32, epochs=4, minibatches=32, **kw)
+
     def __post_init__(self):
         super().__post_init__()
         if self.canal_fome and self.comparable:
@@ -103,6 +133,23 @@ def compute_gae(rewards, values, dones, last_value, gamma, lam):
         ultimo = delta + gamma * lam * continua * ultimo
         adv[t] = ultimo
     return adv, adv + values
+
+
+def variancia_explicada(valor, retorno):
+    """`1 − Var(retorno − valor) / Var(retorno)` — o crítico explica quanto do retorno?
+
+    1 é um crítico perfeito, 0 é um crítico que não vale mais que prever a média, e
+    negativo é um crítico que atrapalha. É a métrica que diz se a vantagem do GAE está
+    sendo calculada sobre uma baseline útil ou sobre ruído — e é a evidência que decide se
+    o `vf_clip` em unidades absolutas está travando o crítico, porque com o valor preso a
+    ±`vf_clip` por iteração ele nunca alcança a escala do retorno.
+    Ver `docs/REVISAO_ALGORITMOS.md` §2.2.
+    """
+    retorno = np.asarray(retorno, dtype=np.float64)
+    var = retorno.var()
+    if var < 1e-12:                      # retorno constante: a razão não significa nada
+        return float("nan")
+    return float(1.0 - (retorno - np.asarray(valor, dtype=np.float64)).var() / var)
 
 
 # ------------------------------------------------------------------ forward TF
@@ -299,6 +346,7 @@ class PPO(AgentBase):
         logs = {"pg": [], "vf": [], "ent": [], "kl": [], "clipfrac": []}
         parar = False
         epocas_feitas = 0
+        atualizacoes = 0
         for _ in range(cfg.epochs):
             rng.shuffle(idx)
             for s in range(0, n, mb):
@@ -314,6 +362,7 @@ class PPO(AgentBase):
                 logs["pg"].append(float(pg)); logs["vf"].append(float(vf))
                 logs["ent"].append(float(e)); logs["kl"].append(float(kl))
                 logs["clipfrac"].append(float(cf))
+                atualizacoes += 1
                 if float(kl) > cfg.target_kl * 1.5:
                     parar = True
                     break
@@ -322,6 +371,8 @@ class PPO(AgentBase):
                 break
         saida = {k: float(np.mean(v)) for k, v in logs.items()}
         saida["epochs_done"] = epocas_feitas
+        saida["atualizacoes"] = int(atualizacoes)
+        saida["ev"] = variancia_explicada(lote["val"], lote["ret"])
         saida["lr"] = float(self.lr())
         saida["ent_coef"] = ent
         return saida

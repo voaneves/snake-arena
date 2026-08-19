@@ -11,6 +11,7 @@ em qualquer versão moderna; esta é uma `Layer` própria, com `add_weight` e `k
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 os.environ.setdefault("KERAS_BACKEND", "tensorflow")
@@ -18,7 +19,8 @@ os.environ.setdefault("KERAS_BACKEND", "tensorflow")
 import keras
 from keras import layers, ops
 
-__all__ = ["NoisyDense", "dueling_head", "distributional_head", "q_de_distribuicao"]
+__all__ = ["NoisyDense", "dueling_head", "distributional_head", "q_de_distribuicao",
+           "ruido_ligado"]
 
 
 @keras.saving.register_keras_serializable(package="snakeai")
@@ -36,6 +38,13 @@ class NoisyDense(layers.Layer):
     algoritmos perderia o sentido. Alguns trabalhos mantêm o ruído na avaliação — aqui não,
     e a escolha está registrada porque muda o número publicado.
 
+    Só que **a coleta não é a avaliação**, e amarrar o ruído a `training` juntava as duas:
+    a política de comportamento saía determinística, e um Rainbow com `eps=0` (porque "a
+    exploração é responsabilidade da rede") passava o treino inteiro sem explorar nada. O
+    atributo `ruido` desempata: `None` segue o `training`, `True` força ruído, `False`
+    força determinismo. Use o gerenciador `ruido_ligado` — ele é para uso **eager**, na
+    coleta; dentro de uma `tf.function` o valor vira constante no traçado.
+
     Parâmetros
     ----------
     units : int
@@ -51,6 +60,8 @@ class NoisyDense(layers.Layer):
         self.sigma0 = float(sigma0)
         self.seed = seed
         self.seed_generator = keras.random.SeedGenerator(seed)
+        #: `None` = segue `training`; `True`/`False` forçam. Ver `ruido_ligado`.
+        self.ruido = None
 
     def build(self, input_shape):
         entrada = int(input_shape[-1])
@@ -77,7 +88,7 @@ class NoisyDense(layers.Layer):
         return ops.sign(x) * ops.sqrt(ops.abs(x))
 
     def call(self, inputs, training=False):
-        if training:
+        if self.ruido if self.ruido is not None else training:
             eps_in = self._f(keras.random.normal((self._entrada,),
                                                  seed=self.seed_generator))
             eps_out = self._f(keras.random.normal((self.units,),
@@ -186,3 +197,36 @@ def suporte_c51(v_min=-10.0, v_max=10.0, n_atoms=51):
     import numpy as np
 
     return np.linspace(v_min, v_max, n_atoms, dtype=np.float32)
+
+
+@contextlib.contextmanager
+def ruido_ligado(modelo, ativo=True):
+    """Liga o ruído das `NoisyDense` de `modelo` dentro do bloco, e devolve como estava.
+
+    Existe porque **coletar não é avaliar**. `NoisyDense.call` amarra o ruído a
+    `training`, e ligar `training=True` na coleta traria junto tudo o que esse sinalizador
+    significa nos outros troncos — o `Dropout` do `cnn_classic`, por exemplo. Este
+    gerenciador mexe só nas camadas ruidosas.
+
+    Uso **eager**, na escolha da ação. Dentro de uma `tf.function` o atributo é lido no
+    traçado e vira constante no grafo, que não é o que se quer.
+    """
+    camadas = [c for c in _camadas(modelo) if isinstance(c, NoisyDense)]
+    antes = [c.ruido for c in camadas]
+    for c in camadas:
+        c.ruido = ativo
+    try:
+        yield camadas
+    finally:
+        for c, valor in zip(camadas, antes):
+            c.ruido = valor
+
+
+def _camadas(modelo):
+    """Todas as camadas de `modelo`, inclusive as aninhadas em submodelos."""
+    vistas, pilha = [], list(getattr(modelo, "layers", []))
+    while pilha:
+        c = pilha.pop()
+        vistas.append(c)
+        pilha.extend(getattr(c, "layers", []))
+    return vistas

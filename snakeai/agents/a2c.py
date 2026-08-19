@@ -22,7 +22,7 @@ import numpy as np
 import tensorflow as tf
 
 from ..eval import MASK_NEG
-from .ppo import PPO, PPOConfig
+from .ppo import PPO, PPOConfig, variancia_explicada
 
 __all__ = ["A2CConfig", "A2C"]
 
@@ -99,4 +99,6 @@ class A2C(PPO):
         return {
             "pg": float(pg), "vf": float(vf), "ent": float(e),
             "lr": float(self.lr()), "ent_coef": ent, "epochs_done": 1,
+            "atualizacoes": 1,
+            "ev": variancia_explicada(lote["val"], lote["ret"]),
         }

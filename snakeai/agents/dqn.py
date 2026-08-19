@@ -40,6 +40,7 @@ from ..env.vec_snake import N_ACTIONS, N_CHANNELS, VecSnake
 from ..eval import MASK_NEG
 from ..memory.replay import PrioritizedReplayBuffer, ReplayBuffer
 from ..nets import build_q_network, q_de_distribuicao
+from ..nets.heads import ruido_ligado
 from ..otimizadores import cria_otimizador
 from .base import AgentBase, BaseConfig
 
@@ -172,7 +173,16 @@ class DQN(AgentBase):
         return fn
 
     def _escolher(self, obs, mask):
-        q = np.asarray(self._q_valores(self.model, tf.convert_to_tensor(obs)))
+        """A política de **comportamento** — e é aqui que a exploração precisa existir.
+
+        Com `noisy=True` o ε é zero de propósito ("a exploração é responsabilidade da
+        rede"), mas `NoisyDense` só sorteava ruído com `training=True`, que a coleta nunca
+        ligava: o Rainbow passava o treino inteiro agindo por argmax determinístico. Ver
+        `docs/REVISAO_ALGORITMOS.md` §2.3. A avaliação continua sem ruído — é outro
+        caminho (`politica()`), e o contrato exige determinismo lá.
+        """
+        with ruido_ligado(self.model, ativo=bool(self.cfg.noisy)):
+            q = np.asarray(self._q_valores(self.model, tf.convert_to_tensor(obs)))
         q = np.where(mask, q, -np.inf)
         acoes = q.argmax(axis=1).astype(np.int32)
 
@@ -288,8 +298,11 @@ class DQN(AgentBase):
             self.obs, self.mask, r, d, info = self.env.step(acoes)
             self.registra_fim(info)
 
-            self.memoria.add_batch(obs_ant, acoes, r, self.obs, d.astype(np.float32),
-                                   self.mask)
+            # fome é truncamento: o estado final verdadeiro entra no lugar da
+            # observação já resetada, e `done` volta a 0 para o bootstrap acontecer
+            prox_obs, prox_mask, prox_done = self.desfaz_truncamento(
+                info, self.obs, self.mask, d.astype(np.float32))
+            self.memoria.add_batch(obs_ant, acoes, r, prox_obs, prox_done, prox_mask)
             self.global_step += cfg.num_envs
             scores.extend(info["scores"].tolist())
             vitorias += info["wins"]
@@ -308,6 +321,7 @@ class DQN(AgentBase):
             "train_score_mean": float(np.mean(scores)) if scores else None,
             "n_episodes": len(scores),
             "wins": vitorias,
+            "atualizacoes": len(perdas),
             "loss": float(np.mean(perdas)) if perdas else None,
             "epsilon": self.epsilon(),
             "memoria": len(self.memoria),

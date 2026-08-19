@@ -235,18 +235,28 @@ class MuZero(AgentBase):
             vitorias += info["wins"]
 
         # alvo de valor por passo: n passos + bootstrap no valor da busca
+        # O `n` encolhe no fim da janela. Com `rollout=16` e `n_step=10`, o estado
+        # `t + n_step` está fora do buffer para todo `t >= 6` — e a versão anterior
+        # simplesmente **não fazia bootstrap** nesses casos: dez dos dezesseis passos
+        # tratavam o fim da coleta como fim de episódio, e num jogo de recompensa esparsa
+        # isso é um alvo quase sempre igual a zero, que ainda por cima realimenta a busca.
+        # Encurtar o horizonte e fazer bootstrap no último estado disponível troca um
+        # pouco de viés de horizonte por um alvo que não é puxado para zero.
+        # Ver `docs/REVISAO_ALGORITMOS.md` §2.5.
         z = np.zeros((T, N), np.float32)
         for t in range(T):
             g = np.zeros(N, np.float32)
             desc = np.ones(N, np.float32)
             vivo = np.ones(N, bool)
-            k = 0
-            for k in range(min(cfg.n_step, T - t)):
+            n = min(cfg.n_step, T - 1 - t)      # 0 só no último passo da janela
+            for k in range(n):
                 g += desc * rew_b[t + k] * vivo
                 vivo &= done_b[t + k] < 0.5
                 desc *= cfg.gamma
-            if t + k + 1 < T:
-                g += desc * v_b[t + k + 1] * vivo
+            if n > 0:
+                g += desc * v_b[t + n] * vivo
+            else:                               # t = T-1: não há estado seguinte aqui
+                g += rew_b[t]
             z[t] = g
 
         # cada amostra guarda o desenrolar de K passos que vem depois dela

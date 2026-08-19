@@ -33,10 +33,13 @@ def registro_valido(**kw):
         seed=0,
         net="resnet_small",
         params=135_000,
+        # a curva vai até o orçamento porque `validate` confere o que foi **gasto**, e
+        # não o que o `config` declara — ver `docs/REVISAO_ALGORITMOS.md` §1.3
         curve=[
             {"global_step": 0, "train_score_mean": 1.0},
             {"global_step": 50_000, "train_score_mean": 4.0, "eval_score_mean": 3.5},
-            {"global_step": 100_000, "train_score_mean": 9.0, "eval_score_mean": 8.1},
+            {"global_step": ORCAMENTO_OFICIAL, "train_score_mean": 9.0,
+             "eval_score_mean": 8.1},
         ],
         final={"episodes": 1000, "score_mean": 8.1, "completo": True},
         config={"total_steps": ORCAMENTO_OFICIAL},
@@ -125,7 +128,7 @@ def test_recorder_roundtrip(tmp_path):
                    root=str(tmp_path))
     rec.log(0, train_score_mean=1.0)
     rec.log(50_000, train_score_mean=np.float32(4.0), eval_score_mean=3.5)
-    rec.log(100_000, train_score_mean=9.0, eval_score_mean=8.1)
+    rec.log(ORCAMENTO_OFICIAL, train_score_mean=9.0, eval_score_mean=8.1)
     rec.finish({"episodes": 1000, "score_mean": np.float64(8.1), "completo": True})
     caminho = rec.save()
 
@@ -151,6 +154,7 @@ def test_numpy_types_survive_serialization(tmp_path):
     rec = Recorder("a2c", seed=0, net="cnn3", params=1234,
                    config={"total_steps": ORCAMENTO_OFICIAL}, root=str(tmp_path))
     rec.log(np.int64(0), x=np.float32(1.5), y=np.int32(3), z=np.array([1, 2]))
+    rec.log(ORCAMENTO_OFICIAL, x=np.float32(2.5))
     rec.finish({"episodes": 1000, "score_mean": np.float64(5.0), "completo": True})
     caminho = rec.save()
     bruto = json.load(open(caminho, encoding="utf-8"))
@@ -176,7 +180,7 @@ def test_load_all_finds_and_sorts(tmp_path):
 
 def test_eval_curve_only_returns_evaluated_points():
     x, y = registro_valido().eval_curve()
-    assert x.tolist() == [50_000, 100_000]
+    assert x.tolist() == [50_000, ORCAMENTO_OFICIAL]
     assert y.tolist() == [3.5, 8.1]
 
 
