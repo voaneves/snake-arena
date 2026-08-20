@@ -97,22 +97,28 @@ class ACKTRConfig(A2CConfig):
     lr_start: float = 0.5
     lr_end: float = 0.1
 
-    #: Alvo de KL por atualização — **entregue**, não nominal, porque `kl_calibrado` vem
-    #: ligado por padrão. Wu et al. usam 0,001–0,002 no Atari; aqui o valor saiu de uma
-    #: medição de três pontos na semente 0, com a KL entregue no eixo:
+    #: Alvo de KL por atualização. Wu et al. usam 0,001–0,002 no Atari; aqui o alvo
+    #: **entregue** é o que importa, porque o pedido passa pela Fisher aproximada antes de
+    #: virar passo — e é isso que `kl_calibrado` fecha.
     #:
-    #: ==================  ========  =======  ========
-    #: KL entregue         melhor    final    cheio
-    #: ==================  ========  =======  ========
-    #: 0,0015              74,19     72,50    28,9%
-    #: **0,0068**          **91,62** **89,78** **89,7%**
-    #: 0,0136              84,92     64,53    26,7%
-    #: ==================  ========  =======  ========
+    #: Três sementes com este valor, e uma leitura que **não** funcionou:
     #:
-    #: Não é monotônico: existe um ótimo interior. Passo pequeno demais aprende devagar,
-    #: grande demais desestabiliza. Pedir 0,015 entrega ~0,007 — a malha de calibração
-    #: converge para um fator que encolhe o pedido — e é esse ponto que resolve o jogo.
-    #: Ver `docs/ACKTR_REGIAO_DE_CONFIANCA.md`.
+    #: =======  =============  =======  ========
+    #: semente  KL entregue    final    cheio
+    #: =======  =============  =======  ========
+    #: 0        0,0068         89,78    89,7%
+    #: 1        0,0097         70,67    43,7%
+    #: 2        0,0143         78,13    60,7%
+    #: =======  =============  =======  ========
+    #:
+    #: Média 79,52, desvio **9,63**. Cheguei a escrever aqui que existia um ótimo interior
+    #: perto de 0,0068; a semente 2 desmente — ela entrega o **dobro** de KL e joga melhor
+    #: que a semente 1. A KL entregue não explica a dispersão, e o que sobra é semente.
+    #:
+    #: Para comparação, o PPO no orçamento padrão faz 80,90 com desvio 1,80: mesma média,
+    #: **5,3× menos dispersão**. É o resultado honesto sobre o ACKTR neste ambiente — não
+    #: que ele seja pior, e sim que ele é imprevisível. Ver
+    #: `docs/ORCAMENTO_DE_GRADIENTE.md`.
     kl_max: float = 1.5e-2
 
     #: Amortecimento de Tikhonov. Alto demais e o ACKTR vira A2C com passo esquisito;
