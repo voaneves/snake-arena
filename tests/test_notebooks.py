@@ -339,30 +339,34 @@ def test_notebook_exports_both_models_to_separate_folders(caminho):
     assert '"export", "last"' in junto and '"export", "best"' in junto
 
 
-def test_the_calibrated_acktr_notebook_is_the_same_agent_with_one_flag():
+def test_the_acktr_ablation_is_the_same_agent_with_one_flag():
     """O `98` não pode ser um agente novo — se fosse, a diferença entre as duas curvas
-    incluiria tudo o que divergiu entre as duas implementações."""
-    base = next(s for s in NOTEBOOKS if s["arquivo"] == "08_acktr.ipynb")
-    cal = next(s for s in NOTEBOOKS
-               if s["arquivo"] == "98_acktr_kl_max_corrigido.ipynb")
-    assert cal["agente"] == base["agente"] == "ACKTR"
-    assert cal["modulos"] == base["modulos"]
-    assert cal["extra_cfg"].strip() == "kl_calibrado=True,"
+    incluiria tudo o que divergiu entre as duas implementações.
+
+    Os papéis se inverteram depois da medição: o `08` é o oficial, com a região de
+    confiança calibrada por padrão, e o `98` é o braço de controle que volta ao alvo
+    nominal."""
+    oficial = next(s for s in NOTEBOOKS if s["arquivo"] == "08_acktr.ipynb")
+    ablacao = next(s for s in NOTEBOOKS
+                   if s["arquivo"] == "98_acktr_kl_nominal.ipynb")
+    assert ablacao["agente"] == oficial["agente"] == "ACKTR"
+    assert ablacao["modulos"] == oficial["modulos"]
+    assert ablacao["extra_cfg"].strip().startswith("kl_calibrado=False,")
 
     codigo = "\n".join(codigo_de(carrega(
-        os.path.join(RAIZ, "notebooks", cal["arquivo"]))))
-    assert "kl_calibrado=True" in codigo
-    base_codigo = "\n".join(codigo_de(carrega(
-        os.path.join(RAIZ, "notebooks", base["arquivo"]))))
-    assert "kl_calibrado=True" not in base_codigo, \
-        "o 08 é o controle: tem que continuar sem a calibração"
+        os.path.join(RAIZ, "notebooks", ablacao["arquivo"]))))
+    assert "kl_calibrado=False" in codigo
+    oficial_codigo = "\n".join(codigo_de(carrega(
+        os.path.join(RAIZ, "notebooks", oficial["arquivo"]))))
+    assert "kl_calibrado" not in oficial_codigo.split("ASSINATURA_PACOTE")[-1], \
+        "o 08 usa o padrão do pacote; nada de repetir a configuração na célula"
 
 
 def test_the_two_acktr_notebooks_embed_byte_identical_code():
     """A única diferença permitida entre os dois é a linha de configuração."""
     a = bloco_gerado(carrega(os.path.join(RAIZ, "notebooks", "08_acktr.ipynb")))
     b = bloco_gerado(carrega(os.path.join(
-        RAIZ, "notebooks", "98_acktr_kl_max_corrigido.ipynb")))
+        RAIZ, "notebooks", "98_acktr_kl_nominal.ipynb")))
     assert a == b
 
 
@@ -485,8 +489,8 @@ PAPERS = {
 
 #: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.
 #: Dar a elas o paper do algoritmo base sugeriria que a variação é do paper, e não é.
-SEM_PAPER = {"97_ppo_canal_de_fome.ipynb", "98_acktr_kl_max_corrigido.ipynb",
-             "99_ablacoes.ipynb"}
+SEM_PAPER = {"96_ppo_orcamento_esparso.ipynb", "97_ppo_canal_de_fome.ipynb",
+             "98_acktr_kl_nominal.ipynb", "99_ablacoes.ipynb"}
 
 
 def test_every_algorithm_notebook_is_classified_as_paper_or_ablation():

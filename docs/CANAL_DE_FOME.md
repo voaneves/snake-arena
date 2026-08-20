@@ -23,7 +23,7 @@ Uma ablação de uma variável só. Tudo o mais é idêntico — não "parecido"
 | sementes | 0, 1, 2 | 0, 1, 2 |
 | plataforma | Kaggle P100, TF 2.20 / Keras 3.13 | idêntico |
 
-Registros em `runs/ppo/resnet_small/seed{0,1,2}` e `runs/ppo/resnet_small_fome/seed{0,1,2}`.
+Registros em `runs/ppo/resnet_small/seed{0,1,2}` e `runs/ppo/resnet_small_fome_esparso/seed{0,1,2}`.
 
 ## O resultado
 
@@ -125,7 +125,7 @@ comparação com o baseline volta a ser quase limpa.
 ```bash
 python - <<'PY'
 import json, numpy as np
-for v in ("resnet_small", "resnet_small_fome"):
+for v in ("resnet_small_esparso", "resnet_small_fome_esparso"):
     s = [json.load(open(f"runs/ppo/{v}/seed{i}/history.json"))["final"]["score_mean"]
          for i in range(3)]
     print(v, [round(x, 2) for x in s], "média", round(np.mean(s), 2))

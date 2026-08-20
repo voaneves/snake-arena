@@ -18,8 +18,8 @@ from matplotlib.ticker import FuncFormatter
 sys.path.insert(0, ".")
 from snakeai.plot import PALETA, PISO_ALEATORIO, SCORE_PERFEITO, _formata_passos
 
-GRUPOS = [("resnet_small", "5 canais (contrato)"),
-          ("resnet_small_fome", "6 canais (com fome)")]
+GRUPOS = [("resnet_small_esparso", "5 canais (contrato)"),
+          ("resnet_small_fome_esparso", "6 canais (com fome)")]
 SEEDS = ("seed0", "seed1", "seed2")
 
 def carrega(variante, s):
@@ -29,7 +29,8 @@ def carrega(variante, s):
 
 def figura(mode="light"):
     p = PALETA[mode]
-    cor = {"resnet_small": p["series"][0], "resnet_small_fome": p["series"][1]}
+    cor = {"resnet_small_esparso": p["series"][0],
+           "resnet_small_fome_esparso": p["series"][1]}
     fig = plt.figure(figsize=(12.6, 5.0), facecolor=p["plane"])
     gs = fig.add_gridspec(1, 2, width_ratios=[2.35, 1], wspace=0.22,
                           left=0.055, right=0.965, top=0.86, bottom=0.13)

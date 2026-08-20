@@ -45,7 +45,10 @@ __all__ = ["PPOConfig", "PPO", "compute_gae", "variancia_explicada"]
 @dataclass
 class PPOConfig(BaseConfig):
     num_envs: int = 512
-    rollout: int = 96
+    #: 32, e não 96, desde a ablação de orçamento: com o mesmo orçamento de ambiente, o
+    #: rollout curto multiplica por ~16 as atualizações de gradiente. Ver
+    #: `docs/ORCAMENTO_DE_GRADIENTE.md` e `PPOConfig.esparso`.
+    rollout: int = 32
 
     gamma: float = 0.995
     gae_lambda: float = 0.95
@@ -59,8 +62,8 @@ class PPOConfig(BaseConfig):
     lr_end: float = 5e-5
     #: O eixo que substitui o K-FAC. Ver `snakeai/otimizadores.py`.
     optimizer: str = "adam"
-    epochs: int = 3
-    minibatches: int = 8
+    epochs: int = 4
+    minibatches: int = 32
     target_kl: float = 0.03
 
     #: Shaping potencial, com coeficiente que decai a zero em `shaping_frac` do treino.
@@ -74,40 +77,35 @@ class PPOConfig(BaseConfig):
     canal_fome: bool = False
 
     @classmethod
-    def denso(cls, **kw):
-        """O mesmo orçamento de ambiente, gasto em **~16× mais passos de gradiente**.
+    def esparso(cls, **kw):
+        """O orçamento de gradiente **anterior** — a configuração que a ablação aposentou.
 
-        Os 5 M passos do contrato são de *ambiente*; quantas atualizações de gradiente se
-        tira deles é escolha livre, e a escolha atual gasta pouquíssimo:
+        Existe para reproduzir o braço de controle, não para uso normal. Os 5 M passos do
+        contrato são de *ambiente*; quantas atualizações de gradiente se tira deles é
+        escolha livre, e a escolha antiga gastava pouquíssimo:
 
         =========================  ==============  ==============
-        \                          padrão          `denso()`
+        \                          `esparso()`     padrão
         =========================  ==============  ==============
         `rollout`                  96              32
         amostras por iteração      49.152          16.384
         iterações em 5 M passos    ~102            ~305
         `epochs` × `minibatches`   3 × 8           4 × 32
         tamanho do minilote        6.144           512
-        **atualizações no total**  **~2.400**      **~39.000**
+        **atualizações no total**  **~2.400**      **~38.300**
         =========================  ==============  ==============
 
-        Um PPO de referência em Atari faz da ordem de 10⁵ atualizações em 10 M frames; o
-        padrão daqui faz duas ordens de grandeza menos, e ainda decai o `lr` até 5e-5 ao
-        longo delas. A hipótese — ver `docs/REVISAO_ALGORITMOS.md` §2.1 — é que o teto de
-        ~62 pontos é orçamento de otimização, não algoritmo.
+        Medido em três sementes: 62,19 contra 80,90 de score, 4,4% contra 60,1% de
+        tabuleiro cheio, e desvio entre sementes de 9,79 contra 1,80 — o orçamento não só
+        levantou a média como **colapsou a dispersão** por um fator de 5,4. Ver
+        `docs/ORCAMENTO_DE_GRADIENTE.md`.
 
-        Isto **não** é o padrão de propósito: trocar o padrão sem medir substituiria uma
-        escolha não justificada por outra. É uma execução, três sementes, contra as três
-        que já existem — e o `history.json` de qualquer execução agora traz
-        `meta["atualizacoes"]`, então a comparação é conferível depois.
-
-        A variante ganha o sufixo `_denso`: a execução compete (mesmo ambiente, mesma
-        observação, mesmo orçamento de passos), mas não é a mesma configuração — e duas
-        configurações com a identidade `(algo, variant, seed)` idêntica viram uma curva só
-        na arena.
+        A variante ganha o sufixo `_esparso`: as duas configurações competem no mesmo
+        contrato, mas não são a mesma coisa, e identidade `(algo, variant, seed)` repetida
+        vira uma curva só na arena.
         """
-        kw.setdefault("sufixo_variante", "denso")
-        return cls(rollout=32, epochs=4, minibatches=32, **kw)
+        kw.setdefault("sufixo_variante", "esparso")
+        return cls(rollout=96, epochs=3, minibatches=8, **kw)
 
     def __post_init__(self):
         super().__post_init__()

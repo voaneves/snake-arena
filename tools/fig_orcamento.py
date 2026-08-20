@@ -21,8 +21,8 @@ from matplotlib.ticker import FuncFormatter
 sys.path.insert(0, ".")
 from snakeai.plot import PALETA, PISO_ALEATORIO, SCORE_PERFEITO, _formata_passos
 
-GRUPOS = [("resnet_small", "~2.400 atualizações (padrão)"),
-          ("resnet_small_denso", "~38.000 atualizações (denso)")]
+GRUPOS = [("resnet_small_esparso", "~2.400 atualizações (antes)"),
+          ("resnet_small", "~38.000 atualizações (padrão de hoje)")]
 SEEDS = ("seed0", "seed1", "seed2")
 
 
@@ -35,7 +35,7 @@ def carrega(variante, s):
 
 def figura(mode="light"):
     p = PALETA[mode]
-    cor = {"resnet_small": p["series"][0], "resnet_small_denso": p["series"][1]}
+    cor = {"resnet_small_esparso": p["series"][0], "resnet_small": p["series"][1]}
     fig = plt.figure(figsize=(13.6, 5.0), facecolor=p["plane"])
     gs = fig.add_gridspec(1, 3, width_ratios=[2.5, 1, 1], wspace=0.3,
                           left=0.05, right=0.97, top=0.84, bottom=0.13)
@@ -95,7 +95,7 @@ def figura(mode="light"):
             eixo.annotate(fmt(np.mean(v)), (i + 0.25, np.mean(v)), color=p["ink"],
                           fontsize=9.5, fontweight="bold", va="center")
         eixo.set_xticks([0, 1])
-        eixo.set_xticklabels(["padrão", "denso"], color=p["ink"], fontsize=9.5)
+        eixo.set_xticklabels(["antes", "hoje"], color=p["ink"], fontsize=9.5)
         eixo.set_xlim(-0.5, 1.75)
         eixo.set_ylim(0, ymax)
         eixo.set_title(titulo, color=p["ink2"], fontsize=10, loc="left", pad=8)

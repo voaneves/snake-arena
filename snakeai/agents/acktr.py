@@ -97,8 +97,23 @@ class ACKTRConfig(A2CConfig):
     lr_start: float = 0.5
     lr_end: float = 0.1
 
-    #: Alvo de KL por atualização. Wu et al. usam 0,001–0,002 no Atari.
-    kl_max: float = 2e-3
+    #: Alvo de KL por atualização — **entregue**, não nominal, porque `kl_calibrado` vem
+    #: ligado por padrão. Wu et al. usam 0,001–0,002 no Atari; aqui o valor saiu de uma
+    #: medição de três pontos na semente 0, com a KL entregue no eixo:
+    #:
+    #: ==================  ========  =======  ========
+    #: KL entregue         melhor    final    cheio
+    #: ==================  ========  =======  ========
+    #: 0,0015              74,19     72,50    28,9%
+    #: **0,0068**          **91,62** **89,78** **89,7%**
+    #: 0,0136              84,92     64,53    26,7%
+    #: ==================  ========  =======  ========
+    #:
+    #: Não é monotônico: existe um ótimo interior. Passo pequeno demais aprende devagar,
+    #: grande demais desestabiliza. Pedir 0,015 entrega ~0,007 — a malha de calibração
+    #: converge para um fator que encolhe o pedido — e é esse ponto que resolve o jogo.
+    #: Ver `docs/ACKTR_REGIAO_DE_CONFIANCA.md`.
+    kl_max: float = 1.5e-2
 
     #: Amortecimento de Tikhonov. Alto demais e o ACKTR vira A2C com passo esquisito;
     #: baixo demais e a inversa amplifica direções que o lote mal estimou.
@@ -123,10 +138,12 @@ class ACKTRConfig(A2CConfig):
     #: por média móvel e pede `kl_max / c` — de modo que a KL **entregue** convirja para
     #: `kl_max`.
     #:
-    #: É um eixo de ablação, não uma correção óbvia: apertar a região encolhe todo passo
-    #: por `√c`, e a execução base terminou ainda em subida, ou seja, limitada por
-    #: orçamento. Ligar isto pode muito bem piorar o resultado — e é essa a medição.
-    kl_calibrado: bool = False
+    #: **Ligado por padrão desde a medição.** Era eixo de ablação e virou o comportamento
+    #: oficial: sem calibrar, a mesma configuração e a mesma semente entregaram 83,91 num
+    #: Colab de agosto e 64,53 num Kaggle depois — o fator não controlado entre a Fisher
+    #: aproximada e a KL real muda com o hardware, e o resultado deixa de ser reprodutível.
+    #: Desligar isto é a ablação, e a variante ganha `+kl_nominal` para dizer isso.
+    kl_calibrado: bool = True
 
     #: Média móvel do fator. Alta porque `c` é ruidoso lote a lote.
     kl_cal_ema: float = 0.98
@@ -155,8 +172,26 @@ class ACKTR(A2C):
         #: primeira atualização é idêntica à da versão não calibrada, e a correção só
         #: aparece conforme a medição chega.
         self._fator_kl = 1.0
-        if c.kl_calibrado and (variant is None):
-            self.variant = f"{self.cfg.net}+klcal"
+        if variant is None:
+            self.variant = self._com_sufixo(self._variante_da_regiao(c),
+                                            getattr(c, "sufixo_variante", ""))
+
+    @staticmethod
+    def _variante_da_regiao(cfg):
+        """A variante diz em que região de confiança a execução rodou.
+
+        O padrão — calibrado no alvo medido — não ganha marca nenhuma: é o ACKTR oficial.
+        Qualquer desvio aparece no nome, porque `load_all` agrupa por
+        `(algo, variant, seed)` e duas regiões de confiança diferentes com a mesma
+        identidade viram uma curva só. Foi assim que o ACKTR de 12/08 e o de agora quase
+        se fundiram na arena.
+        """
+        marcas = []
+        if not cfg.kl_calibrado:
+            marcas.append("kl_nominal")
+        if cfg.kl_max != type(cfg).kl_max:
+            marcas.append(f"kl{cfg.kl_max:g}")
+        return "+".join([cfg.net] + marcas)
 
     # ------------------------------------------------------------------ um passo
     def _forward_e_gradientes(self, obs, mask, act, adv, ret, ent_coef, vf_coef):

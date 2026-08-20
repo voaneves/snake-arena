@@ -131,10 +131,23 @@ def test_uncalibrated_asks_exactly_the_nominal_target():
     assert s["kl_fator"] == 1.0, "sem calibração o fator nunca sai de 1"
 
 
+def test_the_variant_marks_the_deviation_not_the_default():
+    """A calibração virou o comportamento oficial, então quem **não** calibra é que ganha
+    marca — e um `kl_max` fora do padrão também, senão duas regiões de confiança
+    diferentes dividem a identidade `(algo, variant, seed)`."""
+    from snakeai.agents.acktr import ACKTRConfig
+
+    assert ACKTR(cfg()).variant == cfg().net
+    assert ACKTR(cfg(kl_calibrado=False)).variant.endswith("+kl_nominal")
+    assert ACKTR(cfg(kl_max=2e-3)).variant.endswith("+kl0.002")
+    assert ACKTR(cfg(kl_calibrado=False, kl_max=2e-3)).variant.endswith(
+        "+kl_nominal+kl0.002")
+
+
 def test_calibration_shows_up_in_the_variant_name():
     """Senão as duas execuções cairiam na mesma pasta e a comparação se perderia."""
-    assert ACKTR(cfg(kl_calibrado=True)).variant.endswith("+klcal")
-    assert not ACKTR(cfg(kl_calibrado=False)).variant.endswith("+klcal")
+    assert ACKTR(cfg(kl_calibrado=True)).variant == cfg().net
+    assert ACKTR(cfg(kl_calibrado=False)).variant.endswith("+kl_nominal")
 
 
 def test_the_first_update_is_identical_with_and_without_calibration():
@@ -189,4 +202,4 @@ def test_the_control_law_converges_to_delivering_the_nominal_kl():
 def test_calibration_is_off_by_default():
     """A execução base já existe e foi feita sem isto. O padrão não pode mudar embaixo
     dela — senão a comparação entre as duas viraria outra coisa."""
-    assert ACKTRConfig().kl_calibrado is False
+    assert ACKTRConfig().kl_calibrado is True

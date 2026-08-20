@@ -142,23 +142,43 @@ NOTEBOOKS = [
                   "via `tensorflow.contrib` e nenhum roda. Aqui a curvatura é aproximada "
                   "por fatores de Kronecker em Keras 3 puro, e o tamanho do passo sai de "
                   "uma KL alvo, não do learning rate. Compare com `04_a2c`: é o mesmo "
-                  "algoritmo com uma única troca.",
+                  "algoritmo com uma única troca.\n\n"
+                  "A região de confiança vem **calibrada** por padrão: sem isso `kl_max` "
+                  "é um alvo nominal que a Fisher aproximada erra por ~7×, e a mesma "
+                  "semente entregou 83,91 num Colab e 64,53 num Kaggle. Com a KL entregue "
+                  "presa em ~0,007, o ACKTR fecha ~90% dos tabuleiros. A versão sem "
+                  "calibrar virou a ablação `98_acktr_kl_nominal`.",
     },
     {
-        "arquivo": "98_acktr_kl_max_corrigido.ipynb",
-        "titulo": "ACKTR com a região de confiança calibrada",
+        "arquivo": "98_acktr_kl_nominal.ipynb",
+        "titulo": "ACKTR sem calibrar a região de confiança — o que se perde",
         "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
                     "snakeai/agents/acktr.py"],
         "agente": "ACKTR",
         "config": "ACKTRConfig",
-        "extra_cfg": "    kl_calibrado=True,",
-        "resumo": "O `08_acktr` pede KL 0,002 e entrega ~0,01: `Δᵀ∇` usa a Fisher "
-                  "*aproximada* e a KL medida é a da política de verdade. Aqui o agente "
-                  "estima esse fator sistemático por média móvel e pede `kl_max / c`, de "
-                  "modo que a KL **entregue** convirja para `kl_max`. **Não é uma correção "
-                  "óbvia:** apertar a região encolhe todo passo por `√c`, e a execução base "
-                  "terminou ainda em subida — ou seja, limitada por orçamento, não por "
-                  "instabilidade. Pode piorar. É essa a medição.",
+        "extra_cfg": "    kl_calibrado=False,\n    kl_max=2e-3,",
+        "resumo": "O braço de controle da calibração: `kl_max` volta a ser um alvo "
+                  "**nominal** de 0,002, e o que a rede entrega é ~0,014 — o fator "
+                  "sistemático entre a Fisher aproximada e a KL da política de verdade. "
+                  "Foi essa a configuração até agosto, e ela produziu 83,91 num Colab e "
+                  "64,53 num Kaggle **com a mesma semente**: o fator não controlado muda "
+                  "com o hardware. Aqui a medição fica registrada em vez de virar "
+                  "anedota. Compare com `08_acktr` na mesma semente.",
+    },
+    {
+        "arquivo": "96_ppo_orcamento_esparso.ipynb",
+        "titulo": "PPO com o orçamento de gradiente antigo — o braço de controle",
+        "modulos": ["snakeai/agents/ppo.py"],
+        "agente": "PPO",
+        "config": "PPOConfig.esparso",
+        "resumo": "O mesmo orçamento de **ambiente** do contrato, gasto em ~2.400 "
+                  "atualizações de gradiente em vez de ~38.300: `rollout` 96, três "
+                  "épocas, oito minilotes de 6.144. Era o padrão até a ablação de "
+                  "orçamento, e é o braço de controle dela. Três sementes de cada lado "
+                  "deram 62,19 contra 80,90 de score e 4,4% contra 60,1% de tabuleiro "
+                  "cheio — com a dispersão entre sementes caindo de 9,79 para 1,80. "
+                  "Compare com `01_ppo` na mesma semente: a rede, o ambiente e o "
+                  "orçamento de passos são idênticos. Ver `docs/ORCAMENTO_DE_GRADIENTE.md`.",
     },
     {
         "arquivo": "97_ppo_canal_de_fome.ipynb",

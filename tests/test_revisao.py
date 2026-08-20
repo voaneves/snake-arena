@@ -180,16 +180,18 @@ def test_dreamer_evaluates_the_best_checkpoint_and_puts_the_world_model_back(tmp
 
 
 # ================================================================== §2.1 orçamento
-def test_the_dense_budget_preset_keeps_the_contract_and_multiplies_updates():
-    padrao, denso = PPOConfig(), PPOConfig.denso()
-    assert denso.total_steps == padrao.total_steps == ORCAMENTO_OFICIAL
-    assert denso.num_envs == padrao.num_envs
+def test_the_dense_budget_is_the_default_and_the_sparse_one_is_the_ablation():
+    """A ablação decidiu: o denso virou o padrão, e a configuração antiga sobrou como
+    braço de controle — com sufixo próprio, para não dividir identidade com ele."""
+    padrao, esparso = PPOConfig(), PPOConfig.esparso()
+    assert esparso.total_steps == padrao.total_steps == ORCAMENTO_OFICIAL
+    assert esparso.num_envs == padrao.num_envs
 
     def atualizacoes(c):
-        iteracoes = c.total_steps / (c.num_envs * c.rollout)
-        return iteracoes * c.epochs * c.minibatches
+        return c.total_steps / (c.num_envs * c.rollout) * c.epochs * c.minibatches
 
-    assert atualizacoes(denso) > 10 * atualizacoes(padrao)
+    assert atualizacoes(padrao) > 10 * atualizacoes(esparso)
+    assert esparso.sufixo_variante == "esparso"
 
 
 def test_the_dense_preset_really_produces_the_updates_it_promises():
@@ -210,7 +212,7 @@ def test_the_dense_preset_really_produces_the_updates_it_promises():
     padrao = mede(PPOConfig(rollout=96, epochs=3, minibatches=8, **comum))
     denso = mede(PPOConfig(rollout=32, epochs=4, minibatches=32, **comum))
 
-    assert denso > 10 * padrao, f"padrão {padrao:.2e}, denso {denso:.2e}"
+    assert denso > 10 * padrao, f"esparso {padrao:.2e}, denso {denso:.2e}"
     # e a razão bate com a aritmética do docstring, dentro de 10%
     esperado = (4 * 32 / 32) / (3 * 8 / 96)
     assert abs(denso / padrao / esperado - 1) < 0.1
@@ -224,12 +226,12 @@ def test_a_different_hyperparameter_set_gets_a_different_identity():
                  salvar_gif=False, salvar_grafico=False)
     assert PPO(PPOConfig(**comum)).variant == "resnet_tiny"
 
-    denso = PPOConfig.denso(**{k: v for k, v in comum.items() if k != "rollout"})
-    assert PPO(denso).variant == "resnet_tiny_denso"
+    esparso = PPOConfig.esparso(**{k: v for k, v in comum.items() if k != "rollout"})
+    assert PPO(esparso).variant == "resnet_tiny_esparso"
 
-    juntos = PPOConfig.denso(canal_fome=True, comparable=False, caveat="6 canais",
-                             **{k: v for k, v in comum.items() if k != "rollout"})
-    assert PPO(juntos).variant == "resnet_tiny_fome_denso"
+    juntos = PPOConfig.esparso(canal_fome=True, comparable=False, caveat="6 canais",
+                               **{k: v for k, v in comum.items() if k != "rollout"})
+    assert PPO(juntos).variant == "resnet_tiny_fome_esparso"
 
 
 def test_the_record_counts_the_gradient_updates(tmp_path):

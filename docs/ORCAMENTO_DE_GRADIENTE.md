@@ -25,7 +25,7 @@ Tudo o mais idêntico: `num_envs=512`, γ 0,995, GAE(λ) 0,95, clip 0,2, entropi
 `lr` 3e-4→5e-5, KL alvo 0,03, `resnet_small` com 180.464 parâmetros, 5 M passos, avaliação
 com 1.000 episódios greedy na semente 123.
 
-Registros em `runs/ppo/resnet_small/seed{0,1,2}` e `runs/ppo/resnet_small_denso/seed{0,1,2}`.
+Registros em `runs/ppo/resnet_small_esparso/seed{0,1,2}` (antes) e `runs/ppo/resnet_small/seed{0,1,2}` (padrão de hoje).
 
 ## O resultado
 
@@ -100,7 +100,7 @@ aparece na tabela. Disparidade reportada é informação; disparidade silenciosa
 ```bash
 python - <<'PY'
 import json, numpy as np
-for v in ("resnet_small", "resnet_small_denso"):
+for v in ("resnet_small_esparso", "resnet_small"):
     s = [json.load(open(f"runs/ppo/{v}/seed{i}/history.json"))["final"]["score_mean"]
          for i in range(3)]
     print(v, [round(x, 2) for x in s], "média", round(np.mean(s), 2),
