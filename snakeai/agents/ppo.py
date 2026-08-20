@@ -255,12 +255,12 @@ class PPO(AgentBase):
             rew_buf[t] = r
             done_buf[t] = d.astype(np.float32)
 
-            ti = info["trunc_idx"]
-            if ti.size:                      # fome é truncamento, não terminação
+            if info["trunc_idx"].size:       # fome é truncamento, não terminação
                 _, vf = policy_forward(self.model,
                                        tf.convert_to_tensor(info["final_obs"]),
                                        tf.convert_to_tensor(info["final_mask"]))
-                rew_buf[t, ti] += cfg.gamma * vf.numpy()
+                rew_buf[t] = self.bootstrap_truncados(info, rew_buf[t], vf.numpy(),
+                                                      cfg.gamma)
 
             scores.extend(info["scores"].tolist())
             passos_ep.extend(info["lengths"].tolist())

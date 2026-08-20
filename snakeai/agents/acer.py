@@ -184,6 +184,12 @@ class ACER(AgentBase):
 
             self.obs, self.mask, r, d, info = self.env.step(a)
             self.registra_fim(info)
+            if info["trunc_idx"].size:       # fome é truncamento, não terminação
+                pi_f, q_f = self._probs(tf.convert_to_tensor(info["final_obs"]),
+                                        tf.convert_to_tensor(info["final_mask"]))
+                # V(s) = Σ_a π(a|s)·Q(s,a) — o ACER não tem cabeça de valor separada
+                v_f = np.sum(pi_f.numpy() * q_f.numpy(), axis=1)
+                r = self.bootstrap_truncados(info, r, v_f, cfg.gamma)
             rew_buf[t], done_buf[t] = r, d.astype(np.float32)
             scores.extend(info["scores"].tolist())
             vitorias += info["wins"]

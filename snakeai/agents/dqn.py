@@ -66,9 +66,23 @@ class DQNConfig(BaseConfig):
     optimizer: str = "adam"
     batch_size: int = 512
     memory_size: int = 200_000
-    learn_every: int = 4          # passos de ambiente por atualização de gradiente
+    #: Iterações do laço de coleta entre atualizações. Cada iteração dá um passo em
+    #: **todos** os `num_envs` ambientes, então o intervalo em passos de ambiente é
+    #: `learn_every × num_envs` — 256 no padrão, não 4.
+    learn_every: int = 4
     warmup_steps: int = 20_000
-    target_update: int = 2_000    # passos entre sincronizações da rede alvo
+
+    #: Defasagem da rede alvo, em **atualizações de gradiente**. Contava passos de
+    #: ambiente, e com uma atualização a cada 256 deles os 2.000 nominais viravam ~8 de
+    #: defasagem real — 250× menos que as implementações de referência. Com o alvo colado
+    #: na rede online, o `double` perde o efeito (a rede que escolhe e a que avalia são
+    #: quase a mesma) e o alvo deixa de ser um ponto fixo.
+    #:
+    #: O valor não é o canônico 2.000: este orçamento tem ~19.500 atualizações no treino
+    #: inteiro, e 2.000 deixariam só dez sincronizações. 250 é ~1,3% do orçamento — a
+    #: mesma ordem de grandeza relativa das referências. É um eixo de ablação declarado,
+    #: não uma constante óbvia. Ver `docs/REVISAO_ALGORITMOS.md` §2.4.
+    target_update: int = 250
     max_grad_norm: float = 10.0
 
     # exploração ε-greedy — ignorada quando `noisy=True`
@@ -125,6 +139,10 @@ class DQN(AgentBase):
             self.delta_z = float(self.suporte[1] - self.suporte[0])
 
         self._desde_alvo = 0
+        #: Atualizações de gradiente acumuladas — a moeda em que `target_update` é medido.
+        #: O contador do `AgentBase` só existe durante o `train`; este vale desde a
+        #: construção, para que `iterate()` sozinho também sincronize certo.
+        self._atualizacoes = 0
 
     @staticmethod
     def _nome_variante(cfg):
@@ -312,7 +330,9 @@ class DQN(AgentBase):
         if self.global_step >= cfg.warmup_steps and len(self.memoria) >= cfg.batch_size:
             perdas.append(self._aprender())
 
-        self._desde_alvo += passos_por_iter * cfg.num_envs
+        # em atualizações de gradiente, não em passos de ambiente — ver `target_update`
+        self._atualizacoes += len(perdas)
+        self._desde_alvo += len(perdas)
         if self._desde_alvo >= cfg.target_update:
             self.target.set_weights(self.model.get_weights())
             self._desde_alvo = 0

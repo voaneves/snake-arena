@@ -352,8 +352,16 @@ class DreamerV3(AgentBase):
             self.obs, self.mask, r, d, info = self.env.step(acoes)
             self.registra_fim(info)
 
-            self.memoria.add(obs_ant, acoes, r, 1.0 - d.astype(np.float32),
-                             primeiro, mask_ant)
+            # `cont` é o que a cabeça de continuação aprende. Fome é truncamento: marcar
+            # 0 ali ensina que morrer de fome é o fim do mundo — e, pior, ensina isso a
+            # uma cabeça que **não enxerga** o relógio de fome, porque ele não está nos 5
+            # canais do contrato. O resultado seria uma taxa de risco constante espalhada
+            # por todo estado. O corte da sequência continua sendo feito pelo `primeiro`
+            # do passo seguinte, que zera o latente onde o episódio de fato recomeça.
+            cont = 1.0 - d.astype(np.float32)
+            if info["trunc_idx"].size:
+                cont[info["trunc_idx"]] = 1.0
+            self.memoria.add(obs_ant, acoes, r, cont, primeiro, mask_ant)
             self._primeiro = d.copy()
             self.global_step += cfg.num_envs
             scores.extend(info["scores"].tolist())

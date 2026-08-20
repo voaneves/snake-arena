@@ -70,7 +70,13 @@ def quadros_do_episodio(politica, board_size=10, safety=False, max_steps=2000,
         quadros.append(_quadro(env, escala=escala))
 
         if d[0]:
-            score = score_antes
+            # `info["scores"]` é o score **final**, já com a maçã do último passo. Ler
+            # `env.score` antes do passo perde exatamente um ponto nos episódios que
+            # terminam comendo — que são precisamente as vitórias, e o GIF de uma vitória
+            # saía rotulado com 96 num tabuleiro cujo perfeito é 97. Mesmo defeito que o
+            # `eval.py` corrige e trava com teste.
+            finais = info.get("scores")
+            score = int(finais[0]) if finais is not None and len(finais) else score_antes
             if comprimento_antes >= board_size * board_size - 1:
                 motivo = "tabuleiro cheio"
             elif fome_antes + 1 >= env.starve_base + 2 * comprimento_antes:

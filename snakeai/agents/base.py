@@ -78,6 +78,20 @@ class BaseConfig:
             )
 
 
+def proximo_multiplo(passo, cadencia):
+    """O menor múltiplo de `cadencia` **estritamente acima** de `passo`.
+
+    É a diferença entre uma grade absoluta e uma que reancora: `passo + cadencia` faz cada
+    avaliação cair um bloco depois da anterior, e o desvio se acumula — na execução padrão
+    do PPO a última avaliação aconteceu 513 mil passos além do ponto nominal, 10% do
+    orçamento. Como cada algoritmo avança em blocos de tamanho diferente (8.192 no A2C,
+    49.152 no PPO padrão), as grades divergem entre si e a coluna `passos até 40`, que o
+    contrato lê **sem interpolação**, passa a comparar medições feitas em lugares
+    diferentes. Ver `docs/REVISAO_ALGORITMOS.md` §1.7.
+    """
+    return (int(passo) // int(cadencia) + 1) * int(cadencia)
+
+
 class AgentBase:
     """Laço de treino comum: agendamentos, avaliação, checkpoint e registro.
 
@@ -251,6 +265,30 @@ class AgentBase:
         done[ti] = 0.0
         return prox_obs, prox_mask, done
 
+    @staticmethod
+    def bootstrap_truncados(info, recompensas, valores_finais, gamma):
+        """Soma `γ·V(s_final)` à recompensa dos episódios truncados por fome.
+
+        A outra metade do tratamento de truncamento, para quem guarda **retornos** em vez
+        de transições soltas. O `desfaz_truncamento` serve a quem tem um buffer de
+        `(s, a, r, s')` e pode simplesmente devolver o `s'` verdadeiro; num rollout ou num
+        segmento, o passo seguinte já pertence a outro episódio, e o valor do estado final
+        precisa entrar **na recompensa** — que é como o PPO faz desde sempre.
+
+        O `done` continua 1: a fronteira do episódio é real dentro do buffer, e é ela que
+        impede o retorno de atravessar para o episódio seguinte. O que muda é que o
+        retorno daquele passo deixa de valer −0,5 e passa a valer −0,5 + γ·V(s_final).
+
+        Devolve uma cópia; sem truncamento, devolve a entrada intacta. Ver
+        `docs/REVISAO_ALGORITMOS.md` §1.1.
+        """
+        ti = info.get("trunc_idx")
+        if ti is None or len(ti) == 0:
+            return recompensas
+        saida = np.array(recompensas, copy=True, dtype=np.float32)
+        saida[ti] += float(gamma) * np.asarray(valores_finais, dtype=np.float32)
+        return saida
+
     # -------------------------------------------------------------- avaliação
     def politica(self):
         """A função de política que `snakeai.eval` consome. Sobrescreva se precisar."""
@@ -369,7 +407,8 @@ class AgentBase:
         self.evals = estado.get("evals", [])
         self.baseline = estado.get("baseline")
         self.melhor = estado.get("melhor", -np.inf)
-        self._proximo_eval = self.global_step + self.cfg.eval_every_steps
+        self._proximo_eval = proximo_multiplo(self.global_step,
+                                              self.cfg.eval_every_steps)
         self._proximo_log = self.global_step
         return True
 
@@ -439,7 +478,8 @@ class AgentBase:
                     self._imprimir(stats)
 
             if self.global_step >= self._proximo_eval:
-                self._proximo_eval = self.global_step + self.cfg.eval_every_steps
+                self._proximo_eval = proximo_multiplo(self.global_step,
+                                                      self.cfg.eval_every_steps)
                 av = self.avaliar()
                 av["global_step"] = self.global_step
                 av["episodes"] = self.episodes

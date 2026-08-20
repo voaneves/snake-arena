@@ -230,6 +230,11 @@ class MuZero(AgentBase):
             act_b[t] = a
             self.obs, self.mask, r, d, info = self.env.step(a)
             self.registra_fim(info)
+            if info["trunc_idx"].size:       # fome é truncamento, não terminação
+                _, _, v_f = self._repr_predicao(
+                    tf.convert_to_tensor(info["final_obs"]),
+                    tf.convert_to_tensor(info["final_mask"]))
+                r = self.bootstrap_truncados(info, r, v_f.numpy(), cfg.gamma)
             rew_b[t], done_b[t] = r, d.astype(np.float32)
             scores.extend(info["scores"].tolist())
             vitorias += info["wins"]

@@ -1,6 +1,6 @@
 {
   "algo": "acktr",
-  "variant": "resnet_small",
+  "variant": "resnet_small_regua_antiga",
   "seed": 0,
   "net": "resnet_small",
   "params": 180464,
@@ -2158,8 +2158,8 @@
     "env_steps_used": 4704,
     "completo": true
   },
-  "comparable": true,
-  "caveat": "",
+  "comparable": false,
+  "caveat": "medida com o protocolo de avaliação anterior a 14/08: sem as chaves de causa de fim, com a maçã do episódio vencedor faltando (score_max 96 num tabuleiro cujo perfeito é 97) e com `win_rate` de outra fórmula. Mantida como registro histórico; a semente 0 na régua atual está em `acktr/resnet_small/seed0`.",
   "meta": {
     "python": "3.12.13",
     "platform": "Linux-6.6.122+-x86_64-with-glibc2.35",

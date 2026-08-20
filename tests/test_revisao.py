@@ -350,3 +350,76 @@ def test_runs_outside_the_contract_are_listed_not_hidden(tmp_path):
     assert [r.algo for r in oficiais] == ["ppo"]
     assert [r.algo for r in fora] == ["ppo_fome"]
     assert "6 canais" in " ".join(fora[0].meta["contract_violations"])
+
+
+# ================================================================== §1.7 grade
+def test_the_evaluation_grid_is_absolute_and_does_not_drift():
+    """A cadência reancorava no passo **atingido**, então cada avaliação caía um bloco
+    depois da anterior e o desvio se acumulava: na execução padrão do PPO a última
+    avaliação aconteceu 513 mil passos além da grade nominal — 10% do orçamento. Como
+    algoritmos avançam em blocos de tamanhos diferentes, isso desalinha a coluna
+    `passos até 40`, que é lida sem interpolação."""
+    from snakeai.agents.base import proximo_multiplo
+
+    assert proximo_multiplo(0, 250_000) == 250_000
+    assert proximo_multiplo(249_999, 250_000) == 250_000
+    assert proximo_multiplo(250_000, 250_000) == 500_000
+    assert proximo_multiplo(260_000, 250_000) == 500_000
+
+    for bloco in (8_192, 16_384, 49_152):          # A2C/ACKTR, denso, padrão
+        passo, alvo, avaliacoes = 0, 0, []
+        for _ in range(5_000_000 // bloco + 1):
+            passo += bloco
+            if passo >= alvo:
+                avaliacoes.append(passo)
+                alvo = proximo_multiplo(passo, 250_000)
+        # cada avaliação cai no máximo um bloco depois do seu ponto nominal, e o desvio
+        # **não** cresce ao longo da execução
+        desvios = [a - 250_000 * round(a / 250_000) for a in avaliacoes[1:]]
+        assert max(desvios) < bloco, (bloco, max(desvios))
+        assert desvios[-1] <= max(desvios[:3]) + bloco
+
+
+# ================================================================== GIF · maçã final
+def test_the_gif_reports_the_score_of_the_winning_move():
+    """`score = score_antes` perde a maçã do último passo — e o último passo de um
+    episódio vencedor é justamente o que come. Terceira cópia do defeito que o `eval.py`
+    corrige: o GIF de uma vitória saía rotulado com 96 num tabuleiro cujo perfeito é 97."""
+    import snakeai.env.render as render
+
+    class EnvFalso:
+        """Dois passos: o segundo vence comendo a última maçã."""
+
+        def __init__(self, *a, **kw):
+            self.b, self.n, self.starve_base = 10, 1, 100
+            self.occ = np.zeros((1, 10, 10), dtype=np.int32)
+            self.food = np.array([[0, 1]])
+            self.head = np.array([[0, 0]])
+            self.score = np.array([95])
+            self.length = np.array([98])
+            self.hunger = np.array([0])
+            self._passos = 0
+
+        def reset(self):
+            return np.zeros((1, 10, 10, 5), np.float32), np.ones((1, 3), bool)
+
+        def step(self, a):
+            self._passos += 1
+            obs, mask = np.zeros((1, 10, 10, 5), np.float32), np.ones((1, 3), bool)
+            if self._passos == 1:
+                self.score, self.length = np.array([96]), np.array([99])
+                return obs, mask, np.zeros(1), np.zeros(1, bool), {"scores": np.array([])}
+            # passo vencedor: come a última maçã e o episódio termina
+            return (obs, mask, np.ones(1), np.ones(1, bool),
+                    {"scores": np.array([97])})
+
+    original = render.VecSnake
+    render.VecSnake = EnvFalso
+    try:
+        _q, score, motivo = render.quadros_do_episodio(
+            lambda obs, mask: np.zeros((1, 3), np.float32), max_steps=5)
+    finally:
+        render.VecSnake = original
+
+    assert score == 97, "a maçã do passo vencedor sumiu do rótulo do GIF"
+    assert motivo == "tabuleiro cheio"
