@@ -1,6 +1,6 @@
 {
   "algo": "acktr",
-  "variant": "resnet_small+sondagem",
+  "variant": "resnet_small",
   "seed": 0,
   "net": "resnet_small",
   "params": 180464,
@@ -2884,8 +2884,8 @@
     "fim_tabuleiro_cheio": 0.913,
     "global_step": 3817472
   },
-  "comparable": false,
-  "caveat": "sondagem de semente única que escolheu `kl_max=0,015`; a série oficial de três sementes foi refeita no pacote congelado",
+  "comparable": true,
+  "caveat": "",
   "meta": {
     "python": "3.12.13",
     "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",

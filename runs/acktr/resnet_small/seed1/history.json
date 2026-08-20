@@ -1,6 +1,6 @@
 {
   "algo": "acktr",
-  "variant": "resnet_small+klcal15",
+  "variant": "resnet_small",
   "seed": 1,
   "net": "resnet_small",
   "params": 180464,

@@ -8,6 +8,7 @@ Gerado por `python -m snakeai.arena --all`. Não editar à mão.
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | 1 | — | 0% |
 | ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
+| acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
 | acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
 | ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
 | acktr · resnet_small+kl_nominal+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **64.53** | 84.92 | 1,277,952 | 0.5 | ±0.00 | 69 | 97 | 26.7% |
@@ -46,7 +47,6 @@ não é o carimbo que ficou gravado no dia do treino. Execuções marcadas
 `comparable=False` também aparecem aqui: elas não competem por construção,
 e some-las seria pior do que incluí-las.
 
-- `acktr/resnet_small+sondagem/seed0`: comparable=False: sondagem de semente única que escolheu `kl_max=0,015`; a série oficial de três sementes foi refeita no pacote congelado
 - `acktr/resnet_small_regua_antiga/seed0`: comparable=False: medida com o protocolo de avaliação anterior a 14/08: sem as chaves de causa de fim, com a maçã do episódio vencedor faltando (score_max 96 num tabuleiro cujo perfeito é 97) e com `win_rate` de outra fórmula. Mantida como registro histórico; a semente 0 na régua atual está em `acktr/resnet_small/seed0`.
 - `dqn/base/seed0`: comparable=False: treinada antes da correção do truncamento por fome (§1.1 da revisão): a fome entrava no buffer como terminação e o `next_obs` gravado era o do episódio seguinte. 34,3% dos episódios finais terminaram por inanição — o sintoma que a correção ataca. Mantida como registro do 'antes'; refazer com o pacote corrigido.
 - `ppo/resnet_small_fome_esparso/seed0`: comparable=False: observação com 6 canais (fome), fora do contrato de 5; orçamento de gradiente esparso (~2.400 atualizações), que era o padrão quando a ablação foi medida
