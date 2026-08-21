@@ -53,7 +53,15 @@ class RainbowConfig(DQNConfig):
     eps_end: float = 0.0
 
     lr: float = 1e-4          # o paper usa LR menor que o DQN base
-    target_update: int = 8_000
+
+    #: O paper usa 8.000, e o DQN base usa 2.000 — uma razão de 4× que faz sentido manter.
+    #: O que não sobrevive é o valor absoluto: desde §2.4 este número é contado em
+    #: **atualizações de gradiente**, e o orçamento inteiro tem ~19.500 delas. Os 8.000
+    #: canônicos dariam **duas** sincronizações no treino todo, deixando o alvo defasado
+    #: por 40% do treino — o oposto exato do defeito que §2.4 corrigiu, e igualmente fatal
+    #: para o Double DQN. Mantida a razão de 4× contra os 250 do DQN base: 1.000, ~5% do
+    #: orçamento, ~19 sincronizações. Ver `docs/REVISAO_ALGORITMOS.md` §2.4.
+    target_update: int = 1_000
 
 
 class Rainbow(DQN):

@@ -183,6 +183,29 @@ def test_table_reports_seed_spread():
     assert linhas[0]["score_spread"] > 0
 
 
+def test_the_headline_number_is_the_median_across_seeds_and_says_so():
+    """A coluna oficial agrega sementes pela **mediana**, e o rotulo tem que dizer isso.
+
+    Com tres sementes a mediana e o valor do meio: uma semente divergente nao arrasta o
+    numero, e e a mesma estatistica que o grafico desenha como linha. O perigo nao e a
+    escolha, e a etiqueta: enquanto a coluna se chamava "score medio", a tabela e os
+    documentos de ablacao (que reportam media) davam numeros diferentes para as mesmas
+    execucoes sem nada explicar a diferenca. Este teste prende as duas coisas juntas.
+    """
+    rs = [run(algo="ppo", seed=i, teto=t) for i, t in enumerate((10.0, 20.0, 60.0))]
+    finais = sorted(r.final["score_mean"] for r in rs)
+    assert finais[1] != pytest.approx(sum(finais) / 3), "o teto de 60 tem que puxar a media"
+
+    linhas = arena_table(rs, markdown=False)
+    assert linhas[0]["score_mean"] == pytest.approx(finais[1])          # mediana
+    assert linhas[0]["score_mean"] != pytest.approx(sum(finais) / 3)    # nao a media
+
+    texto = arena_table(rs)
+    assert "score médio (last)" not in texto, "o rótulo promete média e entrega mediana"
+    assert "score (last)" in texto
+    assert "mediana entre as sementes" in texto
+
+
 def test_the_table_separates_the_last_model_from_the_best_checkpoint():
     """São duas perguntas: 'como terminou' e 'o melhor que produziu'.
 

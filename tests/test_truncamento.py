@@ -190,3 +190,30 @@ def test_the_target_network_lag_is_counted_in_gradient_updates():
     # uma sincronia a cada 3 **atualizações**, não a cada 3 passos de ambiente
     intervalos = np.diff([0] + sincronias)
     assert set(intervalos) <= {3}, f"intervalos entre sincronias: {intervalos.tolist()}"
+
+
+def test_every_value_based_agent_syncs_its_target_enough_times():
+    """Mudar a **unidade** de `target_update` sem revisitar os valores absolutos quebra
+    o agente pelo outro lado.
+
+    Desde o teste acima o contador anda em atualizações de gradiente, não em passos de
+    ambiente. O DQN teve o valor recalculado na hora (2.000 -> 250, ~1,3% do orçamento);
+    o Rainbow ficou com os 8.000 canônicos, que na unidade nova sao 41% do orcamento --
+    **duas** sincronizacoes no treino inteiro. Um alvo congelado por 40% do treino e tao
+    ruim quanto um alvo colado na rede online: nos dois casos o Double DQN para de ter
+    efeito. Este teste vale para qualquer agente de valor que venha depois.
+    """
+    from snakeai.agents.dqn import DQNConfig
+    from snakeai.agents.rainbow import RainbowConfig
+
+    for nome, cfg in (("dqn", DQNConfig()), ("rainbow", RainbowConfig())):
+        orcamento = cfg.total_steps // (cfg.learn_every * cfg.num_envs)
+        sincronias = orcamento // cfg.target_update
+        assert sincronias >= 10, (
+            f"{nome}: target_update={cfg.target_update} em ~{orcamento:,} atualizações "
+            f"dá {sincronias} sincronizações — o alvo fica congelado quase o treino todo"
+        )
+        assert cfg.target_update >= 50, (
+            f"{nome}: target_update={cfg.target_update} cola o alvo na rede online e "
+            "anula o efeito do double"
+        )

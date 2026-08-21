@@ -489,8 +489,9 @@ PAPERS = {
 
 #: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.
 #: Dar a elas o paper do algoritmo base sugeriria que a variação é do paper, e não é.
-SEM_PAPER = {"96_ppo_orcamento_esparso.ipynb", "97_ppo_canal_de_fome.ipynb",
-             "98_acktr_kl_nominal.ipynb", "99_ablacoes.ipynb"}
+SEM_PAPER = {"95_a2c_orcamento_esparso.ipynb", "96_ppo_orcamento_esparso.ipynb",
+             "97_ppo_canal_de_fome.ipynb", "98_acktr_kl_nominal.ipynb",
+             "99_ablacoes.ipynb"}
 
 
 def test_every_algorithm_notebook_is_classified_as_paper_or_ablation():

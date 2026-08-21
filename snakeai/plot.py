@@ -758,8 +758,8 @@ def arena_table(registros, markdown=True, limiar=LIMIAR_PADRAO):
         return linhas
 
     out = [
-        "| algoritmo | rede | params | sementes | passos | score médio (last) | melhor ckpt | "
-        + f"passos até {limiar:.0f} | horas | amplitude | mediana | máx | cheio |",
+        "| algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | "
+        + f"passos até {limiar:.0f} | horas | amplitude | mediana/ep | máx | cheio |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | — | — | — | 1 | — | 0% |".replace(".", ","),
     ]
@@ -795,10 +795,17 @@ def arena_table(registros, markdown=True, limiar=LIMIAR_PADRAO):
         "*esforço*, e a diferença entre os dois é enorme para quem faz busca em árvore."
     )
     out.append(
-        "\nA coluna **score médio (last)** é o número oficial: o modelo do último passo, "
-        "que é o estado final do algoritmo. **melhor ckpt** é o melhor que aquela execução "
-        "produziu em algum momento — fica à parte porque premia quem foi medido mais "
-        "vezes, pela mesma razão que a busca do AlphaZero e o filtro de flood-fill ficam "
-        "fora da curva."
+        "\nA coluna **score (last)** é o número oficial: o modelo do último passo, que é o "
+        "estado final do algoritmo. O valor é a **mediana entre as sementes** do score "
+        "médio de cada uma — não a média entre elas. É a mesma estatística que o gráfico "
+        "desenha como linha, com o intervalo entre sementes como faixa, e com três "
+        "sementes ela é o que uma semente divergente não consegue arrastar. Os documentos "
+        "de ablação (`ORCAMENTO_DE_GRADIENTE.md`, `CANAL_DE_FOME.md`) reportam **média e "
+        "desvio**, porque lá a pergunta é o tamanho de um efeito, não a ordem de um "
+        "ranking: os dois números convivem, e cada um diz qual é. **mediana/ep** é outra "
+        "coisa ainda — a mediana entre *episódios*, não entre sementes. **melhor ckpt** é "
+        "o melhor que aquela execução produziu em algum momento — fica à parte porque "
+        "premia quem foi medido mais vezes, pela mesma razão que a busca do AlphaZero e o "
+        "filtro de flood-fill ficam fora da curva."
     )
     return "\n".join(out)

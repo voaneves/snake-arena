@@ -346,6 +346,13 @@ class PPO(AgentBase):
         idx = np.arange(n)
         rng = np.random.default_rng(cfg.seed + self.iteration)
 
+        # Os escalares vão como **tensores**, não como floats Python: float Python entra
+        # na assinatura da `tf.function` e o `ent_coef` muda a cada iteração, então cada
+        # iteração recompilava o grafo inteiro e retinha mais uma `ConcreteFunction`. O
+        # `reduce_retracing=True` relaxa formas de tensor, não escalares Python. Ver
+        # `docs/REVISAO_ALGORITMOS.md` §2.6.
+        escalares = [tf.constant(v, tf.float32)
+                     for v in (cfg.clip_eps, cfg.vf_coef, cfg.vf_clip, ent)]
         tensores = {k: tf.convert_to_tensor(v) for k, v in lote.items()}
         logs = {"pg": [], "vf": [], "ent": [], "kl": [], "clipfrac": []}
         parar = False
@@ -360,8 +367,7 @@ class PPO(AgentBase):
                     tf.gather(tensores["obs"], sl), tf.gather(tensores["mask"], sl),
                     tf.gather(tensores["act"], sl), tf.gather(tensores["logp"], sl),
                     tf.gather(tensores["adv"], sl), tf.gather(tensores["ret"], sl),
-                    tf.gather(tensores["val"], sl),
-                    cfg.clip_eps, cfg.vf_coef, cfg.vf_clip, ent,
+                    tf.gather(tensores["val"], sl), *escalares,
                 )
                 logs["pg"].append(float(pg)); logs["vf"].append(float(vf))
                 logs["ent"].append(float(e)); logs["kl"].append(float(kl))

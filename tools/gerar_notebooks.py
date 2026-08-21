@@ -181,6 +181,21 @@ NOTEBOOKS = [
                   "orçamento de passos são idênticos. Ver `docs/ORCAMENTO_DE_GRADIENTE.md`.",
     },
     {
+        "arquivo": "95_a2c_orcamento_esparso.ipynb",
+        "titulo": "A2C com o rollout antigo \u2014 o mesmo eixo, numa terceira fam\u00edlia",
+        "modulos": ["snakeai/agents/ppo.py", "snakeai/agents/a2c.py"],
+        "agente": "A2C",
+        "config": "A2CConfig.esparso",
+        "resumo": "O bra\u00e7o de controle do or\u00e7amento de gradiente fora do PPO. O "
+                  "`rollout` volta de 5 para 16, e os mesmos 5 milh\u00f5es de passos de "
+                  "ambiente passam a ser gastos em ~610 atualiza\u00e7\u00f5es de lote 8.192 "
+                  "em vez de ~1.953 de lote 2.560. \u00c9 o \u00fanico bot\u00e3o: o A2C n\u00e3o tem "
+                  "\u00e9pocas nem minilotes para reaproveitar o rollout, ent\u00e3o aqui a "
+                  "vari\u00e1vel aparece isolada de qualquer outra coisa \u2014 no PPO, `96` "
+                  "mexe em tr\u00eas bot\u00f5es de uma vez. Compare com `04_a2c` na mesma "
+                  "semente. Ver `docs/ORCAMENTO_DE_GRADIENTE.md`.",
+    },
+    {
         "arquivo": "97_ppo_canal_de_fome.ipynb",
         "titulo": "PPO com o sexto canal — quanto custa não ver o relógio da fome",
         "modulos": ["snakeai/agents/ppo.py"],

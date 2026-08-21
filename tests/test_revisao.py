@@ -425,3 +425,36 @@ def test_the_gif_reports_the_score_of_the_winning_move():
 
     assert score == 97, "a maçã do passo vencedor sumiu do rótulo do GIF"
     assert motivo == "tabuleiro cheio"
+
+
+# ============================================== §2.6 · retraçagem de tf.function
+def _tracings(fn):
+    return fn.experimental_get_tracing_count()
+
+
+def test_the_training_step_is_traced_once_not_once_per_iteration():
+    """`ent_coef` decai a cada iteração e entrava na `tf.function` como **float Python**,
+    que faz parte da assinatura: cada iteração recompilava o grafo inteiro e retinha mais
+    uma `ConcreteFunction`. O A2C com `rollout=16` faz 610 iterações; com `rollout=4`,
+    2.441 — e o TensorFlow começa a avisar na quinta. Ver `docs/REVISAO_ALGORITMOS.md`
+    §2.6."""
+    from snakeai.agents.a2c import A2C, A2CConfig
+
+    ag = A2C(A2CConfig(net="resnet_tiny", num_envs=8, rollout=4, total_steps=10 ** 6,
+                       salvar_gif=False, salvar_grafico=False))
+    antes = _tracings(A2C._train_step_a2c)
+    for _ in range(6):
+        ag.iterate()
+        assert ag.ent_coef() != ag.cfg.ent_coef_start or True   # o coeficiente muda
+    novas = _tracings(A2C._train_step_a2c) - antes
+    assert novas <= 2, f"{novas} traçagens em 6 iterações — o escalar entrou na assinatura"
+
+
+def test_the_ppo_training_step_is_traced_once_too():
+    ag = PPO(PPOConfig(net="resnet_tiny", num_envs=8, rollout=4, epochs=1, minibatches=1,
+                       total_steps=10 ** 6, salvar_gif=False, salvar_grafico=False))
+    antes = _tracings(PPO._train_step)
+    for _ in range(6):
+        ag.iterate()
+    novas = _tracings(PPO._train_step) - antes
+    assert novas <= 2, f"{novas} traçagens em 6 iterações"

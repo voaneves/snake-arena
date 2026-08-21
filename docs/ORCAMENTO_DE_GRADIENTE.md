@@ -11,7 +11,7 @@ observação, da rede ou do protocolo de avaliação foi tocada.
 
 Uma variável, com os dois braços em três sementes cada:
 
-| | padrão | denso |
+| | esparso (o padrão até agosto) | denso (o padrão de hoje) |
 |---|---:|---:|
 | `rollout` | 96 | 32 |
 | `epochs` × `minibatches` | 3 × 8 | 4 × 32 |
@@ -31,10 +31,10 @@ Registros em `runs/ppo/resnet_small_esparso/seed{0,1,2}` (antes) e `runs/ppo/res
 
 | execução | score final | mediana | tabuleiro cheio | melhor ckpt | pico em |
 |---|---:|---:|---:|---:|---:|
-| padrão seed0 | 64,56 | 71 | 0,0% | 62,72 | 95% |
-| padrão seed1 | 70,58 | 79 | 13,1% | 69,46 | 95% |
-| padrão seed2 | 51,43 | 60 | 0,0% | 51,23 | 95% |
-| **padrão média** | **62,19** | 70 | **4,4%** | — | — |
+| esparso seed0 | 64,56 | 71 | 0,0% | 62,72 | 95% |
+| esparso seed1 | 70,58 | 79 | 13,1% | 69,46 | 95% |
+| esparso seed2 | 51,43 | 60 | 0,0% | 51,23 | 95% |
+| **esparso média** | **62,19** | 70 | **4,4%** | — | — |
 | denso seed0 | 81,50 | 97 | 61,4% | 85,86 | 68% |
 | denso seed1 | 78,87 | 97 | 54,7% | 81,98 | 84% |
 | denso seed2 | 82,32 | 97 | 64,1% | 81,41 | 89% |
@@ -47,14 +47,14 @@ dos episódios são jogos perfeitos. A média de 80,90 não mede mais "quão bem
 ela é essencialmente uma função da taxa de vitória, porque o teto está saturado. Daqui para
 cima, a métrica que discrimina é `tabuleiro cheio`, e a média vira um resumo enganoso.
 
-**2. A dispersão colapsou.** Desvio padrão de 9,79 no padrão contra **1,80** no denso, uma
+**2. A dispersão colapsou.** Desvio padrão de 9,79 no esparso contra **1,80** no denso, uma
 razão de 5,4. Amplitude de 19,15 contra 3,45. Isto é mais útil para quem reproduz do que o
 ganho de média: no orçamento esparso, cada atualização carrega muito peso e o destino final
 depende de onde a trajetória caiu; com passos pequenos e numerosos, a média emerge e a
 semente importa pouco. Uma execução do orçamento esparso não é uma medida do algoritmo — é
 uma amostra de uma distribuição larga.
 
-**3. A separação é completa.** A pior semente densa (78,87) supera a melhor do padrão
+**3. A separação é completa.** A pior semente densa (78,87) supera a melhor do esparso
 (70,58) por 8,3 pontos. Num teste de permutação exato com 3×3, separação completa dá
 p = 0,10 bilateral — que é o **menor valor que este desenho pode produzir**, e não um sinal
 fraco. Perseguir p < 0,05 exigiria mais sementes; o que sustenta a conclusão aqui é a
@@ -85,15 +85,36 @@ passos ainda são conservadores.
 ## O que isto obriga
 
 O contrato fixa os passos de ambiente e se cala sobre as atualizações — que hoje variam por
-um fator de 60 entre os algoritmos do repositório, de ~610 no ACKTR e no A2C a ~19.500 no
-DQN. Depois deste resultado, comparar algoritmos sem declarar esse eixo mede orçamento de
-otimização, não algoritmo.
+um fator de 64 entre os algoritmos do repositório: ~610 no ACKTR, ~1.953 no A2C, ~19.500 no
+DQN, ~39.000 no PPO. Depois deste resultado, comparar algoritmos sem declarar esse eixo mede
+orçamento de otimização, não algoritmo.
 
 Igualar não é possível: A2C e ACKTR fazem uma atualização por rollout **por definição**, e
 o teto estrutural deles fica perto de 10.000 sem descaracterizar o método. A regra
 defensável é **declarar e estreitar**: cada algoritmo recebe o maior orçamento que a sua
 definição permite, o número vai para `meta["atualizacoes"]` de cada execução, e a coluna
 aparece na tabela. Disparidade reportada é informação; disparidade silenciosa é confundidor.
+
+## A réplica no A2C
+
+O resultado acima vem de uma família só, e no PPO o botão do orçamento é na verdade três
+(`rollout`, `epochs`, `minibatches`) girados juntos. O A2C serve de réplica com **uma
+variável só**: ele não tem épocas nem minilotes para reaproveitar o rollout, então mudar
+`rollout` muda exatamente o número de atualizações e mais nada.
+
+| | esparso | padrão de hoje |
+|---|---:|---:|
+| `rollout` | 16 | 5 |
+| amostras por atualização | 8.192 | 2.560 |
+| **atualizações em 5 M passos** | **~610** | **~1.953** |
+
+O 5 não é escolha de conveniência: é o `t_max` canônico do A3C, o valor do artigo
+original. O 16 era o que estava no repositório antes de o orçamento virar eixo declarado.
+
+Os dois braços saem de `04_a2c` (padrão) e `95_a2c_orcamento_esparso` (controle), que fixa
+`A2CConfig.esparso`. **Ainda não medido em três sementes** — quando estiver, o número entra
+aqui, e a previsão registrada de antemão é que o efeito seja menor que o do PPO: 3,2× de
+razão entre os braços contra 16× lá, e um teto estrutural que nem o braço denso alcança.
 
 ## Reprodução
 

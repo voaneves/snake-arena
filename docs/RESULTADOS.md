@@ -4,7 +4,7 @@ Gerado por `python -m snakeai.arena --all`. Não editar à mão.
 
 ![arena](../assets/arena_light.png)
 
-| algoritmo | rede | params | sementes | passos | score médio (last) | melhor ckpt | passos até 40 | horas | amplitude | mediana | máx | cheio |
+| algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | passos até 40 | horas | amplitude | mediana/ep | máx | cheio |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | 1 | — | 0% |
 | ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
@@ -19,7 +19,7 @@ Score perfeito no 10×10: **97**.
 
 **horas** é tempo de parede da execução inteira, útil só entre execuções do mesmo hardware. O eixo de passos iguala os *dados vistos*; ele não iguala o *esforço*, e a diferença entre os dois é enorme para quem faz busca em árvore.
 
-A coluna **score médio (last)** é o número oficial: o modelo do último passo, que é o estado final do algoritmo. **melhor ckpt** é o melhor que aquela execução produziu em algum momento — fica à parte porque premia quem foi medido mais vezes, pela mesma razão que a busca do AlphaZero e o filtro de flood-fill ficam fora da curva.
+A coluna **score (last)** é o número oficial: o modelo do último passo, que é o estado final do algoritmo. O valor é a **mediana entre as sementes** do score médio de cada uma — não a média entre elas. É a mesma estatística que o gráfico desenha como linha, com o intervalo entre sementes como faixa, e com três sementes ela é o que uma semente divergente não consegue arrastar. Os documentos de ablação (`ORCAMENTO_DE_GRADIENTE.md`, `CANAL_DE_FOME.md`) reportam **média e desvio**, porque lá a pergunta é o tamanho de um efeito, não a ordem de um ranking: os dois números convivem, e cada um diz qual é. **mediana/ep** é outra coisa ainda — a mediana entre *episódios*, não entre sementes. **melhor ckpt** é o melhor que aquela execução produziu em algum momento — fica à parte porque premia quem foi medido mais vezes, pela mesma razão que a busca do AlphaZero e o filtro de flood-fill ficam fora da curva.
 
 ## O mesmo resultado, no eixo do custo
 

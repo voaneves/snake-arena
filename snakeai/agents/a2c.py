@@ -30,13 +30,33 @@ __all__ = ["A2CConfig", "A2C"]
 @dataclass
 class A2CConfig(PPOConfig):
     #: Rollouts curtos são o normal em A2C: sem clipping, dar passos grandes com dados
-    #: velhos desestabiliza. O PPO aguenta 96 porque o clipping segura.
-    rollout: int = 16
+    #: velhos desestabiliza. **5 é o valor canônico** (o `t_max` do A3C de Mnih et al.), e
+    #: aqui ele é também o que maximiza o orçamento de gradiente sem descaracterizar o
+    #: algoritmo.
+    #:
+    #: Este é o ponto delicado da comparação com o PPO. O A2C dá **uma** atualização por
+    #: rollout, por definição — reaproveitar o rollout em várias épocas é o que o PPO faz,
+    #: e fazer isso aqui transformaria o controle no tratado. Então o orçamento dele tem
+    #: teto estrutural: 1.953 atualizações com `rollout=5`, contra 38.300 do PPO. A
+    #: ablação de orçamento mostrou que esse eixo vale ~18 pontos no PPO, então a
+    #: diferença entre as duas curvas mede clipping **mais** orçamento, e o artigo precisa
+    #: dizer isso — não há como igualar. Ver `docs/ORCAMENTO_DE_GRADIENTE.md`.
+    rollout: int = 5
     lr_start: float = 7e-4
     lr_end: float = 1e-4
     ent_coef_start: float = 0.02
     ent_coef_end: float = 0.002
     vf_coef: float = 0.5
+
+    @classmethod
+    def esparso(cls, **kw):
+        """O `rollout=16` que era o padrão antes do orçamento virar eixo declarado.
+
+        Sobrescreve o `esparso()` do PPO, que mexe em `epochs` e `minibatches` — botões
+        que no A2C não existem. Aqui o único botão é o rollout.
+        """
+        kw.setdefault("sufixo_variante", "esparso")
+        return cls(rollout=16, **kw)
 
     #: Campos do PPO que não existem aqui. Ficam para o `dataclass` não brigar, mas o
     #: `A2C` ignora — e o teste `test_a2c_ignores_ppo_only_knobs` garante que ignora.
@@ -89,12 +109,15 @@ class A2C(PPO):
         self.optimizer.learning_rate.assign(self.lr())
         ent = self.ent_coef()
 
+        # escalares como tensores — ver a nota em `PPO.update` (§2.6 da revisão). Aqui
+        # dói mais: o A2C dá uma atualização por iteração, então eram 610 recompilações
+        # com `rollout=16` e 1.953 com o rollout canônico de 5.
         pg, vf, e = self._train_step_a2c(
             self.model, self.optimizer,
             tf.convert_to_tensor(lote["obs"]), tf.convert_to_tensor(lote["mask"]),
             tf.convert_to_tensor(lote["act"]), tf.convert_to_tensor(lote["adv"]),
             tf.convert_to_tensor(lote["ret"]),
-            ent, cfg.vf_coef,
+            tf.constant(ent, tf.float32), tf.constant(cfg.vf_coef, tf.float32),
         )
         return {
             "pg": float(pg), "vf": float(vf), "ent": float(e),

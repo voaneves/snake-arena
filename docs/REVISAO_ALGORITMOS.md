@@ -230,6 +230,20 @@ ponto fixo. Os dois botões estão acoplados sem que nada denuncie.
 e ~9.200 iterações de interpretador por atualização. Baixar `learn_every` hoje tornaria o
 treino inviável — o gargalo é a memória, não a GPU.
 
+**A correção teve um segundo tempo, e ele quase passou batido.** Trocada a moeda de
+`target_update` para atualizações de gradiente, o DQN teve o valor recalculado junto
+(2.000 → 250, ~1,3% do orçamento de ~19.500 atualizações). O Rainbow não: ficou com os
+8.000 canônicos do paper, que na moeda nova são **41% do orçamento** — duas sincronizações
+no treino inteiro. É o mesmo defeito pelo outro extremo: um alvo congelado por 40% do
+treino anula o `double` tão bem quanto um alvo colado na rede online. Corrigido para 1.000
+(mantendo a razão de 4× que o paper usa contra o DQN base: ~19 sincronizações, ~5% do
+orçamento), com um teste que exige pelo menos dez sincronizações para qualquer agente de
+valor — para que o próximo que chegar não repita a conta.
+
+A lição geral, que vale para o artigo: **mudar a unidade de um hiperparâmetro é mudar todos
+os valores absolutos que dependem dela**, e o valor "do paper" deixa de ser o valor certo
+no instante em que a unidade muda.
+
 ### 2.5 ✔ AlphaZero e MuZero: 62% das amostras tinham alvo de valor sem bootstrap
 `alphazero.py:242-254` · `muzero.py:238-250` — **corrigido**
 
