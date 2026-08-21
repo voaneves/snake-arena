@@ -1,6 +1,6 @@
 {
   "algo": "a2c",
-  "variant": "resnet_small",
+  "variant": "resnet_small_esparso",
   "seed": 0,
   "net": "resnet_small",
   "params": 180464,
@@ -16,7 +16,7 @@
     "runs_dir": "/kaggle/working/snake-arena/runs",
     "log_every_steps": 50000,
     "salvar_grafico": true,
-    "sufixo_variante": "",
+    "sufixo_variante": "esparso",
     "salvar_gif": true,
     "gif_seeds": [
       7,
@@ -2464,22 +2464,22 @@
     "atualizacoes": 611,
     "artefatos": {
       "modelos": {
-        "last": "/kaggle/working/snake-arena/runs/a2c/resnet_small/seed0/modelos/last.keras",
-        "best": "/kaggle/working/snake-arena/runs/a2c/resnet_small/seed0/modelos/best.keras"
+        "last": "/kaggle/working/snake-arena/runs/a2c/resnet_small_esparso/seed0/modelos/last.keras",
+        "best": "/kaggle/working/snake-arena/runs/a2c/resnet_small_esparso/seed0/modelos/best.keras"
       },
-      "grafico": "/kaggle/working/snake-arena/runs/a2c/resnet_small/seed0/curva.png",
+      "grafico": "/kaggle/working/snake-arena/runs/a2c/resnet_small_esparso/seed0/curva.png",
       "gif_s7": {
-        "caminho": "/kaggle/working/snake-arena/runs/a2c/resnet_small/seed0/episodio_s7.gif",
+        "caminho": "/kaggle/working/snake-arena/runs/a2c/resnet_small_esparso/seed0/episodio_s7.gif",
         "score": 67,
         "fim": "colisão"
       },
       "gif_s21": {
-        "caminho": "/kaggle/working/snake-arena/runs/a2c/resnet_small/seed0/episodio_s21.gif",
+        "caminho": "/kaggle/working/snake-arena/runs/a2c/resnet_small_esparso/seed0/episodio_s21.gif",
         "score": 28,
         "fim": "colisão"
       },
       "gif_s42": {
-        "caminho": "/kaggle/working/snake-arena/runs/a2c/resnet_small/seed0/episodio_s42.gif",
+        "caminho": "/kaggle/working/snake-arena/runs/a2c/resnet_small_esparso/seed0/episodio_s42.gif",
         "score": 69,
         "fim": "colisão"
       }

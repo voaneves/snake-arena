@@ -239,6 +239,45 @@ def test_rel_path_matches_the_contract_layout():
         "runs/ppo/resnet_small/seed0/history.json"
 
 
+def test_every_recorded_run_sits_where_its_identity_says():
+    """A pasta de uma execução tem de ser a identidade que está dentro do `history.json`.
+
+    `load_all` agrupa por `(algo, variant, seed)` lido do JSON, **não** pelo caminho — e o
+    `plot.py` agrega as sementes da arena por esse mesmo par. Então uma execução gravada
+    com um `variant` e movida para outra pasta à mão fica com a identidade da pasta antiga:
+    ela some do grupo onde o caminho diz que está e reaparece, silenciosamente, dentro do
+    grupo de outra configuração — misturando dois braços de uma ablação numa mediana só.
+
+    Foi o que aconteceu com o A2C esparso: rodado antes de `A2CConfig.esparso()` existir,
+    saiu com `sufixo_variante=""`, virou `a2c/resnet_small/seed0` e foi renomeado para
+    `runs/a2c/resnet_small_esparso/seed0/` depois. A colisão só apareceria quando o braço
+    denso — que é `a2c/resnet_small/seed0` por direito — fosse medido, e apareceria como
+    uma mediana de duas sementes onde só existe uma.
+
+    O caminho é a única coisa que um humano vê no `git status`; esta é a asserção que faz
+    dele a fonte de verdade.
+    """
+    import pathlib
+
+    raiz = pathlib.Path(__file__).resolve().parent.parent / "runs"
+    if not raiz.is_dir():
+        pytest.skip("sem `runs/` neste checkout")
+
+    divergentes = []
+    for caminho in sorted(raiz.rglob("history.json")):
+        rel = caminho.relative_to(raiz.parent).as_posix()
+        dados = json.loads(caminho.read_text(encoding="utf-8"))
+        pasta = caminho.parent.relative_to(raiz).as_posix()          # <algo>/<variant>/seedN
+        identidade = f"{dados.get('algo')}/{dados.get('variant')}/seed{dados.get('seed')}"
+        if pasta != identidade:
+            divergentes.append(f"{rel}: identidade `{identidade}`")
+
+    assert not divergentes, (
+        "a identidade gravada não bate com a pasta — `load_all` vai agrupar estas "
+        "execuções pelo `variant` do JSON, não pelo caminho:\n  "
+        + "\n  ".join(divergentes))
+
+
 # ---------------------------------------------------------------------- legado
 def test_legacy_csv_becomes_a_non_comparable_record(tmp_path):
     csv_path = tmp_path / "epsgreedy" / "keras_training_data.csv"

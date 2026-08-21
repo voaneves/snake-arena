@@ -155,8 +155,9 @@ ACKTR foi **retirada** depois que a semente 2 a contradisse.
 Coisas que só o Victor pode apagar, porque a ponte com o dispositivo não deleta arquivos:
 
 * `notebooks/98_acktr_kl_max_corrigido.ipynb` — substituído por `98_acktr_kl_nominal.ipynb`
-  (`git rm`);
-* pastas vazias em `runs/`: `ppo/resnet_small_denso`, `ppo/resnet_small_fome`,
-  `acktr/resnet_small+klcal`, `acktr/resnet_small+klcal15`, `acktr/resnet_small+sondagem`,
-  e `runs/_mudanca_temporaria` — sobras da renomeação; o git ignora pasta vazia, então isso
-  é limpeza de disco, não do histórico.
+  (`git rm`). **Pendente**: é um arquivo rastreado, e a ponte não remove do índice.
+* ~~pastas vazias em `runs/`~~ — **feito em 21/08**. As seis (`ppo/resnet_small_denso`,
+  `ppo/resnet_small_fome`, `acktr/resnet_small+klcal`, `acktr/resnet_small+klcal15`,
+  `acktr/resnet_small+sondagem` e `runs/_mudanca_temporaria`) saíram de `runs/`, que hoje
+  não tem nenhum diretório vazio. Eram sobras da renomeação; como o git ignora pasta vazia,
+  foi limpeza de disco e não aparece no histórico.

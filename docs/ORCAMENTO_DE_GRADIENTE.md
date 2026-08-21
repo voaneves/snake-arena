@@ -68,7 +68,8 @@ nas três sementes densas. A suspeita registrada na revisão (§2.2) — de que 
 unidades absolutas travava o crítico — **não se confirma neste orçamento**. A explicação
 econômica é que as duas suspeitas eram a mesma: o clip limita o valor a ±0,2 por
 atualização, e com 128 atualizações por iteração em vez de 24 ele deixa de morder. Fica
-como hipótese não testada para o orçamento esparso, cujas execuções não registram `ev`.
+como hipótese não testada para o orçamento esparso, cujas execuções não registram `ev` —
+com a ressalva que a réplica no A2C acrescenta, mais abaixo.
 
 **Em duas de três sementes a política piorou no fim.** Seed 0 caiu de 85,86 (68% do
 orçamento) para 81,50, com o tabuleiro cheio indo de 74,1% para 61,4%; seed 1 caiu 3,11
@@ -112,9 +113,50 @@ O 5 não é escolha de conveniência: é o `t_max` canônico do A3C, o valor do 
 original. O 16 era o que estava no repositório antes de o orçamento virar eixo declarado.
 
 Os dois braços saem de `04_a2c` (padrão) e `95_a2c_orcamento_esparso` (controle), que fixa
-`A2CConfig.esparso`. **Ainda não medido em três sementes** — quando estiver, o número entra
-aqui, e a previsão registrada de antemão é que o efeito seja menor que o do PPO: 3,2× de
-razão entre os braços contra 16× lá, e um teto estrutural que nem o braço denso alcança.
+`A2CConfig.esparso`. A previsão foi registrada **antes** de qualquer medição: efeito menor
+que o do PPO, porque a razão entre os braços é de 3,2× contra 16× lá, e com um teto
+estrutural que nem o braço denso alcança.
+
+### O que já foi medido
+
+| execução | atualizações | score final | mediana | p95 | tabuleiro cheio | pico em |
+|---|---:|---:|---:|---:|---:|---:|
+| esparso seed0 | 611 | 55,47 | 59 | 71 | 0,0% | 100% |
+| denso seed{0,1,2} | ~1.953 | — | — | — | — | — |
+
+Uma semente de um braço não é resultado: é o primeiro ponto. O número entra na conclusão
+quando os dois braços tiverem três sementes cada — e a leitura do experimento do PPO vale
+aqui em dobro, porque foi ela que mostrou que **uma execução do orçamento esparso é uma
+amostra de uma distribuição larga**, não uma medida do algoritmo.
+
+Três observações que já se sustentam sozinhas:
+
+**O crítico está saudável — e não é o mesmo teste do PPO.** A variância explicada termina em
+**0,986** com 611 atualizações. Isto fecha metade da lacuna deixada acima: não é a contagem
+baixa de atualizações, por si, que estraga o crítico. Mas **não** testa a suspeita do
+`vf_clip`, porque o A2C tem `vf_clip=0` — ele nem tem o botão. A hipótese aberta em
+"Duas observações que o experimento não previa" continua aberta, e só um PPO esparso que
+registre `ev` a fecha.
+
+**A política ainda estava subindo no fim.** O melhor checkpoint é o último, a 100% do
+orçamento, e os quatro pontos anteriores são 46,07 / 49,67 / 48,42 / 55,47. Não há o
+endurecimento tardio que derrubou duas das três sementes densas do PPO — a entropia termina
+em 0,105 de um máximo de 1,099, mas sem o custo que aparecia lá. Ou o A2C esparso é curto
+demais para chegar à fase em que aquilo acontece, ou a fase é um artefato do reaproveitamento
+de rollout. As duas leituras são testáveis; nenhuma está testada.
+
+**O tempo de parede dos dois braços não é comparável.** A correção de retracing (§2.6 da
+revisão, escalares como tensores) entrou **entre** esta execução e o braço denso. O esparso
+gastou 0,778 h recompilando o grafo uma vez por atualização; o denso não vai recompilar
+nenhuma. A coluna existe para o PPO, onde os dois braços rodaram no mesmo código — aqui ela
+mede a correção, não o orçamento.
+
+Uma nota de proveniência: esta execução saiu com `assinatura_pacote=782a8b8aa4af004f`, e o
+`95_a2c_orcamento_esparso.ipynb` no HEAD carrega `df6c8eb2b2ca2f58`. A diferença entre as
+duas é a correção de retracing e o próprio `A2CConfig.esparso()` — nenhuma delas muda um
+número, mas reproduzir hoje não devolve a mesma assinatura. Foi também por isso que o
+registro nasceu com `variant="resnet_small"` e precisou ser reetiquetado para
+`resnet_small_esparso`: `A2CConfig.esparso()`, que carimba o sufixo, ainda não existia.
 
 ## Reprodução
 
@@ -126,6 +168,17 @@ for v in ("resnet_small_esparso", "resnet_small"):
          for i in range(3)]
     print(v, [round(x, 2) for x in s], "média", round(np.mean(s), 2),
           "dp", round(np.std(s, ddof=1), 2))
+PY
+```
+
+Para o A2C, trocando `ppo` por `a2c` e o alcance das sementes pelo que já existe:
+
+```bash
+python - <<'PY'
+import json
+d = json.load(open("runs/a2c/resnet_small_esparso/seed0/history.json"))
+print(d["variant"], d["config"]["rollout"], d["meta"]["atualizacoes"],
+      round(d["final"]["score_mean"], 2))
 PY
 ```
 
