@@ -3,10 +3,12 @@
 Revisão do estado do repositório com uma pergunta só: **o que hoje entra num artigo e o
 que não entra**. É uma lista de decisões, não de tarefas de código.
 
-*Revisado em 21/08. A versão de 18/08 listava três decisões antes de gastar GPU; as três
-estão fechadas, e o que sobrou é fila de execução. O histórico delas está no fim, em
-"O que mudou desde a revisão anterior", porque a decisão importa mais do que o número que
-ela substituiu.*
+*Revisado em 21/08, segunda passagem. A versão de 18/08 listava três decisões antes de
+gastar GPU; as três estão fechadas. A primeira passagem de 21/08 dizia que o que sobrava era
+fila de execução — o A2C fechou os dois braços e produziu um resultado que **derruba duas
+afirmações publicadas neste repositório**, e o DQN corrigido abriu uma pergunta nova. O
+histórico está no fim, em "O que mudou desde a revisão anterior", porque a decisão importa
+mais do que o número que ela substituiu.*
 
 ## Resposta curta
 
@@ -15,39 +17,62 @@ depende da tabela final: introdução, trabalhos relacionados, o ambiente, o con
 comparabilidade, o protocolo de avaliação, a metodologia, e — inteiras — as duas ablações
 fechadas: o canal de fome e o orçamento de gradiente.
 
-O que falta é **fila de GPU**: sete algoritmos ainda sem as três sementes na régua atual.
-Nenhum deles depende de uma escolha que ainda não foi feita.
+O que falta é **fila de GPU**: cinco algoritmos ainda sem nenhuma semente na régua atual,
+mais a terceira do DQN. Nenhum deles depende de uma escolha que ainda não foi feita.
+
+Há **uma** pergunta nova, e ela é barata: a correção do DQN mudou duas coisas ao mesmo tempo
+e o efeito líquido foi de −9,8 pontos. Uma ablação de 1,85 h separa as duas. Ela não trava
+nada, mas trava a redação daquele parágrafo.
 
 ## O que está fechado
 
 | experimento | sementes | estado |
 |---|---:|---|
 | PPO, configuração oficial (densa) | 3 | ✅ 81,50 / 78,87 / 82,32 — média 80,90, dp 1,80 |
-| ACKTR, região de confiança calibrada | 3 | ✅ 89,78 / 70,67 / 78,13 — média 79,53, dp 9,63 |
-| Ablação do orçamento de gradiente (PPO denso × esparso) | 3 + 3 | ✅ `ORCAMENTO_DE_GRADIENTE.md` |
+| ACKTR, região de confiança calibrada | 3 | ✅ 89,78 / 70,67 / 78,13 — média 79,52, dp 9,63 |
+| A2C, `t_max = 5` canônico | 3 | ✅ 75,44 / 69,61 / 67,73 — média 70,93, dp 4,02 |
+| Ablação do orçamento de gradiente, PPO | 3 + 3 | ✅ `ORCAMENTO_DE_GRADIENTE.md` |
+| Ablação do orçamento de gradiente, **réplica no A2C** | 3 + 3 | ✅ previsão pré-registrada **falhou** |
 | Ablação do canal de fome | 3 | ✅ `CANAL_DE_FOME.md` |
+| Auditoria de procedência do corpus | — | ✅ `PROCEDENCIA.md` |
 
-As duas primeiras linhas são o par mais interessante do repositório: **mesma média, cinco
-vezes a dispersão**. PPO e ACKTR terminam empatados dentro do ruído (80,90 contra 79,53),
-mas o desvio entre sementes é 1,80 contra 9,63 — o ACKTR tem a melhor semente do
-repositório (89,78) e também a pior das duas famílias (70,67). Isso é um achado, não um
-empate: a média sozinha esconderia os dois lados.
+Três achados já sustentam parágrafo próprio no artigo.
+
+**PPO e ACKTR: mesma média, cinco vezes a dispersão.** Empatados dentro do ruído (80,90
+contra 79,52), com desvio entre sementes de 1,80 contra 9,63 — o ACKTR tem a melhor semente
+do repositório (89,78) e também a pior das duas famílias (70,67). A média sozinha esconderia
+os dois lados.
+
+**O ACKTR chega lá com 1,6% do orçamento de gradiente do PPO.** 610 atualizações contra
+38.273, e já saturado: a inclinação no terço final é +0,77 pontos por milhão de passos. É a
+observação de maior densidade do repositório, e está desenvolvida em
+`ORCAMENTO_DE_GRADIENTE.md`, seção "O eixo entre famílias".
+
+**A previsão registrada para a réplica do orçamento falhou.** O efeito no A2C deveria ser
+proporcionalmente menor (razão de 3,2× entre os braços contra 16× no PPO) e saiu idêntico:
++18,70 contra +18,71. Além disso a explicação publicada para o colapso de dispersão **não
+replicou** — no A2C o desvio não se mexe (4,11 → 4,02). As duas afirmações derrubadas ficam
+no documento, marcadas, em vez de apagadas.
 
 ## O que falta, e é só execução
 
-Sete algoritmos × 3 sementes. Nenhum depende de decisão pendente — os quatro sequenciais já
-têm o truncamento por fome corrigido, e o DQN já conta a rede alvo em atualizações de
-gradiente em vez de passos de ambiente.
+Cinco algoritmos × 3 sementes, mais a terceira semente do DQN. Nenhum depende de decisão
+pendente — os quatro sequenciais já têm o truncamento por fome corrigido, e o DQN já conta a
+rede alvo em atualizações de gradiente em vez de passos de ambiente.
 
-| ordem | algoritmo | notebook | por que nesta posição |
-|---:|---|---|---|
-| 1 | A2C | `04_a2c` | é o controle experimental do PPO; barato (~0,7 h) e fecha a família de gradiente de política |
-| 2 | DQN | `02_dqn` | a execução atual é pré-correção e está fora da arena; ~2,4 h por semente |
-| 3 | Rainbow | `03_rainbow` | mesma família, e responde "os seis componentes valem?"; a rede alvo dele acabou de ser recalibrada — ver abaixo |
-| 4 | ACER | `05_acer` | daqui em diante o custo por semente é desconhecido |
-| 5 | DreamerV3 | `09_dreamerv3` | idem |
-| 6 | AlphaZero | `06_alphazero` | idem — busca em árvore, o passo custa muito mais |
-| 7 | MuZero | `07_muzero` | idem |
+| ordem | algoritmo | notebook | estado | custo medido |
+|---:|---|---|---|---|
+| ~~1~~ | ~~A2C~~ | `04_a2c` | ✅ **feito**, nos dois braços | 0,31 h/semente |
+| 2 | DQN | `02_dqn` | 🔄 2 de 3 sementes | 1,85 h/semente |
+| 3 | Rainbow | `03_rainbow` | pendente | desconhecido |
+| 4 | ACER | `05_acer` | pendente | desconhecido |
+| 5 | DreamerV3 | `09_dreamerv3` | pendente | desconhecido |
+| 6 | AlphaZero | `06_alphazero` | pendente | desconhecido — busca em árvore |
+| 7 | MuZero | `07_muzero` | pendente | desconhecido |
+
+O A2C saiu **muito** mais barato que a estimativa de 0,7 h: 0,31 h por semente, o menor
+custo do repositório. A correção de retracing (`PROCEDENCIA.md`, caso 2) responde por boa
+parte disso.
 
 Antes de 4–7, uma **sondagem de tempo**: uma semente parcial de cada um dos quatro só para
 medir passos/s e projetar a fila. Quatro execuções que estouram o limite de sessão do
@@ -56,36 +81,69 @@ Kaggle descobertas uma a uma custam mais do que quatro sondagens de dez minutos.
 Faltam ainda, e são opcionais:
 
 * 2 sementes para cada uma das duas ablações da região de confiança do ACKTR
-  (`+kl0.002` e `+kl_nominal+kl0.002`) — hoje têm 1, e a arena avisa;
-* 3 sementes de `95_a2c_orcamento_esparso`, se a réplica do eixo de orçamento numa
-  segunda família entrar no artigo.
+  (`+kl0.002` e `+kl_nominal+kl0.002`) — hoje têm 1, e a arena avisa. São as **únicas** duas
+  configurações que ainda disparam esse aviso;
+* ~~3 sementes de `95_a2c_orcamento_esparso`~~ — **feito**, e o resultado derrubou a
+  previsão registrada.
 
-## O único ponto novo em aberto
+## O ponto novo em aberto: a correção do DQN custou 9,8 pontos
 
-**A assinatura do pacote mudou no meio do corpo de execuções.** `snakeai/plot.py` foi
-editado (o rótulo da coluna oficial da tabela — ver abaixo), e isso muda a assinatura de
-todos os notebooks. As execuções que já existem carregam a assinatura antiga; as ~21 que
-faltam carregarão a nova.
+A execução pré-correção do DQN marcava **57,43**. As duas sementes da versão corrigida
+marcam **48,24 e 47,11** — média 47,67, desvio 0,80. A correção tornou o número **pior**, e
+isso precisa estar no artigo com essas palavras, não escondido atrás de "reexecutado com o
+pacote corrigido".
 
-Antes de tratar isso como problema, vale lembrar o que a assinatura é: ela identifica **a
-fatia do pacote embutida naquele notebook**, então `01_ppo` e `08_acktr` nunca tiveram a
-mesma — o PPO hoje grava `40448b19b28116da` e o ACKTR `ca21410bf88c1c65`. Ela nunca foi um
-identificador global do repositório; é o substituto do `commit`, que o Kaggle não fornece.
-O que muda agora é que o **mesmo** notebook passa a ter duas assinaturas ao longo do tempo,
-e para o DQN, o A2C e os quatro sequenciais isso é irrelevante porque nenhuma semente deles
-foi feita ainda.
+O que a correção arrumou funcionou como previsto: a morte por inanição caiu de **34,3% para
+2,2%**, que era exatamente o sintoma que o bug do truncamento por fome produzia (a fome
+entrava no buffer como terminação e o `next_obs` gravado era o do episódio seguinte —
+§1.1 da revisão).
 
-E a diferença é inócua, o que vale dizer no artigo em vez de esperarem a pergunta:
-`plot.py` é módulo de **relatório**. Não é importado pelo laço de treino nem pelo protocolo
-de avaliação, e a tabela é regenerada a partir dos `history.json` na hora de publicar — a
-versão de `plot.py` que estava na sessão de treino não toca em nenhum número. As mudanças
-que tocariam (PPO, A2C, ACKTR) foram verificadas bit a bit contra a versão anterior antes
-de entrar, e estão registradas em `ORCAMENTO_DE_GRADIENTE.md` e `REVISAO_ALGORITMOS.md`.
+**Mas duas coisas mudaram ao mesmo tempo**, e por isso os 9,8 pontos não são atribuíveis:
 
-Um detalhe menor do mesmo tipo: as execuções de ACKTR não gravam `meta["atualizacoes"]`
-(o contador entrou depois), e as do PPO esparso não gravam nem assinatura nem contador.
-Para essas, o número de atualizações sai da configuração — ~610 no ACKTR, ~2.424 no PPO
-esparso — e é analítico, não medido. Vale escrever assim.
+| | pré-correção | corrigido |
+|---|---|---|
+| truncamento por fome | bugado | corrigido |
+| `target_update` | 2.000 | 250 |
+| score | 57,43 | 47,67 *(n=2)* |
+| morte por fome | 34,3% | 2,2% |
+| `meta["atualizacoes"]` | não gravado | 38.908 |
+
+Três leituras possíveis, e os dados atuais não separam: o número antigo era inflado pelo bug;
+a recalibração de `target_update` custou desempenho; ou as duas coisas em direções
+diferentes. **Uma ablação de uma variável resolve** — refazer uma semente com o truncamento
+corrigido e `target_update = 2.000` custa 1,85 h e fecha a pergunta. Enquanto não for feita,
+a redação honesta é "a correção mudou duas coisas e o efeito líquido foi −9,8 pontos".
+
+Vale notar o que isso não é: não é motivo para preferir o número antigo. A execução antiga
+tem um bug de treino documentado e permanece `comparable=False`. Um resultado melhor obtido
+com um bootstrap errado não é um resultado melhor.
+
+### E o par que este resultado libera
+
+O DQN corrigido grava **38.908** atualizações de gradiente; o PPO denso grava **38.273**.
+Uma diferença de 1,7%. É o **único par do repositório com o orçamento de gradiente casado**,
+e portanto a única comparação entre dois algoritmos que este benchmark oferece hoje sem o
+confundidor descrito em `ORCAMENTO_DE_GRADIENTE.md`: 80,90 contra 47,67.
+
+Duas ressalvas para não sobrevender: o DQN aqui é o **baseline de 2015** puro
+(`double`, `dueling`, `per`, `noisy` desligados, `n_steps=1`, sem C51), então o par mede
+PPO contra DQN-vanilla, não contra o melhor método baseado em valor; e o Rainbow, que é essa
+comparação justa, é o próximo da fila. Além disso o DQN ainda tem duas sementes.
+
+## Procedência do corpus
+
+A seção que antes ficava aqui — sobre a assinatura do pacote ter mudado no meio do corpo de
+execuções — virou documento próprio: [`PROCEDENCIA.md`](PROCEDENCIA.md). Ele cobre o que a
+assinatura é e o que ela não é, o inventário de qual código produziu cada uma das 24
+execuções, o método de auditoria (reconstruir a assinatura em qualquer commit, em dois
+comandos), e os três casos concretos: o trio do A2C esparso partido entre duas assinaturas,
+a medição controlada do custo de retracing, e as duas vezes em que a pasta e a identidade
+gravada discordaram.
+
+O resumo operacional, para quem só precisa da conclusão: **nenhuma diferença de código
+dentro do corpus toca num número de score**; a coluna de **tempo de parede não é comparável
+entre assinaturas**; e o trio `ppo/resnet_small_esparso` é o único que compete na arena sem
+assinatura gravada.
 
 ## Uma correção de rótulo que vale um parágrafo do artigo
 
@@ -145,6 +203,18 @@ Todos os itens que a versão de 18/08 listava como bloqueio estão fechados:
 * **A ablação do canal de fome sumindo da arena** → execuções `comparable=False` agora
   aparecem na seção "execuções que não entraram", com o motivo.
 
+* **A2C fechado nos dois braços** (21/08) → 3 sementes densas (média 70,93, dp 4,02) e 3
+  esparsas (52,22, dp 4,11). A previsão pré-registrada para o tamanho do efeito **falhou**, e
+  a explicação publicada para o colapso de dispersão **não replicou**. As duas ficam no
+  `ORCAMENTO_DE_GRADIENTE.md`, marcadas.
+* **DQN reexecutado com o pacote corrigido** (21/08) → a morte por fome caiu de 34,3% para
+  2,2% e o score caiu de 57,43 para 47,67. A execução antiga virou `dqn/base_antigo/seed0`,
+  `comparable=False`. Duas mudanças ao mesmo tempo; a atribuição está em aberto.
+* **Procedência auditável** (21/08) → `PROCEDENCIA.md`, com o inventário das 24 execuções e
+  o método para reconstruir a assinatura em qualquer commit.
+* **Identidade travada por teste** (21/08) → `test_every_recorded_run_sits_where_its_identity_says`.
+  Escrito para o A2C esparso, pegou sozinho o `dqn/base_antigo` cinco dias depois.
+
 Duas coisas ficaram registradas como hipóteses **não** confirmadas, e é importante que
 fiquem assim: o `vf_clip` travando o crítico (§2.2) não se confirmou no orçamento denso —
 a variância explicada ficou entre 0,88 e 0,96 —, e a ideia de um ótimo interior de KL no
@@ -156,6 +226,8 @@ Coisas que só o Victor pode apagar, porque a ponte com o dispositivo não delet
 
 * `notebooks/98_acktr_kl_max_corrigido.ipynb` — substituído por `98_acktr_kl_nominal.ipynb`
   (`git rm`). **Pendente**: é um arquivo rastreado, e a ponte não remove do índice.
+* `_to_delete/` na raiz — pastas vazias já movidas para fora de `runs/` e o `bundle.tgz` de
+  transporte. Está no `.gitignore`, então é limpeza de disco: `rmdir /s /q _to_delete`.
 * ~~pastas vazias em `runs/`~~ — **feito em 21/08**. As seis (`ppo/resnet_small_denso`,
   `ppo/resnet_small_fome`, `acktr/resnet_small+klcal`, `acktr/resnet_small+klcal15`,
   `acktr/resnet_small+sondagem` e `runs/_mudanca_temporaria`) saíram de `runs/`, que hoje

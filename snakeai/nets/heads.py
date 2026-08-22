@@ -19,7 +19,7 @@ os.environ.setdefault("KERAS_BACKEND", "tensorflow")
 import keras
 from keras import layers, ops
 
-__all__ = ["NoisyDense", "dueling_head", "distributional_head", "q_de_distribuicao",
+__all__ = ["NoisyDense", "CentraNaMedia", "dueling_head", "distributional_head", "q_de_distribuicao",
            "ruido_ligado"]
 
 
@@ -119,6 +119,38 @@ class NoisyDense(layers.Layer):
         return cfg
 
 
+@keras.saving.register_keras_serializable(package="snakeai")
+class CentraNaMedia(layers.Layer):
+    """`x − média(x)` ao longo de um eixo. Camada registrada, **não** `Lambda`.
+
+    O `Lambda` com uma função anônima não sobrevive a `save`/`load` no Keras 3: o
+    desserializador recusa recarregar um lambda Python por risco de execução arbitrária, e
+    exige `safe_mode=False`. `snakeai/nets/muzero.py` já tinha aprendido isso; a cabeça
+    dueling e a do C51 não.
+
+    O custo do descuido não é teórico. `AgentBase.avaliar_melhor()` recarrega o checkpoint
+    `best` **no fim do treino**, então o `ValueError` chegava depois do orçamento inteiro
+    gasto — 8.931 s de GPU numa execução do Rainbow, perdida na última linha. E só o
+    Rainbow batia nisto: é o único agente com `dueling=True` **e** `n_atoms>0`, os dois
+    caminhos que usavam `Lambda`.
+    """
+
+    def __init__(self, eixo=-1, **kw):
+        super().__init__(**kw)
+        self.eixo = int(eixo)
+
+    def call(self, x):
+        return x - ops.mean(x, axis=self.eixo, keepdims=True)
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg["eixo"] = self.eixo
+        return cfg
+
+
 def _densa(tipo, unidades, ativacao=None, nome=None):
     if tipo == "noisy":
         return NoisyDense(unidades, activation=ativacao, name=nome)
@@ -140,10 +172,7 @@ def dueling_head(x, n_actions, largura=256, densa="dense", nome="dueling"):
     v = _densa(densa, largura, "relu", f"{nome}_v_h")(x)
     v = _densa(densa, 1, None, f"{nome}_v")(v)
 
-    a_centrada = layers.Lambda(
-        lambda t: t - ops.mean(t, axis=-1, keepdims=True),
-        output_shape=lambda s: s, name=f"{nome}_center",
-    )(a)
+    a_centrada = CentraNaMedia(eixo=-1, name=f"{nome}_center")(a)
     return layers.Add(name=f"{nome}_q")([v, a_centrada])
 
 
@@ -167,10 +196,7 @@ def distributional_head(x, n_actions, n_atoms=51, largura=256, densa="dense",
         v = _densa(densa, n_atoms, None, f"{nome}_v")(v)
         v = layers.Reshape((1, n_atoms), name=f"{nome}_v_r")(v)
 
-        a_centrada = layers.Lambda(
-            lambda t: t - ops.mean(t, axis=1, keepdims=True),
-            output_shape=lambda s: s, name=f"{nome}_center",
-        )(a)
+        a_centrada = CentraNaMedia(eixo=1, name=f"{nome}_center")(a)
         return layers.Add(name=f"{nome}_logits")([v, a_centrada])
 
     h = _densa(densa, largura, "relu", f"{nome}_h")(x)

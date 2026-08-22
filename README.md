@@ -260,20 +260,54 @@ medida, não folclore.
 ![arena](assets/arena_light.png)
 
 A tabela completa está em [`docs/RESULTADOS.md`](docs/RESULTADOS.md), gerada por
-`python -m snakeai.arena --all`. **O painel da esquerda está vazio de propósito** — nenhuma
-execução no orçamento oficial foi feita ainda, e o repositório prefere um gráfico honesto e
-vazio a um gráfico bonito com números de execuções curtas.
+`python -m snakeai.arena --all`. Dezessete execuções oficiais, no orçamento de 5 M passos, com
+o mesmo protocolo de avaliação — 1.000 episódios greedy na semente 123. Todas as colunas
+abaixo são **medianas entre as sementes**, a estatística oficial da arena; os documentos de
+ablação reportam **média e desvio**, porque lá a pergunta é o tamanho de um efeito e não a
+ordem de um ranking. Os dois números convivem, e cada documento diz qual usa.
 
-O painel da direita é o acervo de 2019, no eixo dele: episódios, não passos de ambiente.
+| algoritmo | sementes | score (last) | amplitude | atualizações | horas | tabuleiro cheio |
+|---|---:|---:|---:|---:|---:|---:|
+| PPO · `resnet_small` | 3 | **81,50** | ±3,45 | 38.273 | 0,83 | 61,4% |
+| ACKTR · `resnet_small` | 3 | **78,13** | ±19,11 | ~610 | 0,51 | 60,7% |
+| A2C · `resnet_small` | 3 | **69,61** | ±7,72 | 1.954 | 0,31 | 2,2% |
+| DQN · `base` | 2 | **47,67** | ±1,13 | 38.908 | 1,85 | 0,0% |
+| _piso aleatório_ | — | 1,21 | — | — | — | 0% |
 
-O que já foi medido, fora do contrato e portanto fora da arena:
+Score perfeito no 10×10 é **97**. As ablações de orçamento e do canal de fome têm linhas
+próprias na tabela completa.
+
+**Dois resultados que a tabela sozinha não mostra:**
+
+O **ACKTR empata com o PPO gastando 1,6% do orçamento de gradiente** — 610 atualizações
+contra 38.273, e 0,51 h contra 0,83 h de parede. O preço é a dispersão: ±19,11 de amplitude
+contra ±3,45. Ele tem a melhor semente do repositório (89,78) e também uma das piores.
+
+O par **PPO × DQN é o único com o orçamento de gradiente casado** (38.273 contra 38.908,
+1,7% de diferença), e portanto a única comparação entre algoritmos aqui que **não** carrega o
+confundidor de orçamento. As outras medem algoritmo *mais* orçamento — e o repositório
+declara qual é qual.
+
+### Os documentos de resultado
+
+| documento | o que traz |
+|---|---|
+| [`docs/RESULTADOS.md`](docs/RESULTADOS.md) | a tabela completa, gerada; não editar à mão |
+| [`docs/ORCAMENTO_DE_GRADIENTE.md`](docs/ORCAMENTO_DE_GRADIENTE.md) | a ablação de orçamento nas duas famílias, a previsão pré-registrada que falhou, saturação × limitação por orçamento |
+| [`docs/CANAL_DE_FOME.md`](docs/CANAL_DE_FOME.md) | o sexto canal de observação, e por que ele sai da arena |
+| [`docs/PROCEDENCIA.md`](docs/PROCEDENCIA.md) | qual código produziu cada execução, e como auditar isso em dois comandos |
+| [`docs/COMPARABILITY.md`](docs/COMPARABILITY.md) | o contrato: o que uma curva precisa cumprir para competir |
+| [`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) | o que já dá para escrever e o que ainda falta medir |
+| [`docs/REVISAO_ALGORITMOS.md`](docs/REVISAO_ALGORITMOS.md) | a revisão linha a linha das implementações, com os bugs encontrados |
+
+O painel da direita do gráfico é o acervo de 2019, no eixo dele: episódios, não passos de
+ambiente. O que já foi medido fora do contrato, e portanto fora da arena:
 
 | | score | onde |
 |---|---|---|
 | MCTS 24 sims + valor heurístico, sem treino | **30,3** | `tests/test_search.py` |
 | melhor DQN de 2019 (treino, ambiente antigo) | 18,3 | `results/legacy/` |
 | ACER, 151 mil passos, rede `tiny`, CPU | 16,8 | execução de fumaça |
-| piso aleatório com máscara | 1,21 | contrato |
 
 **Os últimos modelos treinados moram neste repositório**, em [`models/`](models/) — `.keras`
 para retomar treino e TFLite fp16/int8 para embarcar no jogo.

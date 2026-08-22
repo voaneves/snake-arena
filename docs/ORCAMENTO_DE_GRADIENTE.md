@@ -1,9 +1,16 @@
 # O orçamento de gradiente
 
-**Com o mesmo orçamento de ambiente, gastar 5 M passos em ~38.000 atualizações em vez de
-~2.400 levou o PPO de 62,19 para 80,90 pontos — e de 4,4% para 60,1% de jogos perfeitos.**
-A dispersão entre sementes caiu por um fator de 5,4. Nenhuma linha do ambiente, da
-observação, da rede ou do protocolo de avaliação foi tocada.
+**O número de atualizações de gradiente vale ~18,7 pontos de score — e vale o mesmo nas
+duas famílias em que foi medido, apesar de a razão entre os braços diferir por um fator de
+cinco.** No PPO, 16× mais atualizações levaram de 62,19 a 80,90; no A2C, 3,2× mais levaram
+de 52,22 a 70,93. Nenhuma linha do ambiente, da observação, da rede ou do protocolo de
+avaliação foi tocada em nenhum dos dois.
+
+Três resultados saem daqui, em ordem de força: o efeito existe e é grande nas duas famílias;
+a explicação que registramos para ele em 2026-08-20 **não sobreviveu à réplica**; e o
+orçamento de gradiente, uma vez declarado, separa as execuções do repositório em *saturadas*
+e *limitadas por orçamento* — o que muda como a comparação principal do artigo deve ser
+lida.
 
 ![ablação de orçamento](../assets/orcamento_light.png)
 
@@ -47,12 +54,16 @@ dos episódios são jogos perfeitos. A média de 80,90 não mede mais "quão bem
 ela é essencialmente uma função da taxa de vitória, porque o teto está saturado. Daqui para
 cima, a métrica que discrimina é `tabuleiro cheio`, e a média vira um resumo enganoso.
 
-**2. A dispersão colapsou.** Desvio padrão de 9,79 no esparso contra **1,80** no denso, uma
-razão de 5,4. Amplitude de 19,15 contra 3,45. Isto é mais útil para quem reproduz do que o
-ganho de média: no orçamento esparso, cada atualização carrega muito peso e o destino final
-depende de onde a trajetória caiu; com passos pequenos e numerosos, a média emerge e a
-semente importa pouco. Uma execução do orçamento esparso não é uma medida do algoritmo — é
-uma amostra de uma distribuição larga.
+**2. A dispersão colapsou — no PPO.** Desvio padrão de 9,79 no esparso contra **1,80** no
+denso, uma razão de 5,4. Amplitude de 19,15 contra 3,45. Para quem reproduz, isto é mais
+útil que o ganho de média: uma execução do PPO no orçamento esparso não é uma medida do
+algoritmo, é uma amostra de uma distribuição larga.
+
+A explicação que registramos na primeira versão deste documento era geral — "no orçamento
+esparso cada atualização carrega muito peso e o destino final depende de onde a trajetória
+caiu; com passos pequenos e numerosos, a média emerge". **A réplica no A2C derrubou essa
+generalização**, e a seção "O que a réplica derruba" trata disso. O fato empírico do PPO
+continua de pé; a explicação não se estende à outra família.
 
 **3. A separação é completa.** A pior semente densa (78,87) supera a melhor do esparso
 (70,58) por 8,3 pontos. Num teste de permutação exato com 3×3, separação completa dá
@@ -85,10 +96,20 @@ passos ainda são conservadores.
 
 ## O que isto obriga
 
-O contrato fixa os passos de ambiente e se cala sobre as atualizações — que hoje variam por
-um fator de 64 entre os algoritmos do repositório: ~610 no ACKTR, ~1.953 no A2C, ~19.500 no
-DQN, ~39.000 no PPO. Depois deste resultado, comparar algoritmos sem declarar esse eixo mede
-orçamento de otimização, não algoritmo.
+O contrato fixa os passos de ambiente e se cala sobre as atualizações — que variam por um
+fator de **64** entre os algoritmos do repositório:
+
+| execução | atualizações | origem do número |
+|---|---:|---|
+| ACKTR | ~610 | analítico (as execuções são anteriores ao contador) |
+| A2C esparso | **611** | medido, `meta["atualizacoes"]` |
+| A2C denso | **1.954** | medido |
+| PPO esparso | ~2.424 | analítico |
+| PPO denso | **38.273** | medido |
+| DQN | **38.908** | medido |
+
+Depois deste resultado, comparar algoritmos sem declarar esse eixo mede orçamento de
+otimização, não algoritmo.
 
 Igualar não é possível: A2C e ACKTR fazem uma atualização por rollout **por definição**, e
 o teto estrutural deles fica perto de 10.000 sem descaracterizar o método. A regra
@@ -100,63 +121,165 @@ aparece na tabela. Disparidade reportada é informação; disparidade silenciosa
 
 O resultado acima vem de uma família só, e no PPO o botão do orçamento é na verdade três
 (`rollout`, `epochs`, `minibatches`) girados juntos. O A2C serve de réplica com **uma
-variável só**: ele não tem épocas nem minilotes para reaproveitar o rollout, então mudar
-`rollout` muda exatamente o número de atualizações e mais nada.
+variável**: ele não tem épocas nem minilotes para reaproveitar o rollout, então mudar
+`rollout` muda o número de atualizações.
 
 | | esparso | padrão de hoje |
 |---|---:|---:|
 | `rollout` | 16 | 5 |
 | amostras por atualização | 8.192 | 2.560 |
-| **atualizações em 5 M passos** | **~610** | **~1.953** |
+| **atualizações em 5 M passos** | **611** | **1.954** |
 
-O 5 não é escolha de conveniência: é o `t_max` canônico do A3C, o valor do artigo
-original. O 16 era o que estava no repositório antes de o orçamento virar eixo declarado.
+O 5 não é escolha de conveniência: é o `t_max` canônico do A3C, o valor do artigo original.
+O 16 era o que estava no repositório antes de o orçamento virar eixo declarado. Os dois
+braços saem de `04_a2c` (padrão) e `95_a2c_orcamento_esparso` (controle), que fixa
+`A2CConfig.esparso()`.
 
-Os dois braços saem de `04_a2c` (padrão) e `95_a2c_orcamento_esparso` (controle), que fixa
-`A2CConfig.esparso`. A previsão foi registrada **antes** de qualquer medição: efeito menor
-que o do PPO, porque a razão entre os braços é de 3,2× contra 16× lá, e com um teto
-estrutural que nem o braço denso alcança.
+**A previsão foi registrada antes de qualquer medição** e está no histórico deste arquivo:
+que o efeito no A2C fosse *menor* que no PPO, porque a razão entre os braços é de 3,2×
+contra 16× lá.
 
-### O que já foi medido
+### O resultado
 
-| execução | atualizações | score final | mediana | p95 | tabuleiro cheio | pico em |
+| execução | score final | mediana/ep | tabuleiro cheio | fome | inclinação final | pico em |
 |---|---:|---:|---:|---:|---:|---:|
-| esparso seed0 | 611 | 55,47 | 59 | 71 | 0,0% | 100% |
-| denso seed{0,1,2} | ~1.953 | — | — | — | — | — |
+| esparso seed0 | 55,47 | 59 | 0,0% | 44,6% | +12,87 | 100% |
+| esparso seed1 | 53,60 | 60 | 0,0% | 11,3% | +10,48 | 100% |
+| esparso seed2 | 47,59 | 55 | 0,0% | 4,1% | +8,59 | 100% |
+| **esparso média** | **52,22** | — | **0,0%** | 20,0% | **+10,64** | — |
+| denso seed0 | 75,44 | 81 | 2,5% | 1,4% | +11,31 | 100% |
+| denso seed1 | 69,61 | 77 | 0,3% | 0,9% | +11,67 | 90% |
+| denso seed2 | 67,73 | 76 | 2,2% | 0,3% | +3,34 | 90% |
+| **denso média** | **70,93** | — | **1,7%** | 0,9% | **+8,77** | — |
 
-Uma semente de um braço não é resultado: é o primeiro ponto. O número entra na conclusão
-quando os dois braços tiverem três sementes cada — e a leitura do experimento do PPO vale
-aqui em dobro, porque foi ela que mostrou que **uma execução do orçamento esparso é uma
-amostra de uma distribuição larga**, não uma medida do algoritmo.
+Desvio padrão: **4,11** no esparso, **4,02** no denso. Separação completa entre os braços
+(a pior densa, 67,73, supera a melhor esparsa, 55,47, por 12,26 pontos), o que num teste de
+permutação exato 3×3 dá p = 0,10 bilateral — o menor valor que este desenho produz, igual
+ao do PPO.
 
-Três observações que já se sustentam sozinhas:
+### A previsão falhou, e é esse o achado
 
-**O crítico está saudável — e não é o mesmo teste do PPO.** A variância explicada termina em
-**0,986** com 611 atualizações. Isto fecha metade da lacuna deixada acima: não é a contagem
-baixa de atualizações, por si, que estraga o crítico. Mas **não** testa a suspeita do
-`vf_clip`, porque o A2C tem `vf_clip=0` — ele nem tem o botão. A hipótese aberta em
-"Duas observações que o experimento não previa" continua aberta, e só um PPO esparso que
-registre `ev` a fecha.
+| | esparso → denso | razão de atualizações | efeito | desvio padrão |
+|---|---|---:|---:|---|
+| PPO | 62,19 → 80,90 | 16× | **+18,71** | 9,79 → 1,80 |
+| A2C | 52,22 → 70,93 | 3,2× | **+18,70** | 4,11 → 4,02 |
 
-**A política ainda estava subindo no fim.** O melhor checkpoint é o último, a 100% do
-orçamento, e os quatro pontos anteriores são 46,07 / 49,67 / 48,42 / 55,47. Não há o
-endurecimento tardio que derrubou duas das três sementes densas do PPO — a entropia termina
-em 0,105 de um máximo de 1,099, mas sem o custo que aparecia lá. Ou o A2C esparso é curto
-demais para chegar à fase em que aquilo acontece, ou a fase é um artefato do reaproveitamento
-de rollout. As duas leituras são testáveis; nenhuma está testada.
+Dezoito vírgula sete nos dois braços. A coincidência na segunda casa decimal é sorte; a
+igualdade na ordem de grandeza, com uma razão de orçamento **cinco vezes menor**, não é.
+A previsão registrada — efeito proporcionalmente menor no A2C — está errada, e vale mais
+publicada do que apagada: é o tipo de erro que um pré-registro existe para tornar visível.
 
-**O tempo de parede dos dois braços não é comparável.** A correção de retracing (§2.6 da
-revisão, escalares como tensores) entrou **entre** esta execução e o braço denso. O esparso
-gastou 0,778 h recompilando o grafo uma vez por atualização; o denso não vai recompilar
-nenhuma. A coluna existe para o PPO, onde os dois braços rodaram no mesmo código — aqui ela
-mede a correção, não o orçamento.
+### O que a réplica derruba
 
-Uma nota de proveniência: esta execução saiu com `assinatura_pacote=782a8b8aa4af004f`, e o
-`95_a2c_orcamento_esparso.ipynb` no HEAD carrega `df6c8eb2b2ca2f58`. A diferença entre as
-duas é a correção de retracing e o próprio `A2CConfig.esparso()` — nenhuma delas muda um
-número, mas reproduzir hoje não devolve a mesma assinatura. Foi também por isso que o
-registro nasceu com `variant="resnet_small"` e precisou ser reetiquetado para
-`resnet_small_esparso`: `A2CConfig.esparso()`, que carimba o sufixo, ainda não existia.
+**A explicação da dispersão não é geral.** No PPO o desvio cai 5,4× do esparso para o denso.
+No A2C ele não se mexe: 4,11 → 4,02. Se o mecanismo fosse "poucas atualizações, cada uma
+pesando muito, destino refém da trajetória", ele deveria aparecer com mais força no A2C, que
+opera com um décimo das atualizações do PPO. Não aparece. O colapso de dispersão é uma
+propriedade do PPO — o suspeito natural é o reaproveitamento de rollout, que o A2C não tem —
+e não do orçamento de gradiente.
+
+**A explicação por "posição numa curva comum" também não sobrevive.** A leitura tentadora
+para o efeito idêntico é que existe uma única curva de retornos decrescentes e que o A2C
+opera na parte íngreme (611 e 1.954 atualizações) enquanto o PPO opera na parte achatada
+(2.424 e 38.273). O ACKTR refuta isso sozinho:
+
+| execução | atualizações | score | inclinação final | picos |
+|---|---:|---:|---:|---|
+| A2C esparso | 611 | 52,22 | **+10,64** | 100 / 100 / 100% |
+| ACKTR | ~610 | 79,52 | **+0,77** | 76 / 87 / 97% |
+
+Mesmo número de atualizações. Vinte e sete pontos de diferença, e regimes opostos: o A2C
+ainda sobe forte com as três sementes picando no fim do orçamento, o ACKTR já saturou. Se
+houvesse uma curva só, esses dois pontos estariam no mesmo lugar dela.
+
+**A conclusão honesta é que não temos o mecanismo.** Temos o efeito, replicado em duas
+famílias, com o tamanho medido nas duas; e temos duas explicações candidatas descartadas
+pelos próprios dados. Escrever isso é mais defensável do que escolher a terceira explicação
+que ainda não foi testada.
+
+## Saturação e limitação por orçamento
+
+O eixo de orçamento produziu, de graça, uma segunda leitura: **quais execuções terminam os
+5 M passos ainda subindo**. A inclinação abaixo é a regressão linear do último terço da
+curva de avaliação, em pontos por milhão de passos.
+
+| execução | atualizações | inclinação final | picos por semente | regime |
+|---|---:|---:|---|---|
+| A2C esparso | 611 | **+10,64** | 100 / 100 / 100% | limitado por orçamento |
+| PPO esparso | ~2.424 | **+10,15** | 100 / 100 / 100% | limitado por orçamento |
+| A2C denso | 1.954 | **+8,77** | 100 / 90 / 90% | limitado por orçamento |
+| DQN | 38.908 | +3,34 *(n=2)* | 95 / 75% | indefinido |
+| ACKTR | ~610 | +0,77 | 76 / 87 / 97% | saturado |
+| PPO denso | 38.273 | +0,64 | 68 / 84 / 100% | saturado |
+
+Duas consequências para o artigo.
+
+**A comparação PPO × A2C a 5 M passos é um limite superior da distância algorítmica.** O PPO
+denso saturou — em duas de três sementes ele termina *abaixo* do próprio pico. O A2C não
+saturou em nenhum dos dois braços. Estender o orçamento estreitaria a distância por
+construção, e o número que o artigo publica precisa dizer isso em vez de esperar a pergunta.
+
+**O ACKTR satura com 610 atualizações.** É a única execução do repositório que atinge o
+regime de saturação com o menor orçamento de gradiente medido. Isso não é um detalhe de
+implementação: é o gradiente natural fazendo o que o artigo do K-FAC promete, e é a
+observação de maior densidade do repositório inteiro.
+
+## O eixo entre famílias
+
+Uma vez que o orçamento de gradiente é declarado por execução, ele pode ser lido como
+denominador. Pontos de score por mil atualizações:
+
+| execução | atualizações | score | pontos por 1k atualizações | horas |
+|---|---:|---:|---:|---:|
+| ACKTR | ~610 | 79,52 | **130,4** | 0,51 |
+| A2C esparso | 611 | 52,22 | 85,5 | 0,42 |
+| A2C denso | 1.954 | 70,93 | 36,3 | 0,31 |
+| PPO esparso | ~2.424 | 62,19 | 25,7 | 0,41 |
+| PPO denso | 38.273 | 80,90 | 2,1 | 0,83 |
+| DQN | 38.908 | 47,67 *(n=2)* | 1,2 | 1,85 |
+
+O ACKTR chega a 79,52 com **1,6% do orçamento de gradiente do PPO**, empata com ele dentro
+do ruído entre sementes (80,90 contra 79,52) e gasta 0,51 h contra 0,83 h de parede. A
+ressalva obrigatória é a dispersão: ±19,11 de amplitude no ACKTR contra ±3,45 no PPO. Ele
+tem a melhor semente do repositório (89,78) e uma das piores das duas famílias (70,67).
+Média e desvio contam histórias diferentes aqui, e as duas precisam aparecer.
+
+**O par PPO × DQN é o único do repositório com o orçamento de gradiente casado.** 38.273
+contra 38.908 atualizações — uma diferença de 1,7%, dentro do ruído de contagem. É a única
+comparação entre algoritmos que este benchmark oferece hoje **sem** o confundidor de
+orçamento, e ela dá 80,90 contra 47,67. Vale marcar assim no artigo: as outras comparações
+medem algoritmo *mais* orçamento; esta mede algoritmo.
+
+## Um mecanismo lateral: eficiência de passos e morte por fome
+
+O ambiente mata por inanição depois de `starve_base = 100` passos sem comida. Isso liga duas
+métricas que pareciam independentes — quantos passos o agente gasta por maçã, e como ele
+morre:
+
+Todas as colunas abaixo são **médias entre as sementes** — a arena
+(`RESULTADOS.md`) reporta mediana, então os números não batem casa a casa de propósito:
+ACKTR dá 64,7% de tabuleiro cheio em média e 60,7% em mediana, e os dois estão certos.
+
+| execução | passos por maçã | morte por fome | morte por colisão | tabuleiro cheio |
+|---|---:|---:|---:|---:|
+| PPO denso | 9,78 | 0,1% | 39,8% | 60,1% |
+| ACKTR | 11,93 | 0,6% | 34,7% | 64,7% |
+| PPO esparso | 16,09 | 3,2% | 92,5% | 4,4% |
+| A2C denso | 16,54 | 0,9% | 97,5% | 1,7% |
+| A2C esparso | 19,20 | **20,0%** | 80,0% | 0,0% |
+
+Nos extremos a relação é limpa: quem gasta menos de 12 passos por maçã praticamente não
+morre de fome, e o A2C esparso — o menos eficiente do repositório — é o único em que a
+inanição vira causa dominante numa semente (44,6% na seed 0). No meio a relação se solta:
+o A2C denso e o PPO esparso gastam quase o mesmo por maçã (16,54 e 16,09) com 0,9% e 3,2% de
+fome. A média de passos por maçã não determina a inanição; o que mata é a **cauda** da
+distribuição, e a média é só um indicador dela.
+
+Vale também para ler a causa de morte com cuidado. Condicionado a **não** vencer, todos os
+agentes fortes morrem de colisão em ~99% dos casos — PPO 99,5%, ACKTR 99,0%, A2C denso
+98,6%. Uma taxa alta de colisão não é sinal de política agressiva; é o que sobra quando a
+inanição some. O outlier é o A2C esparso, com 55,4% de colisão condicional na seed 0: a
+timidez do braço esparso, não a ousadia do denso, é o que precisa de explicação.
 
 ## Reprodução
 
@@ -171,15 +294,49 @@ for v in ("resnet_small_esparso", "resnet_small"):
 PY
 ```
 
-Para o A2C, trocando `ppo` por `a2c` e o alcance das sementes pelo que já existe:
+Trocando `ppo` por `a2c` no bloco acima sai a réplica, com os mesmos seis registros.
+
+As duas colunas derivadas deste documento — inclinação final e pontos por mil atualizações —
+saem daqui:
 
 ```bash
 python - <<'PY'
-import json
-d = json.load(open("runs/a2c/resnet_small_esparso/seed0/history.json"))
-print(d["variant"], d["config"]["rollout"], d["meta"]["atualizacoes"],
-      round(d["final"]["score_mean"], 2))
+import glob, json
+import numpy as np
+for pad in ("runs/ppo/resnet_small", "runs/ppo/resnet_small_esparso",
+            "runs/acktr/resnet_small", "runs/a2c/resnet_small",
+            "runs/a2c/resnet_small_esparso", "runs/dqn/base"):
+    sc, incs, ats = [], [], []
+    for f in sorted(glob.glob(pad + "/seed*/history.json")):
+        d = json.load(open(f))
+        sc.append(d["final"]["score_mean"])
+        c = d["config"]
+        # o contador entrou depois do ACKTR e do PPO esparso: para eles o número é
+        # analítico, e precisa incluir épocas x minilotes ou sai 16x menor
+        ats.append(d["meta"].get("atualizacoes")
+                   or (c["total_steps"] // (c["num_envs"] * c["rollout"])
+                       * c.get("epochs", 1) * c.get("minibatches", 1)))
+        vistos, ev = set(), []
+        for pt in d["curve"]:                      # a curva repete o último ponto
+            if "eval_score_mean" in pt and pt["global_step"] not in vistos:
+                vistos.add(pt["global_step"])
+                ev.append((pt["global_step"], pt["eval_score_mean"]))
+        t = ev[len(ev) * 2 // 3:]                  # o último terço
+        incs.append(np.polyfit([s / 1e6 for s, _ in t], [v for _, v in t], 1)[0])
+    at = int(np.mean(ats))
+    print(f"{pad:34s} n={len(sc)} score={np.mean(sc):6.2f} atualizações={at:6d} "
+          f"pts/1k={1000 * np.mean(sc) / at:6.1f} inclinação={np.mean(incs):+6.2f}")
 PY
 ```
 
 O gráfico sai de `tools/fig_orcamento.py`, que lê os mesmos `history.json`.
+
+## Histórico deste documento
+
+* **2026-08-20** — versão original, só com o PPO. Registrou a previsão de que o efeito no
+  A2C seria menor, e a explicação do colapso de dispersão como propriedade geral do
+  orçamento esparso.
+* **2026-08-21** — réplica no A2C fechada com três sementes por braço. A previsão falhou
+  (+18,70 contra +18,71) e a explicação da dispersão não replicou. Acrescentadas as seções
+  de saturação, do eixo entre famílias e do mecanismo de fome. As duas afirmações
+  derrubadas ficam no texto, marcadas — não foram apagadas.

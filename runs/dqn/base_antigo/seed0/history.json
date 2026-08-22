@@ -1,6 +1,6 @@
 {
   "algo": "dqn",
-  "variant": "base",
+  "variant": "base_antigo",
   "seed": 0,
   "net": "resnet_small",
   "params": 333475,
@@ -1958,22 +1958,22 @@
     "obs_channels": 5,
     "artefatos": {
       "modelos": {
-        "last": "/kaggle/working/snake-arena/runs/dqn/base/seed0/modelos/last.keras",
-        "best": "/kaggle/working/snake-arena/runs/dqn/base/seed0/modelos/best.keras"
+        "last": "/kaggle/working/snake-arena/runs/dqn/base_antigo/seed0/modelos/last.keras",
+        "best": "/kaggle/working/snake-arena/runs/dqn/base_antigo/seed0/modelos/best.keras"
       },
-      "grafico": "/kaggle/working/snake-arena/runs/dqn/base/seed0/curva.png",
+      "grafico": "/kaggle/working/snake-arena/runs/dqn/base_antigo/seed0/curva.png",
       "gif_s7": {
-        "caminho": "/kaggle/working/snake-arena/runs/dqn/base/seed0/episodio_s7.gif",
+        "caminho": "/kaggle/working/snake-arena/runs/dqn/base_antigo/seed0/episodio_s7.gif",
         "score": 73,
         "fim": "fome"
       },
       "gif_s21": {
-        "caminho": "/kaggle/working/snake-arena/runs/dqn/base/seed0/episodio_s21.gif",
+        "caminho": "/kaggle/working/snake-arena/runs/dqn/base_antigo/seed0/episodio_s21.gif",
         "score": 66,
         "fim": "fome"
       },
       "gif_s42": {
-        "caminho": "/kaggle/working/snake-arena/runs/dqn/base/seed0/episodio_s42.gif",
+        "caminho": "/kaggle/working/snake-arena/runs/dqn/base_antigo/seed0/episodio_s42.gif",
         "score": 39,
         "fim": "fome"
       }

@@ -197,3 +197,47 @@ def test_noisy_network_is_deterministic_end_to_end_at_inference():
     a = np.asarray(m(X, training=False))
     b = np.asarray(m(X, training=False))
     assert np.array_equal(a, b)
+
+
+# ------------------------------------------------- o checkpoint volta do disco?
+@pytest.mark.parametrize("kw", [
+    dict(dueling=True, noisy=True, n_atoms=121),    # Rainbow
+    dict(dueling=True, noisy=False, n_atoms=0),     # DQN + dueling
+    dict(dueling=True, noisy=True, n_atoms=0),      # dueling + noisy
+    dict(dueling=False, noisy=True, n_atoms=121),   # C51 sem dueling
+    dict(dueling=False, noisy=False, n_atoms=0),    # DQN base
+], ids=["rainbow", "dqn+dueling", "dueling+noisy", "c51", "dqn_base"])
+def test_the_checkpoint_survives_a_round_trip_through_disk(tmp_path, kw):
+    """`load_model` sem `safe_mode=False` — exatamente como `AgentBase.modelo_melhor()`.
+
+    Este teste existe por causa de uma execução perdida. As cabeças `dueling` e C51 usavam
+    `layers.Lambda(lambda t: t - mean(t))`, e o Keras 3 recusa desserializar um lambda
+    Python: `ValueError: Requested the deserialization of a Lambda layer...`. Como o
+    recarregamento só acontece em `avaliar_melhor()`, **no fim do treino**, o erro chegava
+    depois do orçamento inteiro gasto — 8.931 s de GPU numa execução do Rainbow.
+
+    Duas coisas escondiam o defeito: o DQN base não liga `dueling`, e a cabeça C51 só usa
+    `Lambda` no ramo dueling. O Rainbow é o primeiro agente com os dois ligados, e por isso
+    foi o primeiro a bater. Qualquer ablação de DQN com `dueling=True` teria batido também.
+
+    A correção é `CentraNaMedia`, camada registrada — a mesma solução que
+    `snakeai/nets/muzero.py` já usava, com o comentário certo, no arquivo errado.
+    """
+    m = build_q_network(net="resnet_tiny", **kw)
+    antes = np.asarray(m(X, training=False))
+    caminho = str(tmp_path / "best.keras")
+    m.save(caminho)
+    recarregado = keras.models.load_model(caminho)      # sem safe_mode=False, de propósito
+    depois = np.asarray(recarregado(X, training=False))
+    np.testing.assert_allclose(antes, depois, atol=1e-5)
+
+
+def test_no_lambda_layers_in_the_heads():
+    """A regra, não só o sintoma: `Lambda` com função anônima não é serializável.
+
+    Falhar aqui é mais barato que falhar no fim de um treino de 5 M passos.
+    """
+    for kw in (dict(dueling=True, noisy=True, n_atoms=121), dict(dueling=True)):
+        m = build_q_network(net="resnet_tiny", **kw)
+        culpadas = [c.name for c in m.layers if isinstance(c, layers.Lambda)]
+        assert not culpadas, f"camadas Lambda em {m.name}: {culpadas}"

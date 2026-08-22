@@ -45,7 +45,6 @@ class RainbowConfig(DQNConfig):
     per: bool = True
     noisy: bool = True
     n_steps: int = 3
-    n_atoms: int = 51
 
     #: Rainbow não usa ε-greedy: a exploração vem das noisy nets. Mantido em zero para
     #: que ligar `noisy=False` sem pensar não deixe o agente sem exploração nenhuma.
@@ -53,6 +52,28 @@ class RainbowConfig(DQNConfig):
     eps_end: float = 0.0
 
     lr: float = 1e-4          # o paper usa LR menor que o DQN base
+
+    #: **O suporte tem de ser simétrico, e isto não é estética.** Na inicialização os
+    #: logits são ~0, então a softmax do C51 é uniforme sobre o suporte e o `Q` inicial é
+    #: o **ponto médio** dele — não zero. Com o `[-2, 60]` que este repositório usava, todo
+    #: estado nascia valendo **+29**, e esse valor é um ponto fixo do bootstrap: o alvo de
+    #: uma transição não terminal é `r + γ³·29 ≈ 28,6`, que é o que a rede já prevê. A
+    #: única correção vinha das transições terminais (`-1`), e como a fome é **truncamento**
+    #: — bootstrap, `done=0` — 90% dos fins de episódio não corrigiam nada. O resultado
+    #: medido: `Q` médio preso em +28,6 por 120 mil passos, o agente aprendendo só a evitar
+    #: colisão, e a maçã valendo `+1` sobre uma linha de base de 29 — 3% do sinal.
+    #:
+    #: `[-24, 24]` satisfaz os dois requisitos, que puxam em direções opostas. **Simétrico**
+    #: (ponto médio 0), para o `Q` nascer em zero. E **largo o bastante**: um jogo perfeito
+    #: de 97 maçãs a ~10 passos cada com γ=0,995 rende 20,3, então 24 cobre com 18% de folga
+    #: — `[-20, 20]` reprova por 0,3 ponto, e o teste pega isso.
+    #:
+    #: Com 121 átomos o `Δz` é **0,4**, exatamente a resolução do C51 canônico do Atari, e
+    #: existe um átomo em zero (índice 60). Uma maçã passa a valer 2,5 átomos em vez dos
+    #: 0,8 do suporte antigo, cujo `Δz` de 1,24 era maior que a própria recompensa.
+    v_min: float = -24.0
+    v_max: float = 24.0
+    n_atoms: int = 121
 
     #: O paper usa 8.000, e o DQN base usa 2.000 — uma razão de 4× que faz sentido manter.
     #: O que não sobrevive é o valor absoluto: desde §2.4 este número é contado em

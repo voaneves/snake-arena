@@ -166,8 +166,22 @@ class DQN(AgentBase):
 
     # ------------------------------------------------------------- exploração
     def epsilon(self):
-        """Zero quando `noisy=True`: a exploração vira responsabilidade da rede."""
-        if self.cfg.noisy:
+        """O ε agendado. Com `noisy=True` o padrão é zero — mas configurado, é respeitado.
+
+        Antes esta função devolvia `0.0` incondicionalmente sempre que `noisy=True`, o que
+        fazia `eps_start` virar um campo **silenciosamente ignorado**: pedir
+        `RainbowConfig(eps_start=0.1)` não dava erro nem efeito. Silêncio é o pior dos dois
+        mundos — o `RainbowConfig` já traz `eps_start = eps_end = 0.0` por padrão, então a
+        composição canônica do paper continua idêntica, e quem quiser um piso de exploração
+        agora consegue pedir e medir.
+
+        Isto importa porque a exploração do Rainbow neste ambiente é o suspeito aberto: com
+        `noisy=True` e ε zero, a entropia das ações de uma rede não treinada mede 0,949
+        contra 1,099 do aleatório, e o `sigma` das `NoisyDense` fica **constante** ao longo
+        do treino (0,02446 → 0,02421 em 100 mil passos) enquanto os gaps de Q crescem — ou
+        seja, a exploração relativa encolhe sozinha. Ver `docs/REVISAO_ALGORITMOS.md` §2.8.
+        """
+        if self.cfg.noisy and self.cfg.eps_start == 0.0 and self.cfg.eps_end == 0.0:
             return 0.0
         f = min(1.0, self.frac() / max(self.cfg.eps_frac, 1e-9))
         return self.cfg.eps_start + f * (self.cfg.eps_end - self.cfg.eps_start)
@@ -254,6 +268,12 @@ class DQN(AgentBase):
         tz = lote["rew"][:, None] + g * (1.0 - lote["done"])[:, None] * self.suporte
         tz = np.clip(tz, cfg.v_min, cfg.v_max)
         b = (tz - cfg.v_min) / self.delta_z
+        # `tz` já está preso a [v_min, v_max], mas `delta_z` é float32 e a divisão pode
+        # devolver 50,0000001 para o átomo do topo — aí `ceil` dá 51 e o `np.add.at`
+        # abaixo estoura o eixo. Prender `b` ao índice válido é o que a implementação
+        # canônica do C51 faz, e sem isto o agente só não quebra por sorte da aritmética
+        # do suporte que estiver configurado.
+        b = np.clip(b, 0.0, cfg.n_atoms - 1)
         l, u = np.floor(b).astype(np.int64), np.ceil(b).astype(np.int64)
 
         alvo = np.zeros_like(p_sel)
