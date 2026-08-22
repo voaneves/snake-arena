@@ -13,7 +13,7 @@ Gerado por `python -m snakeai.arena --all`. Não editar à mão.
 | a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
 | ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
 | acktr · resnet_small+kl_nominal+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **64.53** | 84.92 | 1,277,952 | 0.5 | ±0.00 | 69 | 97 | 26.7% |
-| a2c · resnet_small_esparso | `resnet_small` | 180,464 | 2 | 5,005,312 | **54.54** | 54.54 | 3,878,912 | 0.5 | ±1.86 | 60 | 78 | 0.0% |
+| a2c · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,005,312 | **53.60** | 53.60 | 4,005,888 | 0.3 | ±7.87 | 59 | 78 | 0.0% |
 
 Score perfeito no 10×10: **97**.
 
@@ -38,7 +38,6 @@ Entram no gráfico, mas **não sustentam comparação**: a amplitude entre
 sementes do PPO neste ambiente é de 19 pontos, maior que quase toda
 diferença entre algoritmos que a tabela mostra.
 
-- `a2c/resnet_small_esparso`: 2 de 3 — faltam 1
 - `acktr/resnet_small+kl0.002`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl_nominal+kl0.002`: 1 de 3 — faltam 2
 
