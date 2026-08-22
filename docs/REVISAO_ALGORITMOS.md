@@ -288,17 +288,63 @@ longo do treino também (as direções decorrelacionam). Se for isso, o `kl_cali
 compensando um artefato do otimizador com uma malha de realimentação. ? Uma execução curta
 com `momentum=0` decide.
 
-### 2.8 ○ C51 com suporte mal calibrado
-`dqn.py:83-84`
+### 2.8 ✔ C51 com suporte mal calibrado — **corrigido**, e era pior do que esta seção dizia
+`rainbow.py` · `dqn.py:_alvo_c51`
 
-`v_min=−2`, `v_max=60`, 51 átomos → `Δz = 1,24`. A recompensa de comer é **+1, menor que o
-espaçamento entre átomos**. E `v_max=60` não é alcançável: com γ=0,995 e uma comida a cada
-~15 passos, o retorno descontado satura perto de 14, então mais de dois terços do suporte
-nunca recebe massa. O efeito líquido é um C51 com ~12 átomos úteis e resolução grosseira
-justamente no evento mais informativo do jogo. A projeção em si está correta.
+O diagnóstico original: `v_min=−2`, `v_max=60`, 51 átomos → `Δz = 1,24`, e a recompensa de
+comer é **+1, menor que o espaçamento entre átomos**. Correto, e confirmado.
+
+**O que faltava é a consequência maior.** Na inicialização os logits são ~0, então a softmax
+do C51 é uniforme sobre o suporte e o `Q` inicial é o **ponto médio** dele — não zero. Com
+`[−2, 60]` todo estado nascia valendo **+29**. Medido diretamente:
+
+| suporte | ponto médio | `Q` inicial medido |
+|---|---:|---:|
+| `[−2, 60]` × 51 | 29,0 | **+28,90** |
+| `[−2, 60]` × 201 | 29,0 | +29,02 |
+| `[−10, 10]` × 51 | 0,0 | −0,03 |
+| `[−24, 24]` × 121 | 0,0 | +0,01 |
+
+E +29 é um **ponto fixo do bootstrap**: o alvo de uma transição não terminal é
+`r + γ³·29 ≈ 28,6`, que é o que a rede já prevê. A única correção vinha das transições
+terminais (`−1`), e como a morte por fome é truncamento (`done=0`, §1.1) mais de 90% dos
+fins de episódio não corrigiam nada. Numa execução de controle de 200 mil passos o `Q` médio
+ficou preso entre +28,5 e +28,6 do início ao fim, sem se mover — enquanto uma maçã valia +1
+sobre essa linha de base, 3% do sinal. O agente aprendia a evitar colisão e nada mais, e o
+score **caía** ao longo do treino (0,93 → 0,65) com a fome subindo para 96%.
+
+Corrigido para `[−24, 24]` com 121 átomos: simétrico (`Q` inicial zero), largo o bastante
+para o retorno de um jogo perfeito — 97 maçãs a ~10 passos cada com γ=0,995 rendem **20,3**,
+e não os ~14 estimados aqui — e com `Δz = 0,4`, exatamente a resolução do C51 canônico do
+Atari. Uma maçã passa a valer 2,5 átomos.
+
+Três testes prendem isso: a simetria do suporte, o `Q` inicial perto de zero, e o `Δz`
+contra a recompensa.
+
+### 2.8b ✔ A projeção do C51 indexava fora do suporte — **corrigido**
+`dqn.py:_alvo_c51`
+
+A frase "a projeção em si está correta" acima estava errada, e o defeito era **latente**.
+`tz` é preso a `[v_min, v_max]`, mas `delta_z` sai de uma subtração em float32 e a divisão
+devolve `50,0000476` para o átomo do topo — `ceil` dá 51 e o `np.add.at` estoura o eixo:
+
+| suporte | `b` no topo | `ceil` | |
+|---|---:|---:|---|
+| `[−2, 60]` × 51 | 49,9999996 | 50 | ok — arredondava para baixo, e escondia |
+| `[−20, 20]` × 51 | 50,0000477 | **51** | `IndexError` |
+| `[−10, 10]` × 51 | 50,0000477 | **51** | `IndexError` |
+
+A configuração antiga só não quebrava por sorte da aritmética. Trocar o suporte por qualquer
+canônico — inclusive o `[−10, 10]` do Atari que a docstring de `suporte_c51` cita como
+referência — derrubava o treino. Foi descoberto ao tentar a correção do §2.8. `b` agora é
+preso ao índice válido, que é o que a implementação canônica faz.
 
 ### 2.9 ○ MuZero: o desenrolar atravessa o fim de episódio
 `muzero.py:252-264,290-323`
+
+> **O mesmo defeito estava no buffer de replay, e lá foi corrigido** — ver §2.13. Vale ler
+> as duas juntas: a revisão encontrou a classe do bug no MuZero e não procurou o irmão em
+> `memory/replay.py`, onde ele custou o Rainbow inteiro. Aqui continua aberto.
 
 `done_b` é usado só no alvo de valor; não há corte no desenrolar de `K=5`. Como o ambiente
 reseta sozinho, quando a cobra morre em `t+2` os passos `k=3,4` são de **outra partida** — a
@@ -350,6 +396,108 @@ variante.
   A Fisher é uma média — um subconjunto do lote bastaria.
 
 ---
+
+### 2.13 ✔ A janela de n passos atravessava o fim do episódio — **corrigido**
+`memory/replay.py:_add_um` · `dqn.py:iterate`
+
+É o §2.9 outra vez, em outro arquivo — e este custou o Rainbow inteiro.
+
+O `desfaz_truncamento` (§1.1) grava `done=0` na morte por fome, **corretamente**: é
+truncamento, e o alvo precisa bootstrapar do estado final verdadeiro. Mas o buffer de n
+passos usa `done` como a **única** marca de fim de episódio. Com `done=0` a fila não é
+esvaziada, e as janelas seguintes somam recompensas do episódio **seguinte**, com um
+`next_obs` de outra trajetória. Medido com γ=0,9, `n_steps=3`, dois episódios de três passos
+com recompensas `[1, 2, 4]` e `[100, 200, 400]`:
+
+| janela | guardado | correto |
+|---:|---:|---:|
+| 0 | 6,04 | 6,04 |
+| 1 | **86,60** | 5,60 |
+| 2 | **256,00** | 4,00 |
+
+Duas de cada três janelas de cada fronteira saíam contaminadas. **O DQN base é imune porque
+usa `n_steps=1`** — cada janela é um passo — e é exatamente por isso que o DQN aprendia
+(47,67) e o Rainbow, com `n_steps=3`, não saía do piso. Neste ambiente mais de 90% dos
+episódios acabam por fome, então a contaminação é a regra, não a exceção.
+
+A correção separa os dois conceitos que estavam colapsados num campo só: `done` é
+**terminação**, e vai para o alvo de TD; `fim` é a **fronteira do episódio**, e é ela que
+corta a janela. `add_batch(..., fim=None)` mantém `fim = done` por padrão, então nada muda
+para quem não trunca. O `AgentBase.aplica_truncamento_no_rollout` já dizia a regra em
+palavras — *"o `done` continua 1: a fronteira do episódio é real dentro do buffer, e é ela
+que impede o retorno de atravessar para o episódio seguinte"* — mas só o caminho do PPO a
+seguia.
+
+Junto veio um erro de segunda ordem: `_alvo` descontava por `γ**n_steps` mesmo nas janelas
+esvaziadas na fronteira, que são mais curtas. Com `done=1` isso era anulado pelo
+`(1 − done)`; com truncamento, `done=0`, o bootstrap acontece de verdade e o desconto errado
+desloca o alvo. O buffer agora guarda `n_real` e o alvo usa `γ**n_real`.
+
+### 2.14 ✔ O checkpoint não voltava do disco — **corrigido**
+`nets/heads.py` · `base.py:modelo_melhor`
+
+As cabeças `dueling` e C51 usavam `layers.Lambda(lambda t: t − mean(t))`. O Keras 3 recusa
+desserializar um lambda Python (`ValueError: Requested the deserialization of a Lambda
+layer...`) sem `safe_mode=False`. Como `avaliar_melhor()` recarrega o checkpoint `best`
+**no fim do treino**, o erro chegava depois do orçamento inteiro gasto — **8.931 s de GPU
+perdidos** numa execução do Rainbow, na última linha.
+
+| configuração | antes | depois |
+|---|---|---|
+| Rainbow (dueling + C51 + noisy) | `ValueError` | carrega, saída idêntica |
+| DQN + `dueling=True` | `ValueError` | carrega, saída idêntica |
+| DQN base | ok | ok |
+| C51 sem dueling | ok | ok |
+
+Duas coisas escondiam o defeito: o DQN base não liga `dueling`, e a cabeça C51 só usa
+`Lambda` no ramo dueling. O Rainbow é o primeiro agente com os dois ligados. **Qualquer
+ablação de DQN com `dueling=True` teria batido também** — era uma mina em todo o eixo.
+
+A correção é `CentraNaMedia`, camada registrada com `@keras.saving.register_keras_serializable`
+— a mesma solução que `nets/muzero.py` já usava, com o comentário certo (*"Camada em vez de
+`Lambda`: `Lambda` não sobrevive a `save`/`load` sem gambiarra"*), no arquivo errado. Dois
+testes prendem: o round-trip por disco sem `safe_mode=False`, e a ausência de `Lambda` nas
+cabeças.
+
+### 2.15 ✔ `eps_start` era ignorado em silêncio sob `noisy=True` — **corrigido**
+`dqn.py:epsilon`
+
+`epsilon()` devolvia `0.0` incondicionalmente sempre que `noisy=True`. O padrão está certo —
+é o §2.3, e é o que o paper manda —, mas o efeito colateral é que `RainbowConfig(eps_start=0.1)`
+não dava erro **e** não tinha efeito. Silêncio é o pior dos dois mundos, e era o que impedia
+medir a hipótese que sobrou.
+
+Agora existe `eps_mesmo_com_noisy: bool = False`. O padrão não mudou — a composição canônica
+do Rainbow segue sem ε, e as ablações de DQN com `noisy` também — mas o botão existe e é
+declarado.
+
+### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
+
+Depois de §2.8, §2.8b, §2.13 e §2.14, o Rainbow ainda não decola. O que está medido:
+
+* a entropia das ações de um Rainbow **não treinado** é 0,949 contra 1,099 do aleatório
+  uniforme, e o score dele é 0,69 contra 1,04 do piso — ele explora **pior que o acaso**
+  desde a inicialização;
+* o consenso entre os 64 ambientes é 0,65 contra 0,40 do aleatório, porque `NoisyDense`
+  sorteia **um** ruído por passada e o compartilha com o lote inteiro. Isso é fiel ao paper,
+  que tem um ambiente; aqui são 64 cópias correlacionadas em vez de 64 exploradores
+  independentes;
+* o `sigma` **não** colapsa (0,02446 → 0,02417 em 120 mil passos), então a exploração não
+  morre — ela encolhe em termos relativos, porque os gaps de `Q` crescem em volta dela.
+
+E o incentivo empurra na mesma direção: a fome é truncamento **sem penalidade**, então
+circular para sempre vale ~0 enquanto ir atrás da comida arrisca −1. O DQN escapa disso
+porque passa ~1 M de passos com ε alto enchendo o buffer de comida acidental; o Rainbow, com
+ε = 0, enche o buffer de trajetórias circulando com recompensa zero — e a PER piora, porque
+prioriza erro de TD alto, que no começo são as colisões, não as maçãs.
+
+**O experimento que fecha isto** são dois braços de 5 M: o Rainbow como está, e o mesmo com
+`eps_mesmo_com_noisy=True, eps_start=1.0, eps_end=0.02, eps_frac=0.2` — a escada do DQN. Se o
+segundo decola e o primeiro não, a exploração está confirmada, e vira um desvio declarado do
+canônico, do mesmo tipo do eixo de orçamento.
+
+Duas hipóteses já **descartadas** pelo caminho, e vale registrá-las: o `sigma` não colapsa, e
+o retorno de n passos em si (fora da fronteira) está aritmeticamente correto.
 
 ## 3. Estrutura e manutenção
 

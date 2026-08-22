@@ -91,6 +91,10 @@ class ReplayBuffer:
         self.rew = np.zeros(self.capacity, dtype=np.float32)
         self.done = np.zeros(self.capacity, dtype=np.float32)
         self.next_mask = np.ones((self.capacity, n_actions), dtype=bool)
+        #: Quantos passos a janela de fato somou. Quase sempre `n_steps`, mas as janelas
+        #: esvaziadas no fim de um episódio são mais curtas — e o alvo precisa descontar
+        #: `γ**n_real`, não `γ**n_steps`, senão o bootstrap sai deslocado.
+        self.n_real = np.full(self.capacity, self.n_steps, dtype=np.int32)
 
         self.pos = 0
         self.size = 0
@@ -100,8 +104,9 @@ class ReplayBuffer:
     def __len__(self):
         return self.size
 
-    def _guardar(self, obs, act, rew, next_obs, done, next_mask):
+    def _guardar(self, obs, act, rew, next_obs, done, next_mask, n_real=None):
         i = self.pos
+        self.n_real[i] = self.n_steps if n_real is None else int(n_real)
         self.obs[i] = obs
         self.act[i] = act
         self.rew[i] = rew
@@ -112,18 +117,36 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.capacity)
         return i
 
-    def add_batch(self, obs, act, rew, next_obs, done, next_mask):
-        """Insere um passo de **todos** os ambientes de uma vez."""
-        for e in range(len(act)):
-            self._add_um(e, obs[e], act[e], rew[e], next_obs[e], done[e], next_mask[e])
+    def add_batch(self, obs, act, rew, next_obs, done, next_mask, fim=None):
+        """Insere um passo de **todos** os ambientes de uma vez.
 
-    def _add_um(self, env_i, obs, act, rew, next_obs, done, next_mask):
+        `fim` é a fronteira **do episódio**; `done` é o sinal de **terminação** que entra
+        no alvo de TD. Eles diferem exatamente num caso, e o caso é 90% deste ambiente: a
+        morte por fome é truncamento, então `done=0` para o alvo continuar bootstrapando —
+        mas o episódio acabou ali, e a janela de n passos não pode atravessar.
+
+        Sem essa distinção o buffer usa `done` como única marca de fim, a fila não é
+        esvaziada, e as janelas seguintes somam recompensas do episódio **seguinte** com um
+        `next_obs` de outra trajetória. Com `n_steps=1` isso é inofensivo — cada janela é um
+        passo só — e é por isso que o DQN base nunca sentiu. Com o `n_steps=3` do Rainbow,
+        duas de cada três janelas de cada fronteira saem contaminadas.
+
+        `fim=None` mantém o comportamento antigo (`fim = done`), que é o correto para quem
+        não trunca. Ver `docs/REVISAO_ALGORITMOS.md` §2.13.
+        """
+        if fim is None:
+            fim = done
+        for e in range(len(act)):
+            self._add_um(e, obs[e], act[e], rew[e], next_obs[e], done[e], next_mask[e],
+                         fim[e])
+
+    def _add_um(self, env_i, obs, act, rew, next_obs, done, next_mask, fim):
         fila = self._fila[env_i]
         fila.append((obs, act, rew, next_obs, done, next_mask))
-        if len(fila) < self.n_steps and not done:
+        if len(fila) < self.n_steps and not fim:
             return
-        self._descarregar(fila, apenas_um=not done)
-        if done:
+        self._descarregar(fila, apenas_um=not fim)
+        if fim:
             fila.clear()
 
     def _descarregar(self, fila, apenas_um=True):
@@ -139,7 +162,7 @@ class ReplayBuffer:
                     break
             o0, a0 = fila[0][0], fila[0][1]
             no, d, nm = ultimo
-            self._guardar(o0, a0, r_acum, no, d, nm)
+            self._guardar(o0, a0, r_acum, no, d, nm, n_real=k + 1)
             fila.pop(0)
             if apenas_um:
                 return
@@ -156,6 +179,7 @@ class ReplayBuffer:
             "next_obs": self.next_obs[idx],
             "done": self.done[idx],
             "next_mask": self.next_mask[idx],
+            "n_real": self.n_real[idx],
         }
 
     def update_priorities(self, idx, prioridades):

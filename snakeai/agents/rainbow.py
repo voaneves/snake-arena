@@ -71,6 +71,7 @@ class RainbowConfig(DQNConfig):
     #: Com 121 átomos o `Δz` é **0,4**, exatamente a resolução do C51 canônico do Atari, e
     #: existe um átomo em zero (índice 60). Uma maçã passa a valer 2,5 átomos em vez dos
     #: 0,8 do suporte antigo, cujo `Δz` de 1,24 era maior que a própria recompensa.
+    #: Ver `docs/REVISAO_ALGORITMOS.md` §2.8.
     v_min: float = -24.0
     v_max: float = 24.0
     n_atoms: int = 121

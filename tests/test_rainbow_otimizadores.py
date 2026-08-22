@@ -206,13 +206,77 @@ def test_rainbow_keeps_epsilon_at_zero_by_default():
     assert ag.epsilon() == 0.0
 
 
-def test_an_explicit_epsilon_is_not_silently_ignored_under_noisy():
-    """`eps_start` era um campo ignorado em silêncio quando `noisy=True`.
+def test_epsilon_under_noisy_needs_an_explicit_opt_in():
+    """Pedir ε junto com noisy nets tem de ser possível — e explícito.
 
-    Não dava erro e não tinha efeito — o pior dos dois mundos, e o que impedia medir se a
+    Antes `epsilon()` devolvia zero incondicionalmente com `noisy=True`, então `eps_start`
+    era um campo ignorado **em silêncio**: sem erro e sem efeito. Agora o padrão continua
+    zero (a composição do paper não muda, e as ablações de DQN com `noisy` seguem sem ε),
+    mas `eps_mesmo_com_noisy=True` liga os dois. É o botão que permite medir se a
     exploração é o gargalo restante do Rainbow neste ambiente.
     """
-    ag = Rainbow(rb(eps_start=0.5, eps_end=0.05, eps_frac=0.5))
-    assert ag.epsilon() == pytest.approx(0.5), "ε configurado continua sendo ignorado"
-    ag.global_step = int(ag.cfg.total_steps * 0.5)
-    assert ag.epsilon() == pytest.approx(0.05)
+    sem = Rainbow(rb(eps_start=0.5, eps_end=0.05, eps_frac=0.5))
+    assert sem.epsilon() == 0.0, "o padrão do Rainbow tem de continuar sem ε"
+
+    com = Rainbow(rb(eps_start=0.5, eps_end=0.05, eps_frac=0.5, eps_mesmo_com_noisy=True))
+    assert com.epsilon() == pytest.approx(0.5)
+    com.global_step = int(com.cfg.total_steps * 0.5)
+    assert com.epsilon() == pytest.approx(0.05)
+
+
+# --------------------------------------------- a janela de n passos e o truncamento
+def test_the_n_step_window_stops_at_the_episode_boundary():
+    """A morte por fome é truncamento: `done=0` para o alvo, mas o episódio acabou.
+
+    O buffer usava `done` como única marca de fim. Com `done=0` a fila não era esvaziada e
+    as janelas seguintes somavam recompensas do episódio **seguinte**, com um `next_obs` de
+    outra trajetória. `n_steps=1` é imune — cada janela é um passo — e por isso o DQN base
+    nunca sentiu; o Rainbow usa `n_steps=3` e 90% dos episódios deste ambiente acabam por
+    fome, então duas de cada três janelas de cada fronteira saíam contaminadas.
+    """
+    import numpy as np
+    from snakeai.memory.replay import ReplayBuffer
+
+    g, n = 0.9, 3
+    recs = [1.0, 2.0, 4.0, 100.0, 200.0, 400.0]   # episódios A(0-2, fome no 2) e B(3-5)
+    fim = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    buf = ReplayBuffer(100, (2, 2, 1), n_actions=3, n_steps=n, gamma=g, num_envs=1,
+                       rng=np.random.default_rng(0))
+    for k, r in enumerate(recs):
+        buf.add_batch(np.full((1, 2, 2, 1), k, np.float32), np.zeros(1, np.int64),
+                      np.array([r], np.float32), np.full((1, 2, 2, 1), k + 1, np.float32),
+                      np.zeros(1, np.float32),          # done=0 sempre: é truncamento
+                      np.ones((1, 3), bool), fim=np.array([fim[k]], np.float32))
+
+    guardado = {int(buf.obs[i][0, 0, 0]): (float(buf.rew[i]), int(buf.n_real[i]))
+                for i in range(len(buf))}
+    assert guardado[0] == pytest.approx((1.0 + g * 2.0 + g * g * 4.0, 3))
+    assert guardado[1] == pytest.approx((2.0 + g * 4.0, 2)), "a janela atravessou a fronteira"
+    assert guardado[2] == pytest.approx((4.0, 1)), "a janela atravessou a fronteira"
+    assert guardado[3][0] == pytest.approx(100.0 + g * 200.0 + g * g * 400.0)
+
+
+def test_a_short_window_is_discounted_by_its_real_length():
+    """`γ**n_real`, não `γ**n_steps`.
+
+    As janelas esvaziadas na fronteira são mais curtas, e como a fome bootstrapa de
+    verdade (`done=0`) o desconto errado desloca o alvo em vez de ser anulado pelo `done`.
+    """
+    import numpy as np
+    from snakeai.agents import Rainbow
+
+    ag = Rainbow(rb(n_steps=3, gamma=0.9))
+    nn = 4
+    lote = {"obs": np.zeros((nn, 10, 10, 5), np.float32),
+            "next_obs": np.zeros((nn, 10, 10, 5), np.float32),
+            "act": np.zeros(nn, np.int64), "rew": np.zeros(nn, np.float32),
+            "done": np.zeros(nn, np.float32), "next_mask": np.ones((nn, 3), bool),
+            "n_real": np.array([3, 2, 1, 3], np.int32)}
+    alvo_curto = ag._alvo(lote)
+    lote["n_real"] = np.array([3, 3, 3, 3], np.int32)
+    alvo_cheio = ag._alvo(lote)
+    # as linhas 1 e 2 têm janela curta: o alvo tem de ser diferente
+    assert not np.allclose(alvo_curto[1], alvo_cheio[1])
+    assert not np.allclose(alvo_curto[2], alvo_cheio[2])
+    # a linha 0 tem janela cheia: idêntica
+    np.testing.assert_allclose(alvo_curto[0], alvo_cheio[0], atol=1e-6)

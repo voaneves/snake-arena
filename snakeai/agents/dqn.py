@@ -85,7 +85,15 @@ class DQNConfig(BaseConfig):
     target_update: int = 250
     max_grad_norm: float = 10.0
 
-    # exploração ε-greedy — ignorada quando `noisy=True`
+    #: Deixa o ε agendado valer **junto** com as noisy nets. Por padrão `False`, então a
+    #: composição canônica do Rainbow não muda e as ablações de DQN com `noisy=True`
+    #: continuam sem ε, como sempre. Existe porque a exploração é o suspeito aberto do
+    #: Rainbow neste ambiente, e antes não havia como pedir um piso sem editar código:
+    #: `epsilon()` devolvia zero incondicionalmente e `eps_start` virava um campo
+    #: silenciosamente ignorado. Ver `docs/REVISAO_ALGORITMOS.md` §2.15.
+    eps_mesmo_com_noisy: bool = False
+
+    # exploração ε-greedy — ignorada quando `noisy=True`, salvo `eps_mesmo_com_noisy`
     eps_start: float = 1.0
     eps_end: float = 0.02
     eps_frac: float = 0.2         # fração do treino gasta decaindo
@@ -166,22 +174,20 @@ class DQN(AgentBase):
 
     # ------------------------------------------------------------- exploração
     def epsilon(self):
-        """O ε agendado. Com `noisy=True` o padrão é zero — mas configurado, é respeitado.
+        """O ε agendado. Zero com `noisy=True`, salvo `eps_mesmo_com_noisy=True`.
 
-        Antes esta função devolvia `0.0` incondicionalmente sempre que `noisy=True`, o que
-        fazia `eps_start` virar um campo **silenciosamente ignorado**: pedir
-        `RainbowConfig(eps_start=0.1)` não dava erro nem efeito. Silêncio é o pior dos dois
-        mundos — o `RainbowConfig` já traz `eps_start = eps_end = 0.0` por padrão, então a
-        composição canônica do paper continua idêntica, e quem quiser um piso de exploração
-        agora consegue pedir e medir.
+        O padrão não mudou: noisy nets substituem o ε, como no paper. O que mudou é que
+        agora existe **um jeito de pedir os dois** — antes `epsilon()` devolvia `0.0`
+        incondicionalmente e `eps_start` virava um campo silenciosamente ignorado, sem erro
+        e sem efeito.
 
         Isto importa porque a exploração do Rainbow neste ambiente é o suspeito aberto: com
         `noisy=True` e ε zero, a entropia das ações de uma rede não treinada mede 0,949
         contra 1,099 do aleatório, e o `sigma` das `NoisyDense` fica **constante** ao longo
         do treino (0,02446 → 0,02421 em 100 mil passos) enquanto os gaps de Q crescem — ou
-        seja, a exploração relativa encolhe sozinha. Ver `docs/REVISAO_ALGORITMOS.md` §2.8.
+        seja, a exploração relativa encolhe sozinha. Ver `docs/REVISAO_ALGORITMOS.md` §2.16.
         """
-        if self.cfg.noisy and self.cfg.eps_start == 0.0 and self.cfg.eps_end == 0.0:
+        if self.cfg.noisy and not getattr(self.cfg, "eps_mesmo_com_noisy", False):
             return 0.0
         f = min(1.0, self.frac() / max(self.cfg.eps_frac, 1e-9))
         return self.cfg.eps_start + f * (self.cfg.eps_end - self.cfg.eps_start)
@@ -234,7 +240,11 @@ class DQN(AgentBase):
         cfg = self.cfg
         prox = tf.convert_to_tensor(lote["next_obs"])
         mascara = lote["next_mask"]
-        g = cfg.gamma ** cfg.n_steps
+        # `γ**n_real`, não `γ**n_steps`: as janelas esvaziadas no fim de um episódio são
+        # mais curtas, e com a fome sendo truncamento (`done=0`) elas bootstrapam de
+        # verdade — descontar por 3 passos o que andou 2 desloca o alvo. Ver §2.13.
+        n_real = np.asarray(lote.get("n_real", cfg.n_steps), dtype=np.float32)
+        g = cfg.gamma ** n_real
 
         if cfg.n_atoms:
             return self._alvo_c51(lote, prox, mascara, g)
@@ -265,6 +275,9 @@ class DQN(AgentBase):
 
         n = len(melhor)
         p_sel = p_prox[np.arange(n), melhor]                       # (n, n_atoms)
+        # `g` virou por amostra (γ**n_real), então precisa de eixo para transmitir contra
+        # o suporte — ver §2.13
+        g = np.reshape(g, (-1, 1)) if np.ndim(g) else g
         tz = lote["rew"][:, None] + g * (1.0 - lote["done"])[:, None] * self.suporte
         tz = np.clip(tz, cfg.v_min, cfg.v_max)
         b = (tz - cfg.v_min) / self.delta_z
@@ -340,7 +353,10 @@ class DQN(AgentBase):
             # observação já resetada, e `done` volta a 0 para o bootstrap acontecer
             prox_obs, prox_mask, prox_done = self.desfaz_truncamento(
                 info, self.obs, self.mask, d.astype(np.float32))
-            self.memoria.add_batch(obs_ant, acoes, r, prox_obs, prox_done, prox_mask)
+            # `prox_done` é 0 na fome (truncamento, o alvo bootstrapa); `d` é a fronteira
+            # real do episódio, e é ela que corta a janela de n passos. Ver §2.13.
+            self.memoria.add_batch(obs_ant, acoes, r, prox_obs, prox_done, prox_mask,
+                                   fim=d.astype(np.float32))
             self.global_step += cfg.num_envs
             scores.extend(info["scores"].tolist())
             vitorias += info["wins"]

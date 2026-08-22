@@ -63,7 +63,7 @@ def test_dqn_stores_the_true_final_state_of_a_truncated_episode():
         return saida
 
     ag.env.step = step_espiao
-    ag.memoria.add_batch = lambda *a: (gravados.append(a), add(*a))[1]
+    ag.memoria.add_batch = lambda *a, **kw: (gravados.append((a, kw)), add(*a, **kw))[1]
 
     for _ in range(120):
         ag.iterate()
@@ -72,9 +72,13 @@ def test_dqn_stores_the_true_final_state_of_a_truncated_episode():
     info = infos[-1]
     assert len(info["trunc_idx"]), "o cenário não produziu truncamento por fome"
 
-    _obs, _act, _rew, next_obs, done, next_mask = gravados[-1]
+    (_obs, _act, _rew, next_obs, done, next_mask), kw = gravados[-1]
     ti = info["trunc_idx"]
     assert (done[ti] == 0.0).all(), "fome gravada como terminal: o bootstrap some"
+    # `done=0` é para o alvo bootstrapar; a fronteira do episódio vai em `fim`, e é ela
+    # que impede a janela de n passos de atravessar para o episódio seguinte — §2.9
+    assert "fim" in kw, "a fronteira do episódio não chega ao buffer"
+    assert (np.asarray(kw["fim"])[ti] == 1.0).all(), "fome não marcada como fim de episódio"
     np.testing.assert_array_equal(next_obs[ti], info["final_obs"])
     np.testing.assert_array_equal(next_mask[ti], info["final_mask"])
 
