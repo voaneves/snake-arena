@@ -280,3 +280,26 @@ def test_a_short_window_is_discounted_by_its_real_length():
     assert not np.allclose(alvo_curto[2], alvo_cheio[2])
     # a linha 0 tem janela cheia: idêntica
     np.testing.assert_allclose(alvo_curto[0], alvo_cheio[0], atol=1e-6)
+
+
+def test_the_best_checkpoint_can_actually_play(tmp_path):
+    """`avaliar_melhor()` recarrega o `best` e joga com ele — os dois passos têm de valer.
+
+    Duas falhas moravam aqui, as duas só visíveis **no fim do treino**: o `Lambda` que
+    impedia recarregar (§2.14) e o `keras_policy` genérico, que assume saída
+    `(lote, ações)` e quebra com os `(lote, ações, átomos)` do C51 (§2.17). Este teste faz
+    o caminho inteiro — salvar, recarregar, montar a política, jogar um lote.
+    """
+    import numpy as np
+    import keras
+
+    ag = Rainbow(rb())
+    caminho = str(tmp_path / "best.keras")
+    ag.model.save(caminho)
+    recarregado = keras.models.load_model(caminho)          # §2.14
+    pol = ag.politica_do_modelo(recarregado)                # §2.17
+    obs = np.zeros((7, 10, 10, 5), np.float32)
+    mask = np.ones((7, 3), bool)
+    logits = np.asarray(pol(obs, mask), dtype=np.float32)
+    assert logits.shape == (7, 3), f"a política devolveu {logits.shape}, não (lote, ações)"
+    assert np.isfinite(logits).all()

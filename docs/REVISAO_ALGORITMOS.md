@@ -471,6 +471,26 @@ Agora existe `eps_mesmo_com_noisy: bool = False`. O padrão não mudou — a com
 do Rainbow segue sem ε, e as ablações de DQN com `noisy` também — mas o botão existe e é
 declarado.
 
+### 2.17 ✔ A política do checkpoint não colapsava a distribuição do C51 — **corrigido**
+`agents/dqn.py:politica_do_modelo` · `base.py:keras_policy`
+
+O §2.14 um passo adiante. Com o `Lambda` corrigido o checkpoint volta do disco — e aí quebra
+na primeira jogada:
+
+```
+ValueError: Dimensions must be equal, but are 250 and 3 ...
+input shapes: [250,3], [250,3,121], [250,3,121]
+```
+
+`keras_policy` assume saída `(lote, ações)` e faz `tf.where(mask, logits, ...)`. Com
+`n_atoms > 0` a rede devolve `(lote, ações, átomos)`. O `DQN` sobrescreve `politica()` — que
+colapsa pelo `_q_valores` — mas **não** sobrescrevia `politica_do_modelo()`, e o único
+caminho que passa por ali é `avaliar_melhor()`. De novo: erro no fim do treino, orçamento
+inteiro gasto.
+
+O teste `test_the_best_checkpoint_can_actually_play` faz o caminho completo — salvar,
+recarregar, montar a política, jogar um lote — e prende os dois defeitos de uma vez.
+
 ### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
 
 Depois de §2.8, §2.8b, §2.13 e §2.14, o Rainbow ainda não decola. O que está medido:

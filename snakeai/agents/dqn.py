@@ -210,6 +210,27 @@ class DQN(AgentBase):
             return np.where(mask, q, MASK_NEG).astype(np.float32)
         return fn
 
+    def politica_do_modelo(self, modelo):
+        """A `politica()` acima, mas para um modelo vindo de fora — com o C51 colapsado.
+
+        O `keras_policy` que o `AgentBase` usa assume saída `(lote, ações)` e faz
+        `tf.where(mask, logits, ...)`. Com `n_atoms > 0` a rede devolve
+        `(lote, ações, átomos)` e o broadcast quebra:
+
+            ValueError: Dimensions must be equal, but are 250 and 3 ...
+            input shapes: [250,3], [250,3,121], [250,3,121]
+
+        A `politica()` deste agente já colapsava a distribuição pelo `_q_valores`; esta
+        não, e como o único caminho que passa por aqui é `avaliar_melhor()`, o erro
+        chegava **depois do orçamento inteiro gasto**. É o mesmo lugar do §2.14, um passo
+        adiante: com o `Lambda` corrigido o checkpoint volta do disco, e aí quebra na
+        primeira jogada. Ver `docs/REVISAO_ALGORITMOS.md` §2.17.
+        """
+        def fn(obs, mask):
+            q = np.asarray(self._q_valores(modelo, tf.convert_to_tensor(obs)))
+            return np.where(mask, q, MASK_NEG).astype(np.float32)
+        return fn
+
     def _escolher(self, obs, mask):
         """A política de **comportamento** — e é aqui que a exploração precisa existir.
 
