@@ -485,6 +485,7 @@ PAPERS = {
     "07_muzero.ipynb": "1911.08265",
     "08_acktr.ipynb": "1708.05144",
     "09_dreamerv3.ipynb": "2301.04104",
+    "10_lbc.ipynb": "2305.05239",
 }
 
 #: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.

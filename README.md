@@ -154,6 +154,7 @@ Todos reimplementados em **Keras 3**, sobre o mesmo ambiente e a mesma API de ag
 | **MuZero** — a mesma busca, sobre um modelo aprendido | [📎](https://arxiv.org/abs/1911.08265) | `07_muzero.ipynb` | novo | ✅ implementado |
 | **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | [📎](https://arxiv.org/abs/1708.05144) | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC em Keras 3, região **calibrada** por padrão, 19 testes de curvatura |
 | **DreamerV3** — modelo do mundo, ator treinado no sonho | [📎](https://arxiv.org/abs/2301.04104) | `09_dreamerv3.ipynb` | novo | ✅ RSSM categórico, symlog, two-hot, 28 testes |
+| **LBC** — controle de comportamento aprendido: mistura de Boltzmann sobre uma população, V-trace, seleção por bandit | [📎](https://arxiv.org/abs/2305.05239) | `10_lbc.ipynb` | novo | ✅ implementado, 44 testes (agente + meta-controlador) |
 | ↳ **ACKTR sem calibrar** — `kl_max` volta a ser alvo nominal | — | `98_acktr_kl_nominal.ipynb` | — | ✅ braço de controle: a mesma semente deu 83,91 e 64,53 em hardwares diferentes |
 | ↳ **PPO com o orçamento antigo** — ~2.400 atualizações em vez de ~38.300 | — | `96_ppo_orcamento_esparso.ipynb` | — | ✅ braço de controle da ablação de orçamento |
 | ↳ **A2C com o rollout antigo** — ~610 atualizações em vez de ~1.953 | — | `95_a2c_orcamento_esparso.ipynb` | — | ✅ a mesma ablação com **um** botão só, fora da família PPO |
@@ -186,6 +187,10 @@ publicados — por isso não têm paper. A lista completa:
 | ACKTR | `08`, `98` | Wu et al., 2017 — *Scalable trust-region method for deep reinforcement learning using Kronecker-factored approximation* [📎](https://arxiv.org/abs/1708.05144) |
 | K-FAC | `snakeai/kfac.py` — as camadas densas | Martens & Grosse, 2015 — *Optimizing Neural Networks with Kronecker-factored Approximate Curvature* [📎](https://arxiv.org/abs/1503.05671) |
 | KFC | `snakeai/kfac.py` — as convoluções | Grosse & Martens, 2016 — *A Kronecker-factored Approximate Fisher Matrix for Convolution Layers* [📎](https://arxiv.org/abs/1602.01407) |
+| LBC | `10` | Fan et al., 2023 — *Learnable Behavior Control: Breaking Atari Human World Records via Sample-Efficient Behavior Selection* [📎](https://arxiv.org/abs/2305.05239) |
+| V-trace / IMPALA | o estimador off-policy do LBC | Espeholt et al., 2018 — *IMPALA: Scalable Distributed Deep-RL with Importance Weighted Actor-Learner Architectures* [📎](https://arxiv.org/abs/1802.01561) |
+| UCB com janela deslizante | o meta-controlador em `snakeai/bandit.py` | Garivier & Moulines, 2008 — *On Upper-Confidence Bound Policies for Non-Stationary Bandit Problems* [📎](https://arxiv.org/abs/0805.3415) · versão ALT 2011, *Switching Bandit Problems*, é a citada pelo LBC |
+| Agent57 | o antecessor que o LBC generaliza | Badia et al., 2020 — *Agent57: Outperforming the Atari Human Benchmark* [📎](https://arxiv.org/abs/2003.13350) |
 | DreamerV3 | `09` | Hafner et al., 2023 — *Mastering Diverse Domains through World Models* [📎](https://arxiv.org/abs/2301.04104) |
 
 </details>
@@ -219,6 +224,29 @@ pré-condiciona".
 MuZero gastam computação de inferência em MCTS, o Dreamer usa o modelo só para **treinar**,
 em rollouts imaginados. Por isso o número dele na curva é o da política pura, sem asterisco
 — a mesma regra que mantém a busca do AlphaZero numa coluna à parte.
+
+**Sobre o LBC.** É o único dos dez em que a **exploração é medida em vez de agendada**, e
+por isso ele responde uma pergunta que este repositório vinha empurrando: os agendamentos
+lineares — o ε do DQN, o coeficiente de entropia do PPO, o σ da `NoisyDense` — foram
+escolhidos antes de o treino começar e nunca olharam para o resultado. O LBC troca a reta
+por um espaço de comportamento parametrizado (uma mistura de Boltzmann sobre uma população
+de três políticas, com um γ cada) e por um bandit UCB que escolhe dentro dele olhando o
+retorno de cada configuração.
+
+Como o comportamento não é nenhuma das políticas treinadas, os dados são off-policy **por
+construção**, e o update usa V-trace. Isso tem um efeito colateral que interessa ao §2.1 da
+revisão: com `μ` gravado, várias épocas sobre o mesmo rollout continuam corretas sem
+clipping — o orçamento de gradiente sai de graça, onde o PPO precisa do clipping para
+comprá-lo.
+
+A comparação que dá sentido à linha na arena é **`10_lbc` × `01_ppo` na mesma semente**:
+mesma rede, mesmo ambiente, mesmo orçamento, e — de propósito — o **mesmo γ = 0,995 na
+política avaliada**, para que a diferença entre as curvas não inclua fator de desconto. Três
+desvios em relação ao paper estão declarados e explicados em
+[`docs/LBC.md`](docs/LBC.md): tronco compartilhado entre as políticas, `H` reduzido ao γ, e
+um bandit em vez do conjunto de bandits do §4.2. As duas ablações da Fig. 5 do paper —
+população de uma política e seleção aleatória — estão implementadas como configuração
+(`n_politicas=1`, `selecao="aleatoria"`) e ganham sufixo próprio na variante.
 
 **Por que busca.** Snake é determinístico, de informação perfeita, tem 3 ações e o
 `VecSnake` faz ~286 mil passos/s. Isso torna planejamento com o simulador **real** a jogada
@@ -295,6 +323,7 @@ declara qual é qual.
 | [`docs/RESULTADOS.md`](docs/RESULTADOS.md) | a tabela completa, gerada; não editar à mão |
 | [`docs/ORCAMENTO_DE_GRADIENTE.md`](docs/ORCAMENTO_DE_GRADIENTE.md) | a ablação de orçamento nas duas famílias, a previsão pré-registrada que falhou, saturação × limitação por orçamento |
 | [`docs/CANAL_DE_FOME.md`](docs/CANAL_DE_FOME.md) | o sexto canal de observação, e por que ele sai da arena |
+| [`docs/LBC.md`](docs/LBC.md) | o LBC: as três peças, os cinco desvios declarados em relação ao paper, e o que olhar no log |
 | [`docs/PROCEDENCIA.md`](docs/PROCEDENCIA.md) | qual código produziu cada execução, e como auditar isso em dois comandos |
 | [`docs/COMPARABILITY.md`](docs/COMPARABILITY.md) | o contrato: o que uma curva precisa cumprir para competir |
 | [`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) | o que já dá para escrever e o que ainda falta medir |
@@ -320,13 +349,14 @@ snake-arena/
 ├── snakeai/                  # o pacote — fonte única de verdade
 │   ├── env/                  # VecSnake, wrapper de env único, renderização
 │   ├── nets/                 # troncos (cnn2/3/4, resnet) + cabeças + registry
-│   ├── agents/               # ppo, dqn, rainbow, a2c, acer sobre uma base comum
+│   ├── agents/               # ppo, dqn, rainbow, a2c, acer, lbc sobre uma base comum
 │   ├── memory/               # replay uniforme e PER com sum-tree
+│   ├── bandit.py             # UCB não-estacionário — o meta-controlador do LBC
 │   ├── eval.py               # evaluate, verdict, piso aleatório, filtro de segurança
 │   ├── record.py             # esquema do history.json + validador do contrato
 │   ├── plot.py               # o gráfico comparativo
 │   └── export.py             # .keras + TFLite + medição de latência
-├── notebooks/                # um .ipynb por algoritmo (9) + as ablações
+├── notebooks/                # um .ipynb por algoritmo (10) + as ablações
 ├── runs/                     # history.json de cada execução (versionado)
 ├── models/                   # os melhores checkpoints, por algoritmo
 ├── legacy/                   # os 13 notebooks antigos, congelados e anotados
@@ -398,6 +428,7 @@ sozinha.
 | MuZero | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/07_muzero.ipynb) |
 | ACKTR — K-FAC | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/08_acktr.ipynb) |
 | DreamerV3 | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/09_dreamerv3.ipynb) |
+| LBC — comportamento aprendido | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/10_lbc.ipynb) |
 | ACKTR — sem calibrar a região de confiança | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/98_acktr_kl_nominal.ipynb) |
 | PPO — orçamento de gradiente antigo | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/96_ppo_orcamento_esparso.ipynb) |
 | A2C — orçamento de gradiente antigo | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/95_a2c_orcamento_esparso.ipynb) |

@@ -7,6 +7,7 @@ from .alphazero import AlphaZero, AlphaZeroConfig
 from .base import AgentBase, BaseConfig
 from .dreamerv3 import DreamerV3, DreamerV3Config
 from .dqn import DQN, DQNConfig
+from .lbc import LBC, LBCConfig, MisturaBoltzmann, vtrace
 from .muzero import MuZero, MuZeroConfig
 from .ppo import PPO, PPOConfig, compute_gae
 from .rainbow import Rainbow, RainbowConfig
@@ -20,6 +21,7 @@ __all__ = [
     "AlphaZero", "AlphaZeroConfig",
     "DQN", "DQNConfig",
     "DreamerV3", "DreamerV3Config",
+    "LBC", "LBCConfig", "MisturaBoltzmann", "vtrace",
     "MuZero", "MuZeroConfig",
     "Rainbow", "RainbowConfig",
 ]

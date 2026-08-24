@@ -15,6 +15,7 @@ import pytest
 from keras import layers, ops
 
 from snakeai.env.vec_snake import N_ACTIONS, N_CHANNELS
+from snakeai.nets.heads import ruido_ligado
 from snakeai.nets import (
     NoisyDense,
     build_q_network,
@@ -241,3 +242,46 @@ def test_no_lambda_layers_in_the_heads():
         m = build_q_network(net="resnet_tiny", **kw)
         culpadas = [c.name for c in m.layers if isinstance(c, layers.Lambda)]
         assert not culpadas, f"camadas Lambda em {m.name}: {culpadas}"
+
+
+def test_shared_noise_is_one_draw_for_the_whole_batch():
+    """O padrão do paper: um `ε` por passada, compartilhado. Linhas iguais → saídas iguais."""
+    c = NoisyDense(4, seed=0)
+    c.build((None, 3))
+    c.ruido, c.por_amostra = True, False
+    x = np.tile(np.array([[1.0, 2.0, 3.0]], np.float32), (5, 1))
+    y = np.asarray(c(x))
+    np.testing.assert_allclose(y[0], y[1], atol=1e-6)
+
+
+def test_per_sample_noise_gives_each_row_its_own_draw():
+    """A vetorização correta: com N ambientes, cada um precisa do seu `ε`.
+
+    Um sorteio por passada é fiel ao paper porque o paper tem **um** ambiente. Com 64
+    ambientes decididos na mesma passada, os 64 seguem a mesma política perturbada —
+    medido, o tamanho efetivo de exploração cai de 64 para ~11. As implementações
+    distribuídas do mesmo lineage (Ape-X, R2D2) dão a cada ator o seu ruído.
+    """
+    c = NoisyDense(4, seed=0)
+    c.build((None, 3))
+    c.ruido, c.por_amostra = True, True
+    x = np.tile(np.array([[1.0, 2.0, 3.0]], np.float32), (5, 1))
+    y = np.asarray(c(x))
+    assert not np.allclose(y[0], y[1]), "as linhas do lote compartilharam o ruído"
+    # e a média sobre muitos sorteios continua no valor sem ruído
+    c.por_amostra, c.ruido = True, True
+    grande = np.tile(np.array([[1.0, 2.0, 3.0]], np.float32), (4000, 1))
+    medio = np.asarray(c(grande)).mean(0)
+    c.ruido = False
+    np.testing.assert_allclose(medio, np.asarray(c(x))[0], atol=0.05)
+
+
+def test_per_sample_noise_is_off_by_default_and_restores_state():
+    """`ruido_ligado` devolve os dois sinalizadores como estavam."""
+    m = build_q_network(net="resnet_tiny", noisy=True, dueling=True)
+    camadas = [c for c in m.layers if isinstance(c, NoisyDense)]
+    assert camadas and all(c.por_amostra is False for c in camadas)
+    with ruido_ligado(m, ativo=True, por_amostra=True) as cs:
+        assert all(c.por_amostra for c in cs)
+    assert all(c.por_amostra is False for c in camadas)
+    assert all(c.ruido is None for c in camadas)

@@ -604,7 +604,73 @@ genuinamente alto continua sustentando o valor.
 PER, em que a transição nova entra no topo e cai para o valor real assim que é amostrada uma
 vez. O defeito era só a catraca.
 
-### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
+### 2.25 ✔ `n_steps=3` não alcançava a recompensa — **corrigido, e é o achado que destravou tudo**
+`agents/rainbow.py:n_steps`
+
+O agente gasta ~12 passos por maçã. Com uma janela de 3, a decisão que o levou até a comida
+**sai do retorno antes de a recompensa entrar**: a atribuição de crédito passa a depender só
+do bootstrap, e o bootstrap depende das sincronias do alvo — dezenas num treino inteiro. É
+por isso que o agente passava mais de um milhão de passos parado em 100% de morte por fome:
+ele encontrava a comida e não conseguia ligar o encontro à decisão.
+
+| `n_steps` | decolagem | fome aos 850 k | `γ**n` |
+|---:|---:|---:|---:|
+| 3 | ~1,85 M | 100% | 0,985 |
+| **20** | **~700 k** | **69,8%** | **0,905** |
+
+Com 20, o score de treino vai de 2,24 a 8,45 em 150 mil passos e os episódios crescem de 158
+para 330 passos. O `γ**n` caindo para 0,905 também reduz o peso do bootstrap, que era
+exatamente o mecanismo que estava faltando.
+
+O 20 vem do **Data-Efficient Rainbow** (van Hasselt et al., 2019), que usa `multi-step 20`
+no regime de poucos dados. É um desvio declarado do Rainbow canônico, que usa 3.
+
+**Isto derruba o §2.16.** A hipótese de que o poço era falta de exploração foi testada
+diretamente: com `eps_mesmo_com_noisy=True` e ε=1,0 — 66% de desvio do greedy e 64 ambientes
+independentes — o agente **continuou** caindo em 100% de fome. Ele explorava de sobra; não
+aprendia com o que encontrava. Registrar hipóteses erradas junto com as certas é o ponto de
+ter um documento assim.
+
+### 2.23 ○ O regime de reamostragem é um quarto da referência — **aberto por decisão**
+`agents/rainbow.py:learn_every,target_update`
+
+O `Kaixhin/Rainbow` treina com lote 32 uma vez a cada 4 passos: **8 amostras sorteadas por
+passo de ambiente**, cada transição revisitada ~8 vezes. Com `learn_every=4` e lote 512 nós
+sorteamos `512/256 = 2,0`. `learn_every=1` daria exatamente 8,0 — o número não é chute, é o
+que a referência implica — ao custo de 4× o trabalho de gradiente.
+
+O mesmo vale para `target_update`: a referência sincroniza a cada **2.000 atualizações**
+(8.000 passos ÷ 4); nós estamos em 250, ou seja 8× mais frequente.
+
+Os dois chegaram a ser alterados para os valores da referência e **foram revertidos**. A
+execução que funcionou — decolagem aos 700 k — rodou com `learn_every=4` e
+`target_update=250`, e mudar os dois junto com o `n_steps=20` mediria a soma em vez do
+efeito. Ficam como a próxima ablação, de uma variável.
+
+### 2.24 ✔ O ruído das noisy nets era um sorteio para os 64 ambientes — **corrigido, desligado por padrão**
+`nets/heads.py:NoisyDense.por_amostra`
+
+Um `ε` por passada é fiel ao paper porque o paper tem **um** ambiente. Com `num_envs=64` os
+64 seguem a mesma política perturbada. Medido, com 60 passadas:
+
+| | P(desvia do greedy) | ambientes independentes |
+|---|---:|---:|
+| ruído compartilhado (padrão) | 0,299 | **10,9 / 64** |
+| ruído por ambiente | 0,293 | **64 / 64** |
+| ε = 1,0 | 0,665 | 64 / 64 |
+
+Mesma taxa marginal de exploração, seis vezes a diversidade efetiva. As implementações
+distribuídas do mesmo lineage (Ape-X, R2D2) dão a cada ator o seu ruído, então
+`ruido_por_ambiente=True` é a **vetorização correta** do paper, não um desvio. Fica desligado
+por padrão porque muda a política de comportamento e a execução medida não o usava.
+
+### 2.16 ✗ A exploração do Rainbow neste ambiente — **hipótese REFUTADA**
+
+> **Refutada em 24/08.** Ligado o ε com `eps_mesmo_com_noisy=True` (66% de desvio do greedy,
+> 64 ambientes independentes), o agente **continuou** convergindo para 100% de morte por
+> fome. Exploração não era o gargalo: o gargalo era atribuição de crédito, e está no §2.25.
+> O que está abaixo continua factualmente correto e é a razão de o §2.24 existir, mas a
+> conclusão que esta seção tirava estava errada.
 
 Depois de §2.8, §2.8b, §2.13 e §2.14, o Rainbow ainda não decola. O que está medido:
 

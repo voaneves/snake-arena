@@ -93,6 +93,10 @@ class DQNConfig(BaseConfig):
     #: silenciosamente ignorado. Ver `docs/REVISAO_ALGORITMOS.md` §2.15.
     eps_mesmo_com_noisy: bool = False
 
+    #: Um `ε` de noisy net **por ambiente** na coleta, em vez de um por passada.
+    #: Ver `NoisyDense.por_amostra` e `docs/REVISAO_ALGORITMOS.md` §2.24.
+    ruido_por_ambiente: bool = False
+
     # exploração ε-greedy — ignorada quando `noisy=True`, salvo `eps_mesmo_com_noisy`
     eps_start: float = 1.0
     eps_end: float = 0.02
@@ -249,7 +253,8 @@ class DQN(AgentBase):
         `docs/REVISAO_ALGORITMOS.md` §2.3. A avaliação continua sem ruído — é outro
         caminho (`politica()`), e o contrato exige determinismo lá.
         """
-        with ruido_ligado(self.model, ativo=bool(self.cfg.noisy)):
+        with ruido_ligado(self.model, ativo=bool(self.cfg.noisy),
+                          por_amostra=bool(getattr(self.cfg, 'ruido_por_ambiente', False))):
             q = np.asarray(self._q_valores(self.model, tf.convert_to_tensor(obs)))
         q = np.where(mask, q, -np.inf)
         acoes = q.argmax(axis=1).astype(np.int32)

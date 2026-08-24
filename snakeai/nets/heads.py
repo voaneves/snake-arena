@@ -53,6 +53,20 @@ class NoisyDense(layers.Layer):
         Escala inicial do ruído, dividida por `sqrt(entrada)`. 0,5 é o valor do paper.
     """
 
+    #: Sorteia um ruído **por linha do lote** em vez de um por passada.
+    #:
+    #: O paper (Fortunato et al.) sorteia `ε` uma vez por passada e o compartilha com o
+    #: lote inteiro — e isso é fiel quando existe **um** ambiente, que é o caso dele. Com
+    #: `num_envs=64` a mesma passada decide a ação dos 64, então os 64 seguem a *mesma*
+    #: política perturbada: são 64 cópias correlacionadas, não 64 exploradores. Medido, o
+    #: tamanho efetivo cai para ~8 de 64.
+    #:
+    #: As implementações distribuídas do próprio lineage (Ape-X, R2D2) dão a cada ator a
+    #: sua rede e o seu ruído — ou seja, um sorteio por ambiente é a **vetorização
+    #: correta** do paper, não um desvio dele. Fica desligado por padrão mesmo assim,
+    #: porque muda a política de comportamento e isso é decisão declarada.
+    por_amostra: bool = False
+
     def __init__(self, units, activation=None, sigma0=0.5, seed=None, **kw):
         super().__init__(**kw)
         self.units = int(units)
@@ -88,7 +102,23 @@ class NoisyDense(layers.Layer):
         return ops.sign(x) * ops.sqrt(ops.abs(x))
 
     def call(self, inputs, training=False):
-        if self.ruido if self.ruido is not None else training:
+        ativo = self.ruido if self.ruido is not None else training
+
+        if ativo and self.por_amostra:
+            # Um ε por linha do lote. Materializar 512 matrizes de peso seria proibitivo,
+            # mas a fatoração dispensa: com w[b] = w_mu + w_sigma·(ε_in[b] ⊗ ε_out[b]),
+            #     (x[b] @ w[b])_j = (x[b] @ w_mu)_j + ε_out[b,j]·((x[b]·ε_in[b]) @ w_sigma)_j
+            # e o viés segue o mesmo ε_out. Custa dois matmuls em vez de um.
+            lote = ops.shape(inputs)[0]
+            eps_in = self._f(keras.random.normal((lote, self._entrada),
+                                                 seed=self.seed_generator))
+            eps_out = self._f(keras.random.normal((lote, self.units),
+                                                 seed=self.seed_generator))
+            y = ops.matmul(inputs, self.w_mu) + self.b_mu
+            y = y + eps_out * (ops.matmul(inputs * eps_in, self.w_sigma) + self.b_sigma)
+            return self.activation(y) if self.activation is not None else y
+
+        if ativo:
             eps_in = self._f(keras.random.normal((self._entrada,),
                                                  seed=self.seed_generator))
             eps_out = self._f(keras.random.normal((self.units,),
@@ -226,7 +256,7 @@ def suporte_c51(v_min=-10.0, v_max=10.0, n_atoms=51):
 
 
 @contextlib.contextmanager
-def ruido_ligado(modelo, ativo=True):
+def ruido_ligado(modelo, ativo=True, por_amostra=False):
     """Liga o ruído das `NoisyDense` de `modelo` dentro do bloco, e devolve como estava.
 
     Existe porque **coletar não é avaliar**. `NoisyDense.call` amarra o ruído a
@@ -238,14 +268,15 @@ def ruido_ligado(modelo, ativo=True):
     traçado e vira constante no grafo, que não é o que se quer.
     """
     camadas = [c for c in _camadas(modelo) if isinstance(c, NoisyDense)]
-    antes = [c.ruido for c in camadas]
+    antes = [(c.ruido, c.por_amostra) for c in camadas]
     for c in camadas:
         c.ruido = ativo
+        c.por_amostra = bool(por_amostra)
     try:
         yield camadas
     finally:
-        for c, valor in zip(camadas, antes):
-            c.ruido = valor
+        for c, (r, pa) in zip(camadas, antes):
+            c.ruido, c.por_amostra = r, pa
 
 
 def _camadas(modelo):

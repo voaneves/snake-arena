@@ -28,6 +28,7 @@ __all__ = [
     "listar_troncos",
     "build_backbone",
     "build_actor_critic",
+    "build_actor_critic_populacao",
     "build_q_network",
     "build_policy_q",
     "resumo",
@@ -129,6 +130,80 @@ def build_actor_critic(board_size=10, net="resnet_small", largura_densa=None,
     )(v)
 
     return keras.Model(inp, [logits, valor], name=nome or f"ac_{canonico}")
+
+
+def build_actor_critic_populacao(board_size=10, net="resnet_small", n_politicas=3,
+                                 largura_densa=None, n_actions=N_ACTIONS, nome=None,
+                                 canais=N_CHANNELS):
+    """`N` pares (política, valor) sobre um tronco **compartilhado** — o que o LBC consome.
+
+    Saída `[logits, valor]` com formas `(lote, N, ações)` e `(lote, N)`: a população
+    inteira num forward só. É essa forma que permite ao comportamento do LBC ser uma
+    mistura sobre as `N` políticas sem `N` passadas pela rede.
+
+    O tronco compartilhado é um **desvio declarado** do paper, que trata cada política como
+    um modelo inteiro e independente (Assumption 1). A razão é o orçamento: o contrato deste
+    repositório dá 5 M passos de ambiente a todos os algoritmos, e três ResNets separadas
+    triplicariam o custo por passo — o LBC entraria na arena competindo com o mesmo
+    orçamento de ambiente e três vezes mais computação, que é a comparação que este
+    repositório existe para não fazer. Ver `docs/LBC.md`.
+
+    O que se perde é diversidade de **representação**: as três políticas veem as mesmas
+    features. O que se mantém é diversidade de **objetivo** — cada cabeça é treinada com o
+    seu próprio γ e o seu próprio alvo V-trace — e é ela que constrói o espaço de
+    comportamento não-degenerado do §4.1.
+    """
+    if int(n_politicas) < 1:
+        raise ValueError("a população precisa de pelo menos uma política")
+    n_politicas = int(n_politicas)
+
+    inp = _entrada(board_size, canais)
+    x, canonico = build_backbone(inp, net)
+    largura = LARGURA_DENSA_PADRAO if largura_densa is None else int(largura_densa)
+    espacial = _e_espacial(x)
+
+    logits_por_politica, valores_por_politica = [], []
+    for i in range(n_politicas):
+        if espacial:
+            p = layers.Conv2D(4, 1, use_bias=False, name=f"pi{i}_c")(x)
+            p = layers.GroupNormalization(groups=2, name=f"pi{i}_n")(p)
+            p = layers.Activation("relu", name=f"pi{i}_a")(p)
+            p = layers.Flatten(name=f"pi{i}_f")(p)
+
+            v = layers.Conv2D(2, 1, use_bias=False, name=f"v{i}_c")(x)
+            v = layers.GroupNormalization(groups=2, name=f"v{i}_n")(v)
+            v = layers.Activation("relu", name=f"v{i}_a")(v)
+            v = layers.Flatten(name=f"v{i}_f")(v)
+            v = layers.Dense(largura, activation="relu", name=f"v{i}_d")(v)
+        else:
+            p = layers.Dense(largura, activation="relu", name=f"pi{i}_d")(x)
+            v = layers.Dense(largura, activation="relu", name=f"v{i}_d")(x)
+
+        li = layers.Dense(
+            n_actions, name=f"logits_{i}",
+            kernel_initializer=keras.initializers.Orthogonal(gain=0.01),
+            bias_initializer="zeros",
+        )(p)
+        vi = layers.Dense(
+            1, name=f"value_{i}",
+            kernel_initializer=keras.initializers.Orthogonal(gain=1.0),
+            bias_initializer="zeros",
+        )(v)
+        logits_por_politica.append(
+            layers.Reshape((1, n_actions), name=f"logits_{i}_r")(li))
+        valores_por_politica.append(vi)
+
+    # `Concatenate` recusa uma entrada só — e uma população de tamanho 1 é justamente a
+    # ablação "reduzir H" da Fig. 5 do paper, então este caminho tem que existir.
+    if n_politicas == 1:
+        logits = logits_por_politica[0]
+        valor = valores_por_politica[0]
+    else:
+        logits = layers.Concatenate(axis=1, name="logits")(logits_por_politica)
+        valor = layers.Concatenate(axis=-1, name="value")(valores_por_politica)
+
+    return keras.Model(inp, [logits, valor],
+                       name=nome or f"lbc{n_politicas}_{canonico}")
 
 
 def build_q_network(board_size=10, net="cnn_rainbow", largura_densa=None,

@@ -60,7 +60,7 @@ PALETA = {
 
 #: Ordem fixa dos slots. Um algoritmo novo entra no fim; ninguém troca de cor por isso.
 ORDEM_ALGORITMOS = ["ppo", "dqn", "rainbow", "a2c", "acer", "alphazero",
-                    "muzero", "acktr", "dreamerv3", "dqn-legacy"]
+                    "muzero", "acktr", "dreamerv3", "lbc", "dqn-legacy"]
 
 #: Famílias, na ordem em que os painéis aparecem. Existem porque a arena passou de oito
 #: algoritmos e **oito é o limite honesto de uma paleta categórica**: a nona cor seria
@@ -71,7 +71,7 @@ ORDEM_ALGORITMOS = ["ppo", "dqn", "rainbow", "a2c", "acer", "alphazero",
 #: aprende (política, valor, ou um modelo do mundo) é a divisão que explica por que as
 #: curvas têm formatos diferentes.
 FAMILIAS = [
-    ("política", "gradiente de política", ["ppo", "a2c", "acktr", "acer"]),
+    ("política", "gradiente de política", ["ppo", "a2c", "acktr", "acer", "lbc"]),
     ("valor", "função de valor", ["dqn", "rainbow"]),
     ("modelo", "modelo do mundo e busca", ["alphazero", "muzero", "dreamerv3"]),
 ]

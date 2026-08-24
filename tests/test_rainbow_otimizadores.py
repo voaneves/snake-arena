@@ -44,7 +44,9 @@ def test_rainbow_is_its_own_algorithm_in_the_arena():
 
 def test_rainbow_trains():
     ag = Rainbow(rb())
-    for _ in range(4):
+    # a fila de n passos só emite depois de `n_steps` passos por ambiente, e o padrão
+    # agora é 20 (§2.25) — quatro iterações não enchiam nem a fila
+    for _ in range(2 + ag.cfg.n_steps // max(1, ag.cfg.learn_every)):
         stats = ag.iterate()
     assert np.isfinite(stats["loss"])
     assert stats["epsilon"] == 0.0, "a exploração do Rainbow vem das noisy nets"
@@ -435,3 +437,36 @@ def test_the_entry_priority_does_not_ratchet_forever():
     for _ in range(50):
         buf.update_priorities([2], [8.0])
     assert buf.max_prioridade >= 8.0
+
+
+def test_the_multistep_horizon_reaches_the_reward():
+    """`n_steps` tem de alcançar a recompensa, e 3 não alcança neste ambiente.
+
+    O agente gasta ~12 passos por maçã. Com uma janela de 3, a decisão que o levou até a
+    comida sai do retorno antes de a recompensa entrar, e a atribuição de crédito passa a
+    depender só do bootstrap — que depende das sincronias do alvo, dezenas num treino
+    inteiro. Medido: com `n_steps=3` o agente ficava um milhão de passos em 100% de morte
+    por fome e decolava aos ~1,85 M; com 20, decola aos ~700 k.
+    """
+    c = RainbowConfig()
+    passos_por_maca = 12                    # medido nas execuções que aprenderam
+    assert c.n_steps >= passos_por_maca, (
+        f"n_steps={c.n_steps} não alcança a maçã, que chega ~{passos_por_maca} passos depois")
+    # e o suporte precisa cobrir o retorno acumulado da janela
+    retorno_max = c.n_steps * 1.0 + 2.0     # comer a cada passo, mais o bônus de vitória
+    assert c.v_max >= retorno_max, (
+        f"v_max={c.v_max} < retorno máximo de {c.n_steps} passos ({retorno_max})")
+
+
+def test_the_defaults_are_the_configuration_that_was_measured():
+    """Os padrões são a execução que funcionou, não a que a referência sugere.
+
+    `learn_every=1` (reamostragem 8,0, igual ao `Kaixhin`) e `target_update=1000` são mais
+    fiéis ao canônico, e chegaram a ser o padrão. Voltaram para 4 e 250 porque a execução
+    que decolou aos 700 k rodou assim, e trocar as duas junto com `n_steps=20` mediria a
+    soma. As duas continuam registradas como a próxima ablação em §2.23.
+    """
+    c = RainbowConfig()
+    assert (c.learn_every, c.target_update) == (4, 250)
+    reamostragem = c.batch_size / (c.num_envs * c.learn_every)
+    assert reamostragem == 2.0, "a reamostragem mudou sem a ablação que a justifica"

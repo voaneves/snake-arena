@@ -44,7 +44,22 @@ class RainbowConfig(DQNConfig):
     dueling: bool = True
     per: bool = True
     noisy: bool = True
-    n_steps: int = 3
+    #: **20, não 3.** O valor canônico do Rainbow é 3, e aqui ele não alcança a recompensa.
+    #:
+    #: O agente gasta ~12 passos por maçã. Com `n_steps=3` a decisão que o levou até a
+    #: comida sai da janela antes de a recompensa chegar: a atribuição de crédito depende
+    #: inteiramente do bootstrap, e o bootstrap depende das sincronias do alvo, que são
+    #: dezenas num treino inteiro. Com 20 a maçã entra na mesma janela da decisão.
+    #:
+    #: Medido, com todo o resto igual: a decolagem sai de **~1,85 M** passos para **~700 k**,
+    #: e a fome cai de 100% para 69,8% em 150 k passos enquanto o score de treino vai de
+    #: 2,24 a 8,45. Antes disso o agente passava um milhão de passos parado em 100% de fome.
+    #:
+    #: O 20 vem do **Data-Efficient Rainbow** (van Hasselt et al., 2019), que usa
+    #: `multi-step 20` justamente no regime de poucos dados. É um desvio declarado do
+    #: Rainbow canônico, e o `γ**n` cai de 0,985 para 0,905 — o que também reduz o peso do
+    #: bootstrap, que é o mecanismo que estava faltando. Ver §2.25.
+    n_steps: int = 20
 
     #: Rainbow não usa ε-greedy: a exploração vem das noisy nets. Mantido em zero para
     #: que ligar `noisy=False` sem pensar não deixe o agente sem exploração nenhuma.
@@ -64,6 +79,19 @@ class RainbowConfig(DQNConfig):
     #: passos por episódio subindo de 380 para 466 nos últimos 450 k). Ver
     #: `docs/REVISAO_ALGORITMOS.md` §2.21.
     lr: float = 3e-4
+
+    #: Fica em 4, o padrão do DQN base — **e isto é uma decisão contra a referência**.
+    #:
+    #: O Rainbow do `Kaixhin` treina com lote 32 uma vez a cada 4 passos, ou seja sorteia
+    #: **8 amostras por passo de ambiente**; cada transição é revisitada ~8 vezes. Com
+    #: `learn_every=4` e lote 512 nós sorteamos `512/256 = 2,0` — um quarto disso.
+    #: `learn_every=1` daria exatamente 8,0, e chegou a ser o padrão aqui por algumas horas.
+    #:
+    #: Voltou para 4 porque a execução que **de fato funcionou** — decolagem aos 700 k com
+    #: `n_steps=20` — rodou com 4, e trocar as duas coisas juntas mediria a soma. O
+    #: `learn_every=1` continua sendo a hipótese mais forte para a próxima ablação, e custa
+    #: 4× o trabalho de gradiente. Ver §2.23.
+    learn_every: int = 4
 
     #: **O suporte tem de ser simétrico, e isto não é estética.** Na inicialização os
     #: logits são ~0, então a softmax do C51 é uniforme sobre o suporte e o `Q` inicial é
@@ -88,16 +116,16 @@ class RainbowConfig(DQNConfig):
     v_max: float = 24.0
     n_atoms: int = 121
 
-    #: **Contado em atualizações de gradiente**, e o número real é metade do que o
-    #: repositório gravava — ver §2.18. O orçamento de 5 M passos compra ~18.500
-    #: atualizações reais, não ~39.000. Com `target_update=1.000` isso dava **18,6
-    #: sincronizações do alvo no treino inteiro**: a informação de valor se propagava
-    #: dezenove vezes em 5 M passos. O DQN da Nature faz ~1.250 e o Rainbow do paper
-    #: ~6.250.
+    #: 250, que é o valor do DQN base — e também está **abaixo** da referência, que
+    #: sincroniza a cada 2.000 atualizações (`Kaixhin`: 8.000 passos com uma atualização a
+    #: cada 4). Pela unidade certa — quantas atualizações a rede alvo fica parada — nós
+    #: sincronizamos 8× mais que o canônico.
     #:
-    #: 250 é o valor do DQN base deste repositório, que decola aos 750 k, e dá 74
-    #: sincronizações. A razão de 4× sobre o DQN que o comentário antigo defendia foi
-    #: construída sobre a contagem dobrada; corrigida a contagem, ela não se sustenta.
+    #: Esta linha oscilou entre 1.000, 250 e 1.000 ao longo da investigação. Ficou em 250
+    #: pelo mesmo motivo do `learn_every`: é o valor da execução que funcionou. A tensão é
+    #: real e está declarada — com poucas atualizações no total, ou o alvo é fiel e propaga
+    #: pouco, ou propaga e é infiel — e o `n_steps=20` aliviou justamente essa tensão, já
+    #: que `γ**20 = 0,905` reduz o peso do bootstrap. Ver §2.20 e §2.23.
     target_update: int = 250
 
 

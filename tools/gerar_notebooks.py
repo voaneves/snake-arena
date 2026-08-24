@@ -217,6 +217,26 @@ NOTEBOOKS = [
                   "canais.",
     },
     {
+        "arquivo": "10_lbc.ipynb",
+        "titulo": "LBC — controle de comportamento aprendido",
+        "modulos": ["snakeai/bandit.py", "snakeai/agents/ppo.py",
+                    "snakeai/agents/lbc.py"],
+        "agente": "LBC",
+        "config": "LBCConfig",
+        "resumo": "O único dos dez em que a exploração é **escolhida** em vez de "
+                  "agendada. Nos outros, o ε, o coeficiente de entropia e o σ da rede "
+                  "ruidosa descem numa reta decidida antes do treino começar; aqui o "
+                  "comportamento é uma mistura de Boltzmann sobre uma população de três "
+                  "políticas, e um bandit UCB escolhe a mistura olhando o retorno que "
+                  "cada uma rendeu.\n\n"
+                  "Como o comportamento não é nenhuma das políticas treinadas, os dados "
+                  "são off-policy por construção e o update usa **V-trace**. Compare com "
+                  "`01_ppo` na mesma semente: mesma rede, mesmo ambiente, mesmo γ na "
+                  "política avaliada — a diferença entre as curvas é o preço (ou o "
+                  "prêmio) de trocar exploração agendada por exploração selecionada. "
+                  "Ver `docs/LBC.md` para os três desvios declarados em relação ao paper.",
+    },
+    {
         "arquivo": "09_dreamerv3.ipynb",
         "titulo": "DreamerV3 — treinar dentro de um modelo do mundo",
         "modulos": ["snakeai/memory/sequencia.py", "snakeai/nets/dreamer.py",
