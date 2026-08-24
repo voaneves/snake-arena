@@ -404,3 +404,34 @@ def test_the_target_network_syncs_often_enough():
     assert sincronizacoes >= 50, (
         f"{sincronizacoes:.0f} sincronizações em {atualizacoes:,.0f} atualizações reais — "
         "o valor propaga vezes demais poucas")
+
+
+def test_the_entry_priority_does_not_ratchet_forever():
+    """`max_prioridade` é um máximo **recente**, não histórico.
+
+    A referência usa o máximo histórico, e no Atari isso é inofensivo porque a recompensa é
+    cortada em ±1 e o erro de TD tem teto. Aqui a prioridade é a KL do C51 (§2.19) e não tem
+    teto: um pico isolado fixaria o piso de toda transição nova para sempre. Medido antes do
+    decaimento, `max_prioridade` subia de 4,21 para 4,90 em 250 iterações sem nunca voltar.
+    """
+    import numpy as np
+    from snakeai.memory.replay import PrioritizedReplayBuffer
+
+    buf = PrioritizedReplayBuffer(64, (2, 2, 1), n_actions=3, num_envs=1,
+                                  rng=np.random.default_rng(0))
+    for k in range(8):
+        buf.add_batch(np.zeros((1, 2, 2, 1), np.float32), np.zeros(1, np.int64),
+                      np.zeros(1, np.float32), np.zeros((1, 2, 2, 1), np.float32),
+                      np.zeros(1, np.float32), np.ones((1, 3), bool))
+
+    buf.update_priorities([0], [50.0])              # um pico isolado
+    assert buf.max_prioridade >= 50.0
+    for _ in range(400):                            # regime normal depois dele
+        buf.update_priorities([1], [0.05])
+    assert buf.max_prioridade < 1.0, (
+        f"o pico de 50 ainda sustenta o máximo em {buf.max_prioridade:.2f} — "
+        "toda transição nova entraria fixada nele")
+    # e um regime de erro alto de verdade continua sustentando
+    for _ in range(50):
+        buf.update_priorities([2], [8.0])
+    assert buf.max_prioridade >= 8.0

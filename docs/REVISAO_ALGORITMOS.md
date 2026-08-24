@@ -560,6 +560,50 @@ Q escalar chega com ~350, uma razão de 5,7× que casa com os 6,1× observados e
 ambiente. Se for isso, o botão é `learn_every`, e aí é uma mudança no eixo declarado de
 orçamento — não uma correção de bug. Ver §2.16.
 
+### 2.21 ✔ `lr = 1e-4` era a taxa de um orçamento quarenta vezes maior — **corrigido**
+`agents/rainbow.py:lr`
+
+Mesmo formato de erro do §2.20: o comentário defendia `1e-4` com "o paper usa LR menor que
+o DQN base". Usa — 6,25e-5 — para **200 M de frames**. O orçamento deste repositório é 5 M,
+quarenta vezes menor, e a taxa foi herdada sem reescalar.
+
+Medido, com todo o resto igual:
+
+| `lr` | decolagem | score final | estado no fim do orçamento |
+|---|---:|---:|---|
+| 1e-4 | ~4,6 M | 0,69 | mal começou a subir |
+| **3e-4** | **~1,85 M** | **26,99** | inclinação máxima, fome caindo de 49% para 28% |
+
+`3e-4` é o valor do DQN base, que decola aos 750 k neste mesmo ambiente. A execução que
+produziu os 26,99 ainda rodou com a PER anticorrelacionada (§2.19) e metade das
+sincronizações do alvo (§2.20).
+
+### 2.22 ✔ O máximo de prioridade catracava para sempre — **corrigido**
+`memory/replay.py:max_prioridade`
+
+Consequência direta do §2.19, e a revisão tinha avisado para corrigir os dois juntos — não
+corrigi, e o efeito apareceu na primeira medição depois.
+
+`max_prioridade` é a prioridade de entrada de uma transição nova, e era o máximo
+**histórico**: só subia. Isso é o que a implementação de referência faz, e é inofensivo no
+Atari, onde a recompensa é cortada em ±1 e o erro de TD tem teto. Aqui a prioridade passou a
+ser a KL do C51, que não tem teto. Medido em 250 iterações logo depois de §2.19:
+
+| iteração | `max_prioridade` | mediana da árvore |
+|---:|---:|---:|
+| 50 | 4,21 | 0,112 |
+| 250 | **4,90** | 0,086 |
+
+Subindo de um lado, caindo do outro, sem nada que faça o máximo voltar. Um pico isolado
+fixaria o piso de toda transição nova para sempre. Com o decaimento (0,99 por atualização,
+meia-vida de ~70), o máximo estabiliza em ~3,76 em vez de catracar, e um regime de erro
+genuinamente alto continua sustentando o valor.
+
+*Correção de leitura:* a razão entre a prioridade de entrada e a mediana da árvore fica em
+~26× mesmo depois do decaimento, e isso **não** é patologia — é o comportamento projetado da
+PER, em que a transição nova entra no topo e cai para o valor real assim que é amostrada uma
+vez. O defeito era só a catraca.
+
 ### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
 
 Depois de §2.8, §2.8b, §2.13 e §2.14, o Rainbow ainda não decola. O que está medido:

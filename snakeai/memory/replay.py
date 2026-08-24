@@ -202,7 +202,24 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.beta0 = float(beta0)
         self.eps = float(eps)
         self.arvore = SumTree(self.capacity)
+        #: Prioridade de entrada de uma transição nova. É um máximo **recente**, não o
+        #: máximo histórico.
+        #:
+        #: Era histórico e nunca decaía, o que é o que a implementação de referência faz —
+        #: e é inofensivo no Atari, onde a recompensa é cortada em ±1 e o erro de TD é
+        #: limitado. Aqui a prioridade é a KL do C51 (§2.19) e não tem teto: o máximo
+        #: cataca para cima e nunca volta. Medido logo depois de §2.19, com a prioridade
+        #: finalmente tendo faixa: `max_prioridade` subiu de 4,21 para 4,90 em 250
+        #: iterações enquanto a mediana da árvore caía de 0,112 para 0,086, e a razão entre
+        #: a prioridade de uma transição nova e a mediana foi de 21× para **30×**,
+        #: crescendo. O buffer de 200 mil transições viraria uma janela de recentes.
+        #:
+        #: O decaimento resolve sem inventar heurística nova: o máximo relaxa entre
+        #: atualizações, então um pico isolado deixa de fixar o piso para sempre, e um
+        #: regime de erro genuinamente alto continua sustentando o máximo. Ver §2.22.
         self.max_prioridade = 1.0
+        #: Meia-vida de ~70 atualizações da PER.
+        self.decaimento_max = 0.99
 
     def _guardar(self, *a, **kw):
         i = super()._guardar(*a, **kw)
@@ -233,4 +250,5 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         p = np.abs(np.asarray(prioridades, dtype=np.float64)) + self.eps
         for i, pi in zip(np.asarray(idx).ravel(), p.ravel()):
             self.arvore[int(i)] = pi ** self.alpha
-        self.max_prioridade = max(self.max_prioridade, float(p.max()))
+        self.max_prioridade = max(float(p.max()),
+                                  self.max_prioridade * self.decaimento_max)

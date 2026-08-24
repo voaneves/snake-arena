@@ -51,7 +51,19 @@ class RainbowConfig(DQNConfig):
     eps_start: float = 0.0
     eps_end: float = 0.0
 
-    lr: float = 1e-4          # o paper usa LR menor que o DQN base
+    #: **3e-4, o mesmo do DQN base deste repositório** — não os 6,25e-5 do paper.
+    #:
+    #: O padrão era 1e-4, justificado por "o paper usa LR menor que o DQN base". Usa mesmo,
+    #: mas para **200 M de frames**; o orçamento aqui é 5 M, quarenta vezes menor. Herdar a
+    #: taxa de um regime quarenta vezes mais longo é o mesmo erro de escala que estava no
+    #: `target_update` (§2.20), com o mesmo formato de argumento.
+    #:
+    #: Medido: com `lr=1e-4` a decolagem acontece por volta de **4,6 M** passos e o
+    #: orçamento acaba antes de a curva virar; com `3e-4` ela acontece aos **1,85 M**, e a
+    #: execução termina em 26,99 ainda na inclinação máxima (fome caindo de 49% para 28%,
+    #: passos por episódio subindo de 380 para 466 nos últimos 450 k). Ver
+    #: `docs/REVISAO_ALGORITMOS.md` §2.21.
+    lr: float = 3e-4
 
     #: **O suporte tem de ser simétrico, e isto não é estética.** Na inicialização os
     #: logits são ~0, então a softmax do C51 é uniforme sobre o suporte e o `Q` inicial é
