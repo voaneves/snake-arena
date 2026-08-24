@@ -491,6 +491,75 @@ inteiro gasto.
 O teste `test_the_best_checkpoint_can_actually_play` faz o caminho completo — salvar,
 recarregar, montar a política, jogar um lote — e prende os dois defeitos de uma vez.
 
+### 2.18 ✔ `meta["atualizacoes"]` gravava o dobro no DQN e no Rainbow — **corrigido**
+`agents/dqn.py:153` · `agents/base.py:132,456`
+
+O `DQN` criava `self._atualizacoes` — **o mesmo nome** do contador do `AgentBase` — para
+medir `target_update` desde a construção. Aí `DQN.iterate` incrementava (linha 391) e
+`AgentBase.train` incrementava **de novo** (linha 456) a partir do `stats` que `iterate()`
+devolve. Medido:
+
+| | passos de gradiente reais | `meta["atualizacoes"]` | razão |
+|---|---:|---:|---:|
+| DQN / Rainbow | 250 | 500 | **2,00×** |
+| PPO | 252 | 252 | 1,00× |
+
+O viés valia para **uma família só**, que é o pior caso num repositório cujo eixo declarado
+é justamente essa coluna. Consequências já corrigidas em `ORCAMENTO_DE_GRADIENTE.md`: o DQN
+sai de 38.908 para ~19.450 atualizações, os pontos por mil atualizações vão de 1,2 para 2,5,
+e a afirmação de que PPO × DQN era "o único par com orçamento casado" **foi retirada** — o
+PPO tem o dobro. O par casado de verdade é ACKTR × A2C esparso, ~610 contra 611.
+
+A sincronia do alvo nunca esteve errada: ela usa `_desde_alvo`, que é outro contador. O
+atributo do DQN passou a se chamar `_passos_gradiente`.
+
+### 2.19 ✔ A prioridade da PER era a entropia cruzada — e ficava **anticorrelacionada** com o erro — **corrigido**
+`agents/dqn.py:_passo_treino,_aprender`
+
+No ramo C51 a perda é a entropia cruzada, e `CE = KL(alvo‖pred) + H(alvo)`. O `H(alvo)` não
+mede erro: mede quão difusa a rede alvo está no estado sucessor, e com 121 átomos fica preso
+perto de `ln 121 = 4,796`. Medido num lote real de 512:
+
+| | média | desvio | correlação com a KL |
+|---|---:|---:|---:|
+| CE (usada) | 4,7922 | 0,0178 | **−0,9066** |
+| KL (correta) | 0,0363 | 0,2382 | +1,0 |
+
+Não era só ruído. A amostra de **maior** erro do lote (KL = 3,88) recebia prioridade 2,4903
+e a de **menor** erro (KL = 0,01) recebia 2,5581: a mais surpreendente era amostrada
+*menos*. A massa dos 10% maiores dava **0,100** — exatamente uniforme. Um dos seis
+componentes do Rainbow não fazia nada, e o pouco que fazia era ao contrário.
+
+Depois da correção (`prioridade = CE − H(alvo)`, com o `H` calculado fora do grafo): a
+correlação com a KL vira **+1,0000**, a massa dos 10% maiores vai a **0,434**, e a razão
+entre a maior e a menor prioridade do lote sai de 1,02 para **34,1**.
+
+Junto veio o ramo escalar: a prioridade era a perda de Huber, e como `(δ²/2)**α ∝ |δ|**2α`
+o expoente efetivo da PER dobrava na região quadrática — `per_alpha=0,6` virava 1,2, e a
+ablação "quanto a PER vale" media um `α` que não era o do `config`. Agora é `|δ|`.
+
+*Nota de honestidade:* a fórmula anterior bate com o Dopamine, que também usa a CE como
+prioridade. O que quebra aqui é a combinação com 121 átomos e alvos que continuam quase
+uniformes por falta de atualizações (§2.18, §2.20). A degradação está medida, não inferida.
+
+### 2.20 ✔ O alvo sincronizava 18,6 vezes no treino inteiro — **corrigido**
+`agents/rainbow.py:target_update`
+
+Com a contagem certa, 5 M passos compram ~18.500 atualizações (`num_envs × learn_every =
+256` passos por atualização). `target_update = 1.000` dava **18,6 sincronizações** — a
+informação de valor se propagava dezenove vezes em cinco milhões de passos. O DQN da Nature
+faz ~1.250; o Rainbow do paper, ~6.250; o DQN base deste repositório, 74.
+
+O comentário que defendia os 1.000 argumentava com "~5% do orçamento" — conta feita sobre a
+contagem dobrada. Corrigida a contagem, o argumento cai. `target_update = 250`, o mesmo do
+DQN base, dá 74 sincronizações.
+
+Continua aberto se **18.500 atualizações bastam** para uma cabeça categórica de 3×121
+saídas: uma das revisões mediu que o C51 precisa de ~2.000 atualizações para chegar onde o
+Q escalar chega com ~350, uma razão de 5,7× que casa com os 6,1× observados em passos de
+ambiente. Se for isso, o botão é `learn_every`, e aí é uma mudança no eixo declarado de
+orçamento — não uma correção de bug. Ver §2.16.
+
 ### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
 
 Depois de §2.8, §2.8b, §2.13 e §2.14, o Rainbow ainda não decola. O que está medido:
@@ -505,8 +574,15 @@ Depois de §2.8, §2.8b, §2.13 e §2.14, o Rainbow ainda não decola. O que est
 * o `sigma` **não** colapsa (0,02446 → 0,02417 em 120 mil passos), então a exploração não
   morre — ela encolhe em termos relativos, porque os gaps de `Q` crescem em volta dela.
 
-E o incentivo empurra na mesma direção: a fome é truncamento **sem penalidade**, então
-circular para sempre vale ~0 enquanto ir atrás da comida arrisca −1. O DQN escapa disso
+E o incentivo empurra na mesma direção — mas **não** pelo motivo que esta seção afirmava
+antes. A versão de 22/08 dizia que "a fome é truncamento sem penalidade". É falso:
+`vec_snake.py:298-302` cobra **−0,5** por inanição, e ainda dá **+2 extra** por vitória —
+dois termos que a docstring do módulo (linha 23: "+1 comer, −1 morrer, 0 passo") não
+menciona. O que é estranho é a combinação: a fome é penalizada **e** bootstrapada ao mesmo
+tempo (`done=0`), ou seja o alvo diz "o episódio continua" e a recompensa diz "você
+fracassou", em mais de 90% dos fins de episódio. Não sei dizer se é intencional; sei que a
+docstring não descreve o código e que o argumento anterior foi construído sobre a versão
+errada. O DQN escapa disso
 porque passa ~1 M de passos com ε alto enchendo o buffer de comida acidental; o Rainbow, com
 ε = 0, enche o buffer de trajetórias circulando com recompensa zero — e a PER piora, porque
 prioriza erro de TD alto, que no começo são as colisões, não as maçãs.

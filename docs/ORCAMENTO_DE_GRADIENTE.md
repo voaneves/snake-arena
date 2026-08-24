@@ -106,7 +106,17 @@ fator de **64** entre os algoritmos do repositório:
 | A2C denso | **1.954** | medido |
 | PPO esparso | ~2.424 | analítico |
 | PPO denso | **38.273** | medido |
-| DQN | **38.908** | medido |
+| DQN | **~19.450** | medido, **corrigido** — ver a ressalva abaixo |
+
+> **Correção de 23/08.** O `meta["atualizacoes"]` de DQN e Rainbow vinha **dobrado**: o
+> `DQN` mantinha um contador com o mesmo nome do contador do `AgentBase`, e os dois eram
+> incrementados na mesma iteração. Medido: 250 passos de gradiente reais, 500 gravados —
+> exatamente 2,00×. O PPO não tem contador próprio e grava 1,00×, então o viés valia para
+> **uma família só**, que é o pior caso possível num documento cujo eixo é justamente esta
+> coluna. Corrigido em `docs/REVISAO_ALGORITMOS.md` §2.18. **Execuções de DQN e Rainbow
+> gravadas antes de 23/08 carregam o número dobrado: divida por dois.** Os `history.json`
+> não foram reescritos — o registro é o que o código daquele dia gravou, e a regra de
+> leitura fica aqui.
 
 Depois deste resultado, comparar algoritmos sem declarar esse eixo mede orçamento de
 otimização, não algoritmo.
@@ -236,7 +246,7 @@ denominador. Pontos de score por mil atualizações:
 | A2C denso | 1.954 | 70,93 | 36,3 | 0,31 |
 | PPO esparso | ~2.424 | 62,19 | 25,7 | 0,41 |
 | PPO denso | 38.273 | 80,90 | 2,1 | 0,83 |
-| DQN | 38.908 | 47,67 *(n=2)* | 1,2 | 1,85 |
+| DQN | ~19.450 | 47,67 | **2,5** | 1,85 |
 
 O ACKTR chega a 79,52 com **1,6% do orçamento de gradiente do PPO**, empata com ele dentro
 do ruído entre sementes (80,90 contra 79,52) e gasta 0,51 h contra 0,83 h de parede. A
@@ -244,11 +254,21 @@ ressalva obrigatória é a dispersão: ±19,11 de amplitude no ACKTR contra ±3,
 tem a melhor semente do repositório (89,78) e uma das piores das duas famílias (70,67).
 Média e desvio contam histórias diferentes aqui, e as duas precisam aparecer.
 
-**O par PPO × DQN é o único do repositório com o orçamento de gradiente casado.** 38.273
-contra 38.908 atualizações — uma diferença de 1,7%, dentro do ruído de contagem. É a única
-comparação entre algoritmos que este benchmark oferece hoje **sem** o confundidor de
-orçamento, e ela dá 80,90 contra 47,67. Vale marcar assim no artigo: as outras comparações
-medem algoritmo *mais* orçamento; esta mede algoritmo.
+**O par com o orçamento casado existe, mas não é o que este documento afirmava.** A versão
+de 22/08 dizia que PPO e DQN eram "o único par do repositório com o orçamento de gradiente
+casado — 38.273 contra 38.908, uma diferença de 1,7%". Estava errado: o número do DQN vinha
+dobrado, o real é ~19.450, e o PPO tem praticamente **o dobro** das atualizações. A
+afirmação foi retirada.
+
+O par casado de verdade é **ACKTR × A2C esparso**: ~610 contra 611 atualizações, medidas
+por caminhos diferentes e coincidindo em 0,2%. E ele dá **79,52 contra 52,22** — 27 pontos
+de diferença com o mesmo orçamento de gradiente, o mesmo tronco, o mesmo protocolo. É esta
+a comparação que o benchmark oferece sem o confundidor, e ela mede o que o gradiente natural
+faz com uma atualização contra o que o gradiente comum faz com a mesma atualização.
+
+A leitura sobre PPO × DQN continua de pé, mas com o rótulo certo: o PPO tem **duas vezes** o
+orçamento de gradiente do DQN além de ser outro algoritmo, então aqueles 80,90 contra 47,67
+medem algoritmo *mais* orçamento, como quase tudo o mais nesta tabela.
 
 ## Um mecanismo lateral: eficiência de passos e morte por fome
 

@@ -170,7 +170,11 @@ def test_the_target_network_lag_is_counted_in_gradient_updates():
     cada `learn_every × num_envs` = 256 passos, os 2.000 nominais viravam ~8 atualizações
     de defasagem — contra as ~2.000 das implementações de referência. Com o alvo colado na
     rede online, o Double DQN perde o efeito e o alvo deixa de ser ponto fixo.
-    Ver `docs/REVISAO_ALGORITMOS.md` §2.4."""
+    Ver `docs/REVISAO_ALGORITMOS.md` §2.4.
+
+    O contador se chamava `_atualizacoes` e colidia com o do `AgentBase`, o que dobrava o
+    `meta["atualizacoes"]` gravado. Renomeado para `_passos_gradiente` em §2.18 — a
+    sincronia do alvo sempre usou `_desde_alvo` e nunca esteve errada."""
     from snakeai.agents.dqn import DQN, DQNConfig
 
     ag = DQN(DQNConfig(net="resnet_tiny", num_envs=8, learn_every=1, batch_size=8,
@@ -179,7 +183,7 @@ def test_the_target_network_lag_is_counted_in_gradient_updates():
     sincronias, original = [], ag.target.set_weights
 
     def espiao(w):
-        sincronias.append(ag._atualizacoes)
+        sincronias.append(ag._passos_gradiente)   # renomeado em §2.18
         return original(w)
 
     ag.target.set_weights = espiao

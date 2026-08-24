@@ -303,3 +303,104 @@ def test_the_best_checkpoint_can_actually_play(tmp_path):
     logits = np.asarray(pol(obs, mask), dtype=np.float32)
     assert logits.shape == (7, 3), f"a política devolveu {logits.shape}, não (lote, ações)"
     assert np.isfinite(logits).all()
+
+
+# ------------------------------------------- o eixo de atualizações (§2.18-2.20)
+def test_the_update_counter_is_not_double_counted(tmp_path):
+    """`meta["atualizacoes"]` tem de ser o número real de passos de gradiente.
+
+    O `DQN` mantinha um contador próprio chamado `_atualizacoes` — o mesmo nome do
+    contador do `AgentBase` —, e como `AgentBase.train` também soma o `atualizacoes` que
+    `iterate()` devolve, o atributo era incrementado **duas vezes por iteração**. Toda
+    execução de DQN e Rainbow gravou exatamente **2,00×** o número real; o PPO, que não tem
+    contador próprio, gravou 1,00×. O metadado é o eixo do `ORCAMENTO_DE_GRADIENTE.md`, e
+    o viés valia para uma família só.
+    """
+    from snakeai.agents import DQN, DQNConfig
+
+    ag = DQN(DQNConfig(net="resnet_tiny", num_envs=8, batch_size=16, memory_size=2000,
+                       warmup_steps=0, learn_every=2, total_steps=2000,
+                       eval_every_steps=10 ** 9, eval_episodes=20, eval_envs=10,
+                       log_every_steps=10 ** 9, salvar_gif=False, salvar_grafico=False,
+                       runs_dir=str(tmp_path), ckpt_dir=str(tmp_path)))
+    reais = []
+    original = ag._passo_treino
+    ag._passo_treino = lambda *a, **kw: (reais.append(1), original(*a, **kw))[1]
+    registro = ag.train(verbose=False)
+    gravado = registro.record.meta["atualizacoes"]
+    assert gravado == len(reais), f"gravado {gravado} para {len(reais)} passos reais"
+
+
+def test_per_priority_is_the_kl_not_the_cross_entropy():
+    """A prioridade da PER é a surpresa, e no C51 a surpresa é a KL — não a CE.
+
+    `CE = KL(alvo‖pred) + H(alvo)`, e com 121 átomos `H` fica preso perto de `ln 121`.
+    Medido antes da correção: `corr(CE, KL) = −0,9066`, massa dos 10% maiores em 0,100
+    (uniforme), e a amostra de **maior** erro do lote recebendo prioridade **menor** que a
+    de menor erro. A PER não estava só inerte — estava invertida.
+    """
+    import numpy as np
+
+    ag = Rainbow(rb())
+    n = 64
+    alvo = np.zeros((n, ag.cfg.n_atoms), np.float64)
+    rng = np.random.default_rng(0)
+    # metade dos alvos concentrados (H baixo), metade difusos (H alto)
+    for i in range(n):
+        if i % 2:
+            alvo[i, rng.integers(ag.cfg.n_atoms)] = 1.0
+        else:
+            alvo[i] = 1.0 / ag.cfg.n_atoms
+    H = -(alvo * np.log(np.clip(alvo, 1e-12, None))).sum(-1)
+    kl_verdadeiro = np.linspace(0.0, 3.0, n)
+    ce = kl_verdadeiro + H                       # é o que o grafo devolvia
+
+    prio = ag._prioridades(ce, alvo)
+    np.testing.assert_allclose(prio, kl_verdadeiro, atol=1e-8)
+    assert np.corrcoef(prio, kl_verdadeiro)[0, 1] > 0.999
+    assert (prio >= 0).all(), "prioridade negativa quebra a sum-tree"
+    # e a CE crua estaria anticorrelacionada, que é o defeito que isto conserta
+    assert np.corrcoef(ce, kl_verdadeiro)[0, 1] < np.corrcoef(prio, kl_verdadeiro)[0, 1]
+
+
+def test_per_priority_in_the_scalar_branch_is_the_absolute_error():
+    """Fora do C51 a prioridade é `|δ|`, não a perda de Huber.
+
+    `(δ²/2)**α ∝ |δ|**2α`, então usar a perda dobrava o expoente efetivo da PER na região
+    quadrática — `per_alpha=0,6` virava 1,2 — e a ablação media um `α` que não era o do
+    `config`. Não afeta o Rainbow, afeta toda variante `per=True, n_atoms=0`.
+    """
+    import numpy as np
+    import tensorflow as tf
+    from snakeai.agents import DQN, DQNConfig
+
+    ag = DQN(DQNConfig(net="resnet_tiny", num_envs=4, batch_size=8, memory_size=500,
+                       n_atoms=0, per=True, dueling=False, noisy=False,
+                       warmup_steps=0, total_steps=1000))
+    n = 8
+    obs = np.zeros((n, 10, 10, 5), np.float32)
+    act = np.zeros(n, np.int32)
+    q = np.asarray(ag._q_valores(ag.model, tf.convert_to_tensor(obs)))[:, 0]
+    alvo = (q + np.linspace(-2.0, 2.0, n)).astype(np.float32)
+    _, surpresa = ag._passo_treino(
+        tf.convert_to_tensor(obs), tf.convert_to_tensor(act),
+        tf.convert_to_tensor(alvo), tf.convert_to_tensor(np.ones(n, np.float32)), False)
+    esperado = np.abs(alvo - q)
+    np.testing.assert_allclose(np.asarray(surpresa), esperado, atol=1e-4)
+
+
+def test_the_target_network_syncs_often_enough():
+    """`target_update` contado no orçamento real, não no dobrado.
+
+    5 M passos compram ~18.500 atualizações reais (`num_envs × learn_every = 256` passos
+    por atualização). Com `target_update=1.000` isso dava 18,6 sincronizações no treino
+    inteiro — o DQN da Nature faz ~1.250. O piso aqui é o do DQN base do repositório, que
+    decola aos 750 k.
+    """
+    c = RainbowConfig()
+    por_atualizacao = c.num_envs * c.learn_every
+    atualizacoes = c.total_steps / por_atualizacao
+    sincronizacoes = atualizacoes / c.target_update
+    assert sincronizacoes >= 50, (
+        f"{sincronizacoes:.0f} sincronizações em {atualizacoes:,.0f} atualizações reais — "
+        "o valor propaga vezes demais poucas")

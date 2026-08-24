@@ -150,7 +150,16 @@ class DQN(AgentBase):
         #: Atualizações de gradiente acumuladas — a moeda em que `target_update` é medido.
         #: O contador do `AgentBase` só existe durante o `train`; este vale desde a
         #: construção, para que `iterate()` sozinho também sincronize certo.
-        self._atualizacoes = 0
+        #:
+        #: **O nome não pode ser `_atualizacoes`.** Era, e como o `AgentBase.train` também
+        #: faz `self._atualizacoes += stats["atualizacoes"]` com o valor que `iterate()`
+        #: devolve, o mesmo atributo era incrementado **duas vezes por iteração**. O
+        #: `meta["atualizacoes"]` de toda execução de DQN e Rainbow saiu exatamente
+        #: **2,00×** o número real de passos de gradiente — medido: 250 chamadas reais,
+        #: 500 gravadas. O PPO não tem contador próprio e grava 1,00×, então a comparação
+        #: entre famílias no `ORCAMENTO_DE_GRADIENTE.md` estava enviesada por um fator de
+        #: dois **numa família só**. Ver `docs/REVISAO_ALGORITMOS.md` §2.18.
+        self._passos_gradiente = 0
 
     @staticmethod
     def _nome_variante(cfg):
@@ -326,6 +335,7 @@ class DQN(AgentBase):
                 logits = tf.gather(saida, act, batch_dims=1)      # (n, n_atoms)
                 logp = tf.nn.log_softmax(logits, axis=-1)
                 por_amostra = -tf.reduce_sum(alvo * logp, axis=-1)
+                surpresa = por_amostra          # o H(alvo) sai fora do grafo
             else:
                 q = tf.gather(saida, act, batch_dims=1)
                 erro = alvo - q
@@ -334,10 +344,12 @@ class DQN(AgentBase):
                 por_amostra = tf.where(tf.abs(erro) <= 1.0,
                                        0.5 * tf.square(erro),
                                        tf.abs(erro) - 0.5)
+                # a PER quer |δ|, não a perda: ver `_prioridades`
+                surpresa = tf.abs(erro)
             perda = tf.reduce_mean(pesos * por_amostra)
         grads = tape.gradient(perda, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
-        return perda, por_amostra
+        return perda, surpresa
 
     def _aprender(self):
         cfg = self.cfg
@@ -355,8 +367,40 @@ class DQN(AgentBase):
             bool(cfg.n_atoms),
         )
         if cfg.per:
-            self.memoria.update_priorities(idx, np.asarray(por_amostra))
+            self.memoria.update_priorities(idx, self._prioridades(por_amostra, alvo))
         return float(perda)
+
+    def _prioridades(self, por_amostra, alvo):
+        """A surpresa de cada transição — que **não** é a perda que o gradiente usa.
+
+        No ramo C51 a perda é a entropia cruzada, e `CE = KL(alvo‖pred) + H(alvo)`. O
+        `H(alvo)` não mede erro nenhum: mede quão difusa a rede alvo está no estado
+        sucessor, e com 121 átomos ele fica preso perto de `ln 121 = 4,796`. Medido num
+        lote real de 512:
+
+            CE (usada antes)  média 4,7922  desvio 0,0178
+            KL (a correta)    média 0,0363  desvio 0,2382
+            correlação CE × KL = **−0,9066**
+
+        Não era só ruído: era **anticorrelação**. A amostra de maior erro do lote recebia
+        prioridade 2,4903 e a de menor erro 2,5581 — a mais surpreendente era amostrada
+        *menos*. A massa dos 10% maiores dava 0,100, exatamente uniforme; com KL dá 0,212.
+        Um dos seis componentes do Rainbow não fazia nada, e o pouco que fazia era ao
+        contrário.
+
+        No ramo escalar a perda é o Huber. Como `(δ²/2)**α ∝ |δ|**2α`, usá-la como
+        prioridade dobra o expoente efetivo da PER na região quadrática — `α=0,6` vira
+        1,2, e a ablação "quanto a PER vale" mede um `α` que não é o do `config`. A
+        prioridade certa é `|δ|`, e o `_passo_treino` já devolve o erro absoluto para isso.
+
+        Ver `docs/REVISAO_ALGORITMOS.md` §2.19.
+        """
+        p = np.asarray(por_amostra, dtype=np.float64)
+        if self.cfg.n_atoms:
+            a = np.asarray(alvo, dtype=np.float64)
+            entropia = -(a * np.log(np.clip(a, 1e-12, None))).sum(-1)
+            p = p - entropia                      # CE − H = KL
+        return np.maximum(p, 0.0)
 
     # ------------------------------------------------------------------ passo
     def iterate(self):
@@ -388,7 +432,7 @@ class DQN(AgentBase):
             perdas.append(self._aprender())
 
         # em atualizações de gradiente, não em passos de ambiente — ver `target_update`
-        self._atualizacoes += len(perdas)
+        self._passos_gradiente += len(perdas)
         self._desde_alvo += len(perdas)
         if self._desde_alvo >= cfg.target_update:
             self.target.set_weights(self.model.get_weights())
