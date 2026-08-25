@@ -13,6 +13,8 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
+| §2.25 janela de n passos do Rainbow | **medido e corrigido** — o padrão passou a 20 |
+| §2.23 razão de reaproveitamento e rede alvo | levantado, **não** tocado — é a próxima ablação |
 | §3.6 GIF gravado com o estado interno congelado | **corrigido** |
 | todo o resto | levantado, não tocado |
 
@@ -604,6 +606,87 @@ genuinamente alto continua sustentando o valor.
 ~26× mesmo depois do decaimento, e isso **não** é patologia — é o comportamento projetado da
 PER, em que a transição nova entra no topo e cai para o valor real assim que é amostrada uma
 vez. O defeito era só a catraca.
+
+### 2.23 ? A razão de reaproveitamento da memória, e a tensão com a rede alvo
+`rainbow.py` — `learn_every = 4` e `target_update = 250`. Os dois estão **declarados como o
+valor da execução que funcionou**, não como o valor certo, e é isso que os torna um item
+aberto em vez de uma decisão fechada.
+
+**A razão de reaproveitamento.** O Rainbow do `Kaixhin` treina com lote 32 uma vez a cada 4
+passos: **8 amostras sorteadas por passo de ambiente**, cada transição revisitada ~8 vezes.
+Com `learn_every=4` e lote 512 aqui são `512/256 = 2,0` — um quarto disso. `learn_every=1`
+daria exatamente 8,0, e custa 4× o trabalho de gradiente.
+
+**A rede alvo.** Pela unidade que importa — quantas atualizações a rede alvo fica parada —
+`target_update=250` sincroniza **8× mais** que os 2.000 da referência. A tensão é real e não
+tem valor que a resolva: com poucas atualizações no total, ou o alvo é fiel e propaga pouco,
+ou propaga e é infiel.
+
+Nenhum dos dois foi mexido porque a execução que decolou aos 700 k rodou com esses valores, e
+trocar duas coisas junto com o `n_steps` mediria a soma. `learn_every=1` é a hipótese mais
+forte para a próxima ablação do Rainbow — e ela **substitui** a §2.16 ("a exploração neste
+ambiente") como a pergunta em aberto, porque a §2.25 mostrou que o que parecia falta de
+exploração era falta de alcance do sinal.
+
+### 2.25 ✔ A janela de n passos do paper deixava o Rainbow no chão — **medido e corrigido**
+`rainbow.py` — `n_steps = 3`, o canônico de Hessel et al., era o padrão. Ele produziu uma
+execução de 5 M passos parada em **0,57**, abaixo do piso aleatório de 1,21. Com
+`n_steps = 20` a mesma configuração faz **65,43**.
+
+| `n_steps` | score final | fim por fome | fim por colisão | decolagem |
+|---:|---:|---:|---:|---:|
+| 3 | **0,57** | **100,0%** | 0,0% | ~1,85 M (e no braço isolado, nunca) |
+| 20 | **65,43** | 12,2% | 87,8% | **~700 k** |
+
+**O diagnóstico não veio do score, veio da coluna do meio.** As duas curvas são igualmente
+planas nos primeiros passos, e "não aprendeu" seria a leitura natural para as duas. É falsa
+para a de cima: com 100% de fome e **zero** colisões, o agente não falhou em aprender a
+sobreviver — ele aprendeu a andar em círculo, que num tabuleiro com máscara de ação é o ponto
+fixo mais barato que existe. É o cenário que a nota do `snakeai/eval.py` sobre 100% de fome
+descreve, aparecendo pela primeira vez numa execução de orçamento completo.
+
+Curvas de avaliação, em milhões de passos:
+
+```
+n=20   0,8 · 0,6 · 0,9 · 5,2 · 26,6 · 42,0 · 39,6 · 37,2 · 64,1 · 61,3 · 65,4
+n=3    0,8 · 0,5 · 0,6 · 0,6 · 0,6  · 0,6  · 0,6  · 0,6  · 0,0  · 0,6  · 0,6
+```
+
+**Mecanismo.** O agente gasta ~12 passos por maçã. Com uma janela de 3, a decisão que o levou
+até a comida sai do retorno antes de a recompensa entrar, e a atribuição de crédito passa a
+depender **inteiramente do bootstrap** — que depende das sincronias do alvo, dezenas num
+treino inteiro. Com 20 a maçã entra na mesma janela da decisão, e há um segundo efeito que
+alivia a §2.23: `γ**n` cai de 0,985 para 0,905, o que **reduz o peso do bootstrap** — que era
+exatamente a peça frágil.
+
+**Não é um desvio inventado.** 20 é o `multi-step` do **Data-Efficient Rainbow** (van Hasselt
+et al., 2019, [arXiv:1906.05243](https://arxiv.org/abs/1906.05243)), a configuração do
+Rainbow para o regime de poucos dados. O contrato daqui dá 5 M passos contra os 200 M do
+Rainbow canônico — é o regime de poucos dados, e o valor certo é o de lá.
+
+**O padrão que isto fecha.** É o **terceiro** hiperparâmetro deste arquivo herdado de um
+regime quarenta vezes mais longo: o `lr` (§2.21), o `target_update` (§2.20) e agora o
+`n_steps`. Nos três a forma do argumento é a mesma. A diferença é que este tem uma referência
+que já resolveu o problema no mesmo regime.
+
+**O que a medição não estabelece.** Uma semente de cada lado, e as duas execuções **não têm a
+mesma assinatura de pacote** — `ruido_por_ambiente` entrou entre elas, desligado
+(`PROCEDENCIA.md`, caso 4). O tamanho do efeito não está estabelecido; a diferença
+qualitativa entre 100% de fome e um agente que joga, sim.
+
+**Efeito colateral que vale saber.** Com uma janela maior, a memória só recebe a primeira
+transição depois que a janela fecha: 20 passos por ambiente. No orçamento real isso some
+dentro dos 20.000 de `warmup_steps`; num teste de fumaça é a diferença entre `loss = None` e
+um treino de verdade — e o `None` ali não é bug, é "ainda não havia o que aprender".
+
+Correções que acompanharam:
+
+* o padrão passou a ser `n_steps = 20`, com a medição no docstring do campo;
+* `Rainbow._variante` passou a **marcar por construção** qualquer desvio da composição
+  canônica. Antes, a execução de `n_steps=3` só se distinguia se quem a rodou lembrasse de
+  passar o nome à mão — e esquecer faria as duas curvas virarem uma só na arena. Os nomes
+  que a marcação automática produz são os mesmos que as execuções de agosto receberam;
+* o braço de controle virou notebook: `94_rainbow_nstep3`.
 
 ### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
 

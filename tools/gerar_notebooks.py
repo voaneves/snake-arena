@@ -176,6 +176,38 @@ NOTEBOOKS = [
                   "Ver `docs/EKFAC.md`.",
     },
     {
+        "arquivo": "94_rainbow_nstep3.ipynb",
+        "titulo": "Rainbow com a janela de 3 do paper — o braço que não sai do chão",
+        "modulos": ["snakeai/memory/replay.py", "snakeai/agents/dqn.py",
+                    "snakeai/agents/rainbow.py"],
+        "agente": "Rainbow",
+        "config": "RainbowConfig",
+        "extra_cfg": "    n_steps=3,",
+        "resumo": "O braço de controle do `n_steps`, e o resultado mais violento do "
+                  "repositório: **0,57 contra 65,43**, com uma única linha de diferença.\n\n"
+                  "`n_steps=3` é o valor canônico do Rainbow (Hessel et al.) e era o padrão "
+                  "aqui. Ele produziu uma execução que passou 5 M de passos no chão — e o "
+                  "score sozinho diria \"não aprendeu\", o que é **falso**. A repartição "
+                  "das causas de fim diz o que de fato aconteceu: **100% dos episódios "
+                  "terminaram por fome e nenhum por colisão**. O agente aprendeu a "
+                  "sobreviver e não a comer; num tabuleiro com máscara de ação, andar em "
+                  "círculo é o ponto fixo mais barato que existe.\n\n"
+                  "Com `n_steps=20` a mesma configuração faz 65,43, terminando 87,8% por "
+                  "colisão — um agente que arrisca, com a decolagem saindo de ~1,85 M "
+                  "passos para ~700 k.\n\n"
+                  "O mecanismo é o alcance do sinal: o agente gasta ~12 passos por maçã, e "
+                  "com uma janela de 3 a decisão que o levou até a comida sai do retorno "
+                  "antes de a recompensa entrar — a atribuição de crédito passa a depender "
+                  "só do bootstrap, que depende das sincronias do alvo. Com 20 a maçã entra "
+                  "na mesma janela da decisão, e `γ**20 = 0,905` ainda reduz o peso do "
+                  "bootstrap. O valor vem do **Data-Efficient Rainbow** (van Hasselt et "
+                  "al., 2019), a configuração do Rainbow para o regime de poucos dados — "
+                  "que é o regime de 5 M passos deste contrato.\n\n"
+                  "Compare com `03_rainbow` na mesma semente. **Uma semente de cada lado** "
+                  "— o tamanho do efeito não está estabelecido, a diferença qualitativa "
+                  "está. Ver `docs/REVISAO_ALGORITMOS.md` §2.25.",
+    },
+    {
         "arquivo": "98_acktr_kl_nominal.ipynb",
         "titulo": "ACKTR sem calibrar a região de confiança — o que se perde",
         "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",

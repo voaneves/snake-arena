@@ -162,6 +162,7 @@ teste que prova que a implementação faz o que o paper diz — está em
 | **LBC** — controle de comportamento aprendido: mistura de Boltzmann sobre uma população, V-trace, seleção por bandit | [📎](https://arxiv.org/abs/2305.05239) | `10_lbc.ipynb` | novo | ✅ implementado, 44 testes (agente + meta-controlador) |
 | **SOAP** — opções discretas com crença para a frente, vantagem de opção propagada | [📎](https://arxiv.org/abs/2407.18913) | `11_soap.ipynb` | novo | ✅ implementado, 24 testes; com `n_opcoes=1` **é** o PPO, e o teste prova |
 | ↳ **ACKTR sem calibrar** — `kl_max` volta a ser alvo nominal | — | `98_acktr_kl_nominal.ipynb` | — | ✅ braço de controle: a mesma semente deu 83,91 e 64,53 em hardwares diferentes |
+| ↳ **Rainbow com a janela de 3** — o `n_steps` canônico do paper | — | `94_rainbow_nstep3.ipynb` | — | ✅ braço de controle: **0,57 contra 65,43**, e 100% dos episódios terminando por fome |
 | ↳ **PPO com o orçamento antigo** — ~2.400 atualizações em vez de ~38.300 | — | `96_ppo_orcamento_esparso.ipynb` | — | ✅ braço de controle da ablação de orçamento |
 | ↳ **A2C com o rollout antigo** — ~610 atualizações em vez de ~1.953 | — | `95_a2c_orcamento_esparso.ipynb` | — | ✅ a mesma ablação com **um** botão só, fora da família PPO |
 | ↳ **PPO com o sexto canal** — a observação passa a ver o relógio da fome | — | `97_ppo_canal_de_fome.ipynb` | — | ⚠️ `comparable=False`: muda a entrada da rede, não divide eixo com as curvas de 5 canais |
@@ -372,6 +373,22 @@ O **ACKTR empata com o PPO gastando 1,6% do orçamento de gradiente** — 610 at
 contra 38.273, e 0,51 h contra 0,83 h de parede. O preço é a dispersão: ±19,11 de amplitude
 contra ±3,45. Ele tem a melhor semente do repositório (89,78) e também uma das piores.
 
+**O Rainbow não estava quebrado — estava com a janela de n passos do paper.** Com
+`n_steps=3`, o canônico de Hessel et al., a execução passou 5 M de passos em **0,57**,
+abaixo do piso aleatório. O score sozinho diria "não aprendeu", e isso é **falso**: a
+repartição das causas de fim mostra **100% dos episódios terminando por fome e nenhum por
+colisão**. O agente aprendeu a sobreviver e não a comer — num tabuleiro com máscara de ação,
+andar em círculo é o ponto fixo mais barato que existe. Com `n_steps=20` a mesma
+configuração faz **65,43**, terminando 87,8% por colisão, e a decolagem sai de ~1,85 M passos
+para **~700 k**.
+
+O 20 não é invenção: é o `multi-step` do **Data-Efficient Rainbow**
+([arXiv:1906.05243](https://arxiv.org/abs/1906.05243)), a configuração do Rainbow para o
+regime de poucos dados — e 5 M passos contra os 200 M do canônico **é** o regime de poucos
+dados. É o terceiro hiperparâmetro do Rainbow herdado de um orçamento quarenta vezes maior,
+depois do `lr` e do `target_update`. O braço de controle é `94_rainbow_nstep3`; a leitura
+completa está em [`docs/REVISAO_ALGORITMOS.md`](docs/REVISAO_ALGORITMOS.md) §2.25.
+
 O par **PPO × DQN é o único com o orçamento de gradiente casado** (38.273 atualizações
 contra 38.908, 1,7% de diferença — a coluna está na tabela completa), e portanto a única
 comparação entre algoritmos aqui que **não** carrega o confundidor de orçamento. As outras medem algoritmo *mais* orçamento — e o repositório
@@ -524,6 +541,7 @@ sozinha.
 | SOAP — opções discretas | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/11_soap.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/11_soap.ipynb) |
 | ACEKTR — EK-FAC | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/12_acektr.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/12_acektr.ipynb) |
 | ACKTR — sem calibrar a região de confiança | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/98_acktr_kl_nominal.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/98_acktr_kl_nominal.ipynb) |
+| Rainbow — janela de 3 do paper | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/94_rainbow_nstep3.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/94_rainbow_nstep3.ipynb) |
 | PPO — orçamento de gradiente antigo | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/96_ppo_orcamento_esparso.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/96_ppo_orcamento_esparso.ipynb) |
 | A2C — orçamento de gradiente antigo | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/95_a2c_orcamento_esparso.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/95_a2c_orcamento_esparso.ipynb) |
 | PPO — sexto canal (fome) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/97_ppo_canal_de_fome.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/97_ppo_canal_de_fome.ipynb) |

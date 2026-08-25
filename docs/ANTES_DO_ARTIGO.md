@@ -17,8 +17,8 @@ depende da tabela final: introdução, trabalhos relacionados, o ambiente, o con
 comparabilidade, o protocolo de avaliação, a metodologia, e — inteiras — as duas ablações
 fechadas: o canal de fome e o orçamento de gradiente.
 
-O que falta é **fila de GPU**: oito algoritmos ainda sem nenhuma semente na régua atual,
-mais a terceira do DQN. Nenhum deles depende de uma escolha que ainda não foi feita.
+O que falta é **fila de GPU**: sete algoritmos ainda sem nenhuma semente na régua atual,
+mais duas sementes do Rainbow e as três do braço de controle dele. Nenhum deles depende de uma escolha que ainda não foi feita.
 
 Há **uma** pergunta nova, e ela é barata: a correção do DQN mudou duas coisas ao mesmo tempo
 e o efeito líquido foi de −9,8 pontos. Uma ablação de 1,85 h separa as duas. Ela não trava
@@ -35,6 +35,7 @@ nada, mas trava a redação daquele parágrafo.
 | Ablação do orçamento de gradiente, **réplica no A2C** | 3 + 3 | ✅ previsão pré-registrada **falhou** |
 | Ablação do canal de fome | 3 | ✅ `CANAL_DE_FOME.md` |
 | Auditoria de procedência do corpus | — | ✅ `PROCEDENCIA.md` |
+| Rainbow, janela de n passos | 1 + 1 | ⚠️ **0,57 contra 65,43** — qualitativo fechado, tamanho do efeito não |
 
 Três achados já sustentam parágrafo próprio no artigo.
 
@@ -54,9 +55,42 @@ proporcionalmente menor (razão de 3,2× entre os braços contra 16× no PPO) e 
 replicou** — no A2C o desvio não se mexe (4,11 → 4,02). As duas afirmações derrubadas ficam
 no documento, marcadas, em vez de apagadas.
 
+## O achado do Rainbow, e o que ele exige antes de virar parágrafo
+
+`n_steps=3` — o canônico do paper — deixou o Rainbow em **0,57** por 5 M passos; `n_steps=20`
+faz **65,43**. É o maior efeito de um hiperparâmetro já medido aqui, e ele vem com um
+diagnóstico que o repositório só conseguiu dar porque construiu o instrumento antes:
+**100% dos episódios terminando por fome e nenhum por colisão**. O agente não falhou em
+aprender; ele aprendeu a coisa errada, e o score sozinho não distingue as duas.
+
+Isso já sustenta um parágrafo forte — mas de **método**, não de resultado:
+
+> uma curva plana não diz se o agente não aprendeu ou se aprendeu a sobreviver sem comer, e
+> essas duas leituras pedem correções opostas. A repartição das causas de fim separa as
+> duas de graça, e foi ela que apontou o `n_steps`.
+
+E o valor não é arbitrário: 20 é o `multi-step` do **Data-Efficient Rainbow**
+(van Hasselt et al., 2019), a configuração para o regime de poucos dados — que é exatamente
+o regime de 5 M passos deste contrato. O parágrafo do artigo pode citar a referência em vez
+de justificar um ajuste.
+
+Como **resultado**, ele ainda não está pronto, e por dois motivos declarados:
+
+1. **Uma semente de cada lado.** O repositório exige três, e o próprio
+   `ORCAMENTO_DE_GRADIENTE.md` mostra por quê: uma previsão pré-registrada caiu quando a
+   réplica chegou.
+2. **As duas execuções não têm a mesma assinatura de pacote** (`PROCEDENCIA.md`, caso 4). A
+   chave que entrou entre elas está desligada, então a diferença é quase certamente inerte —
+   mas "quase certamente" não é o padrão deste documento.
+
+O custo de fechar é conhecido: 2 execuções de ~4 h para o braço de 20 e 3 de ~2,6 h para o
+de 3, todas na assinatura atual. É a ablação mais barata em relação ao tamanho do efeito que
+ainda está aberta, e ela **substitui** a §2.16 ("a exploração do Rainbow neste ambiente")
+como a próxima pergunta sobre esse algoritmo.
+
 ## O que falta, e é só execução
 
-Oito algoritmos × 3 sementes, mais a terceira semente do DQN. Nenhum depende de decisão
+Sete algoritmos × 3 sementes, mais duas sementes do Rainbow e o braço de controle dele. Nenhum depende de decisão
 pendente — os quatro sequenciais já têm o truncamento por fome corrigido, e o DQN já conta a
 rede alvo em atualizações de gradiente em vez de passos de ambiente.
 
@@ -64,7 +98,8 @@ rede alvo em atualizações de gradiente em vez de passos de ambiente.
 |---:|---|---|---|---|
 | ~~1~~ | ~~A2C~~ | `04_a2c` | ✅ **feito**, nos dois braços | 0,31 h/semente |
 | 2 | DQN | `02_dqn` | 🔄 2 de 3 sementes | 1,85 h/semente |
-| 3 | Rainbow | `03_rainbow` | pendente | desconhecido |
+| 3 | Rainbow | `03_rainbow` | 🔄 1 de 3 sementes (`n_steps=20`) | 4,0 h/semente |
+| 3b | Rainbow, braço `n_steps=3` | `94_rainbow_nstep3` | 🔄 1 de 3 sementes | 2,6 h/semente |
 | 4 | ACER | `05_acer` | pendente | desconhecido |
 | 5 | DreamerV3 | `09_dreamerv3` | pendente | desconhecido |
 | 6 | AlphaZero | `06_alphazero` | pendente | desconhecido — busca em árvore |

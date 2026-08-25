@@ -52,6 +52,25 @@ def test_rainbow_trains():
     assert stats["epsilon"] == 0.0, "a exploração do Rainbow vem das noisy nets"
 
 
+def test_a_deviation_from_the_canonical_composition_marks_the_variant():
+    """A composição canônica mora no código; a **identidade da execução** também tem de.
+
+    Sem isto, a execução de `n_steps=3` só se distinguia se quem a rodou lembrasse de
+    passar `variant=` na mão. Esquecer faria as duas dividirem `(algo, variant, seed)` e
+    virarem uma curva só na arena — com a de 0,57 arrastando a de 65,43 sem deixar rastro.
+    """
+    assert Rainbow(rb()).variant == "completo"
+    assert Rainbow(rb(n_steps=3)).variant == "completo+n3"
+    assert Rainbow(rb(per=False)).variant == "completo+sem_per"
+    assert Rainbow(rb(n_steps=3, dueling=False)).variant == "completo+n3+sem_dueling"
+
+
+def test_an_explicit_variant_still_wins():
+    """Os nomes que as execuções de agosto receberam à mão continuam valendo — o histórico
+    não se move quando a marcação automática entra."""
+    assert Rainbow(rb(), variant="completo+n3").variant == "completo+n3"
+
+
 def test_rainbow_without_exploration_is_refused():
     """`noisy=False` e `eps=0` deixa o agente sem exploração nenhuma — erro, não surpresa."""
     with pytest.raises(ValueError, match="não explora"):

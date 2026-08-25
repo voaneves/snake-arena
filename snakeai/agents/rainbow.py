@@ -134,12 +134,37 @@ class Rainbow(DQN):
 
     def __init__(self, cfg: RainbowConfig = None, variant=None):
         cfg = cfg or RainbowConfig()
-        super().__init__(cfg, variant=variant or "completo")
+        super().__init__(cfg, variant=variant or self._variante(cfg))
         if not cfg.noisy and cfg.eps_start == 0.0:
             raise ValueError(
                 "com `noisy=False` e `eps_start=0` o agente não explora de forma nenhuma. "
                 "Ligue um dos dois — ou use `DQN` diretamente para ablação."
             )
+
+    @staticmethod
+    def _variante(cfg):
+        """`completo`, mais uma marca por desvio da composição canônica.
+
+        A composição canônica mora no código — e a **identidade da execução** também tem de
+        morar. Até agora uma execução com `n_steps` diferente só se distinguia se quem a
+        rodou lembrasse de passar `variant="completo+n3"` na mão. Esquecer faria as duas
+        dividirem `(algo, variant, seed)` e virarem **uma** curva na arena: a de 0,57
+        arrastaria a de 65,43 sem deixar rastro, e a média resultante não descreveria
+        execução nenhuma.
+
+        Os nomes que saem daqui são os mesmos que as execuções de agosto receberam à mão,
+        então o histórico não se move.
+        """
+        padrao = type(cfg)
+        marcas = []
+        if cfg.n_steps != padrao.n_steps:
+            marcas.append(f"n{cfg.n_steps}")
+        for nome in ("double", "dueling", "per", "noisy"):
+            if not getattr(cfg, nome):
+                marcas.append(f"sem_{nome}")
+        if cfg.n_atoms != padrao.n_atoms:
+            marcas.append(f"c51x{cfg.n_atoms}" if cfg.n_atoms else "sem_c51")
+        return "+".join(["completo"] + marcas)
 
     @staticmethod
     def componentes(cfg):

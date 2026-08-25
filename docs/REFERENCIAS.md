@@ -41,7 +41,7 @@ Um por notebook, na ordem em que aparecem na arena.
 | 11 | SOAP | Ishida & Henriques, 2024 — *SOAP-RL: Sequential Option Advantage Propagation for Reinforcement Learning in POMDP Environments* · [arXiv:2407.18913](https://arxiv.org/abs/2407.18913) | `snakeai/agents/soap.py` |
 | 12 | ACEKTR | George, Laurent, Bouthillier, Ballas & Vincent, 2018 — *Fast Approximate Natural Gradient Descent in a Kronecker-factored Eigenbasis* · [arXiv:1806.03884](https://arxiv.org/abs/1806.03884) | `snakeai/agents/acektr.py`, classe `EKFac` em `snakeai/kfac.py` |
 
-Os notebooks `95`–`99` são **ablações deste repositório**, não algoritmos publicados, e por
+Os notebooks `94`–`99` são **ablações deste repositório**, não algoritmos publicados, e por
 isso não têm paper. Dar a eles o paper do algoritmo base sugeriria que a variação é do paper,
 e não é. Ver `docs/ORCAMENTO_DE_GRADIENTE.md` e `docs/CANAL_DE_FOME.md`.
 
@@ -74,8 +74,18 @@ V-trace ao GAE no caso on-policy, e é assim que se sabe que ele está certo.
 | `per` | Schaul, Quan, Antonoglou & Silver, 2015 — *Prioritized Experience Replay* · [arXiv:1511.05952](https://arxiv.org/abs/1511.05952) |
 | `c51` | Bellemare, Dabney & Munos, 2017 — *A Distributional Perspective on Reinforcement Learning* · [arXiv:1707.06887](https://arxiv.org/abs/1707.06887) |
 | `noisy` | Fortunato et al., 2017 — *Noisy Networks for Exploration* · [arXiv:1706.10295](https://arxiv.org/abs/1706.10295) |
+| `n_steps` | Sutton, 1988 — *Learning to predict by the methods of temporal differences*, Machine Learning 3(1). O **valor** 20 não vem daqui nem do Rainbow — ver a nota abaixo |
 
-As cinco são ortogonais por construção em `snakeai/agents/dqn.py` — é isso que permite medir
+**O `n_steps = 20` do Rainbow daqui não é o do paper, e não é invenção.** 20 é o
+`multi-step` do **Data-Efficient Rainbow** — van Hasselt, Hessel & Aslanides, 2019, *When to
+use parametric models in reinforcement learning?* ·
+[arXiv:1906.05243](https://arxiv.org/abs/1906.05243) —, a configuração do Rainbow para o
+regime de poucos dados. O contrato deste repositório dá 5 M passos contra os 200 M do Rainbow
+canônico: é o regime de poucos dados, e o valor certo é o de lá. Com a janela de 3 o agente
+ficou 5 M passos em 0,57, terminando **100% dos episódios por fome**. Ver
+`REVISAO_ALGORITMOS.md` §2.25 e o notebook de controle `94_rainbow_nstep3`.
+
+As seis são ortogonais por construção em `snakeai/agents/dqn.py` — é isso que permite medir
 cada uma isolada, e é a resposta aos seis notebooks quase idênticos do repositório antigo.
 Ligar todas é o Rainbow.
 

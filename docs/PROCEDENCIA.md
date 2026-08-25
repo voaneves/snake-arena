@@ -73,6 +73,32 @@ Duas mudanças **não** são inertes e ficam registradas aqui:
 O procedimento de auditoria da seção seguinte continua valendo sem alteração: a assinatura é
 reprodutível a partir de qualquer commit, e é ela — não a data — que diz o que rodou.
 
+## Caso 4 — Os dois braços do `n_steps` do Rainbow não têm a mesma assinatura
+
+O resultado mais violento do repositório — `n_steps=3` em **0,57** contra `n_steps=20` em
+**65,43** (§2.24 da revisão) — é uma comparação de duas execuções cujas assinaturas
+**diferem**: `88e54feead9b01a9` e `b6be2f8e874d7644`, separadas por 2 h 40 do mesmo dia.
+
+Confrontando os dois `config`, a diferença é de **duas** chaves e não de uma:
+
+| chave | `completo+n3` | `completo` |
+|---|---|---|
+| `n_steps` | 3 | 20 |
+| `ruido_por_ambiente` | ausente | `False` |
+
+A segunda é o campo que o `por_amostra` da `NoisyDense` trouxe, e ele entrou **desligado**.
+Ou seja: o comportamento provavelmente é idêntico, e a assinatura mudou porque o *arquivo*
+mudou, não porque o que roda mudou.
+
+"Provavelmente" é o ponto desta seção. O procedimento deste documento existe para não
+transformar "provavelmente idêntico" em "idêntico" no meio de um parágrafo, e a régua é a
+mesma do Caso 1: **a diferença fica declarada, e a conclusão é dimensionada pelo que a
+evidência sustenta.** Aqui ela sustenta bastante — a diferença entre os dois braços não é de
+grau, é qualitativa (100% de fome contra 87,8% de colisão), e nenhum mecanismo plausível
+liga um campo desligado de ruído a esse desfecho. O que ela **não** sustenta é um tamanho de
+efeito: "n=20 vale 64,9 pontos" é uma frase que precisa de três sementes de cada lado na
+mesma assinatura, e o `94_rainbow_nstep3` existe para produzi-las.
+
 ## O método de auditoria
 
 A assinatura é reprodutível a partir de qualquer commit: basta reconstruir a concatenação
