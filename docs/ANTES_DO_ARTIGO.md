@@ -17,7 +17,7 @@ depende da tabela final: introdução, trabalhos relacionados, o ambiente, o con
 comparabilidade, o protocolo de avaliação, a metodologia, e — inteiras — as duas ablações
 fechadas: o canal de fome e o orçamento de gradiente.
 
-O que falta é **fila de GPU**: cinco algoritmos ainda sem nenhuma semente na régua atual,
+O que falta é **fila de GPU**: oito algoritmos ainda sem nenhuma semente na régua atual,
 mais a terceira do DQN. Nenhum deles depende de uma escolha que ainda não foi feita.
 
 Há **uma** pergunta nova, e ela é barata: a correção do DQN mudou duas coisas ao mesmo tempo
@@ -56,7 +56,7 @@ no documento, marcadas, em vez de apagadas.
 
 ## O que falta, e é só execução
 
-Cinco algoritmos × 3 sementes, mais a terceira semente do DQN. Nenhum depende de decisão
+Oito algoritmos × 3 sementes, mais a terceira semente do DQN. Nenhum depende de decisão
 pendente — os quatro sequenciais já têm o truncamento por fome corrigido, e o DQN já conta a
 rede alvo em atualizações de gradiente em vez de passos de ambiente.
 
@@ -69,6 +69,9 @@ rede alvo em atualizações de gradiente em vez de passos de ambiente.
 | 5 | DreamerV3 | `09_dreamerv3` | pendente | desconhecido |
 | 6 | AlphaZero | `06_alphazero` | pendente | desconhecido — busca em árvore |
 | 7 | MuZero | `07_muzero` | pendente | desconhecido |
+| 8 | LBC | `10_lbc` | pendente | desconhecido — ~4 épocas sobre o rollout, como o PPO |
+| 9 | SOAP | `11_soap` | pendente | desconhecido — PPO com 4 cabeças e uma crença em NumPy |
+| 10 | ACEKTR | `12_acektr` | pendente | ~2,1× o `kfac_ms` do ACKTR, medido em lote pequeno |
 
 O A2C saiu **muito** mais barato que a estimativa de 0,7 h: 0,31 h por semente, o menor
 custo do repositório. A correção de retracing (`PROCEDENCIA.md`, caso 2) responde por boa
@@ -162,6 +165,41 @@ estatística para não voltarem a divergir.
 Para o artigo a recomendação é reportar **os dois**: mediana entre sementes na tabela de
 ranking, média e desvio no texto de cada ablação. Com n = 3 nenhum dos dois é suficiente
 sozinho, e a diferença entre eles é informação — para o ACKTR, ela é literalmente o achado.
+
+## Os três algoritmos novos, e as quatro previsões pré-registradas
+
+LBC, SOAP e ACEKTR entraram depois da última passagem. Eles **não mudam** nada do que está
+fechado acima — não tocam no ambiente, no contrato nem no protocolo — e por isso não travam
+a redação de nenhuma seção já escrita. O que eles acrescentam é fila de GPU e, mais
+interessante para o artigo, **quatro perguntas escritas antes da medição**.
+
+Isso importa metodologicamente. Este repositório já tem um caso em que uma previsão
+pré-registrada **falhou** e ficou registrada como falha em vez de ser apagada (a réplica do
+orçamento no A2C). Quatro previsões a mais, escritas com a mesma disciplina, transformam a
+seção de resultados de "medimos o que deu" em "perguntamos e a resposta foi esta" — que é
+uma diferença de gênero, não de grau.
+
+| previsão | onde está escrita | o que a decide | o que significa se falhar |
+|---|---|---|---|
+| a exploração **selecionada** do LBC bate a agendada do PPO | `LBC.md` §5 | `10_lbc` × `01_ppo` | os agendamentos lineares deste repositório eram bons o bastante para este domínio, e isso é publicável |
+| a parte *learnable* do LBC vale alguma coisa | `LBC.md` §3 | `10_lbc` × `10_lbc+selecao_aleatoria` | o mérito estava no espaço de comportamento, não no bandit |
+| memória discreta resolve a fome melhor que o sexto canal | `SOAP.md` §4 | `11_soap` × `01_ppo`, contra `97` × `01_ppo` | 106 passos de horizonte de fome não bastam para justificar memória |
+| o desvio da região de confiança do ACKTR vem da Fisher aproximada | `EKFAC.md` §5 | `kl_fator` de `12_acektr` × `08_acktr` | a §região de confiança do `REVISAO_ALGORITMOS.md` precisa ser reescrita |
+
+Duas observações de honestidade que já cabem no artigo **sem nenhuma execução**:
+
+* **Nenhum dos três é apresentado como "vai ganhar".** O `EKFAC.md` §8 diz explicitamente
+  que aproximar melhor a Fisher é uma afirmação sobre a matriz e não sobre o score, e que a
+  dispersão do ACKTR (desvio 9,63 contra 1,80 do PPO) engole diferenças bem maiores que as
+  plausíveis. Três sementes não separam o que se espera medir ali.
+* **Os três têm controle exato dentro do próprio algoritmo**, e isso é raro o bastante para
+  ser dito: `SOAP(n_opcoes=1)` **é** o PPO, `ACEKTR(ema_escalas=1)` **é** o ACKTR bit a bit,
+  e `LBC(selecao="aleatoria")` isola o meta-controlador. Não são comparações entre
+  implementações diferentes — são a mesma implementação com um botão. `tests/test_soap.py` e
+  `tests/test_ekfac.py` provam as duas primeiras numericamente.
+
+O custo de fila que eles acrescentam é a única coisa que muda na §"O que falta": de cinco
+algoritmos para oito.
 
 ## O que já dá para escrever
 

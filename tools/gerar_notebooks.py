@@ -150,6 +150,32 @@ NOTEBOOKS = [
                   "calibrar virou a ablação `98_acktr_kl_nominal`.",
     },
     {
+        "arquivo": "12_acektr.ipynb",
+        "titulo": "ACEKTR — os autovalores medidos, não fatorados",
+        "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
+                    "snakeai/agents/acktr.py", "snakeai/agents/acektr.py"],
+        "agente": "ACEKTR",
+        "config": "ACEKTRConfig",
+        "resumo": "O `08_acktr` com **uma** troca: o EK-FAC no lugar do K-FAC.\n\n"
+                  "De `A ⊗ G = (U_A ⊗ U_G)(S_A ⊗ S_G)(U_A ⊗ U_G)ᵀ` o K-FAC tira duas "
+                  "coisas, e só uma se justifica: uma **base** de autovetores (defensável) "
+                  "e uma **escala por eixo** obrigada a ter forma de produto, "
+                  "`λ_A(j)·λ_G(i)` (que não vem de lugar nenhum além de ter saído junto). "
+                  "O EK-FAC fica com a base e **mede** as escalas — o segundo momento "
+                  "verdadeiro do gradiente projetado. Pelo Teorema 3 do paper ele nunca é "
+                  "pior que o K-FAC, e sai barato porque o gradiente por amostra é um "
+                  "produto externo: a média dos quadrados vira um produto de matrizes.\n\n"
+                  "**O controle é exato:** com `ema_escalas=1` o EK-FAC não mede nada, "
+                  "`s*` fica no palpite do K-FAC e as duas direções coincidem até o "
+                  "arredondamento de float32 — `tests/test_ekfac.py` prova isso. Compare "
+                  "com `08_acktr` na mesma semente.\n\n"
+                  "Olhe `ekfac_desvio` no registro: é o tamanho da correção que está "
+                  "sendo aplicada, em dente de serra entre as reconstruções da base. "
+                  "Grudado em zero significa que não há o que corrigir neste problema — o "
+                  "que é um resultado, e distingue \"não ajudou\" de \"não fez nada\". "
+                  "Ver `docs/EKFAC.md`.",
+    },
+    {
         "arquivo": "98_acktr_kl_nominal.ipynb",
         "titulo": "ACKTR sem calibrar a região de confiança — o que se perde",
         "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
@@ -237,13 +263,37 @@ NOTEBOOKS = [
                   "Ver `docs/LBC.md` para os três desvios declarados em relação ao paper.",
     },
     {
+        "arquivo": "11_soap.ipynb",
+        "titulo": "SOAP — opções discretas para uma observação que não é markoviana",
+        "modulos": ["snakeai/agents/ppo.py", "snakeai/agents/soap.py"],
+        "agente": "SOAP",
+        "config": "SOAPConfig",
+        "resumo": "A observação do contrato tem 5 canais e **nenhum deles é a fome**, "
+                  "enquanto o limite é `100 + 2·comprimento` passos sem comer: dois "
+                  "estados visualmente idênticos, um com fome 5 e outro com fome 105, "
+                  "valem coisas diferentes. O `97_ppo_canal_de_fome` tentou resolver "
+                  "isso pela observação e custou a comparabilidade — sem ganho. O SOAP "
+                  "tenta pela **memória**: uma opção latente discreta que atravessa os "
+                  "passos, dentro dos mesmos 5 canais.\n\n"
+                  "São `Z = 4` sub-políticas, uma política de troca `π_ψ(z\'|s,a,z)` e "
+                  "uma crença `ζ_t` atualizada pelo filtro para a frente. A vantagem que "
+                  "treina a troca é a *Generalized Option Advantage*, uma recursão para "
+                  "trás que substitui a retropropagação pelo tempo.\n\n"
+                  "**O controle vem embutido:** com `n_opcoes=1` o SOAP é literalmente o "
+                  "PPO — `ζ ≡ 1`, `A^GOA = A^GAE`, mesma perda com clipping — e "
+                  "`tests/test_soap.py` prova as igualdades numericamente. Compare com "
+                  "`01_ppo` na mesma semente. Ver `docs/SOAP.md` para o que olhar quando "
+                  "as opções colapsarem.",
+    },
+    {
         "arquivo": "09_dreamerv3.ipynb",
         "titulo": "DreamerV3 — treinar dentro de um modelo do mundo",
         "modulos": ["snakeai/memory/sequencia.py", "snakeai/nets/dreamer.py",
                     "snakeai/agents/dreamerv3.py"],
         "agente": "DreamerV3",
         "config": "DreamerV3Config",
-        "resumo": "O único dos nove que não busca nada na hora de agir: o modelo serve "
+        "resumo": "O único dos três algoritmos com modelo que não busca nada na hora de "
+                  "agir: o modelo serve "
                   "para **treinar**, em rollouts imaginados. symlog, two-hot, KL "
                   "balanceada e free bits são o que dispensam ajuste por ambiente. "
                   "É o mais caro por passo de ambiente — comece com `dreamer_tiny`.",
@@ -487,18 +537,32 @@ for semente in (7, 21, 42):
 contra o `.keras` é conferida — diferença numérica de quantização é aceitável, ação
 diferente não é.
 
+A conferência é pulada quando a política **tem memória** (o SOAP, com a crença de opção; o
+DreamerV3, com o latente do modelo do mundo). Não é um detalhe de implementação: um
+`.tflite` que recebe só a observação não consegue reproduzir uma política cuja ação depende
+de estado interno, então "as ações batem" seria uma afirmação sobre outra coisa. Os arquivos
+continuam sendo gerados e medidos; o que não se afirma é a paridade.
+
 Exporta `last` **e** `best`, em pastas separadas. Exportar é para usar, e o que você leva
 para o jogo é o melhor; mas o `last` vai junto porque é ele que corresponde ao número da
 arena, e misturar os dois é como se perde a rastreabilidade entre o gráfico e o arquivo.
 """),
         _code("""relatorios = {}
+# `apos_passo` é o contrato das políticas com memória (ver `snakeai/eval.py`). Quem o
+# expõe não pode ter a paridade de ação conferida contra um `.tflite` sem estado.
+_COM_MEMORIA = hasattr(agente.politica(), "apos_passo")
+if _COM_MEMORIA:
+    print("política com memória: TFLite exportado, paridade de ação não conferida")
+
 relatorios["last"] = export_model(
-    agente.model, out_dir=os.path.join(PASTA, "export", "last"))
+    agente.model, out_dir=os.path.join(PASTA, "export", "last"),
+    validar=not _COM_MEMORIA)
 
 _melhor = agente.modelo_melhor()
 if _melhor is not None:
     relatorios["best"] = export_model(
-        _melhor, out_dir=os.path.join(PASTA, "export", "best"))
+        _melhor, out_dir=os.path.join(PASTA, "export", "best"),
+        validar=not _COM_MEMORIA)
 
 print(json.dumps(relatorios, indent=2, ensure_ascii=False))""", "Exportar"),
         _md("""## Onde ficou o resultado
@@ -513,8 +577,8 @@ e `modelos/best.keras` — a pasta é autossuficiente, quem a recebe consegue ro
 sem depender de nada que ficou nesta máquina.
 
 Sobre versionar isso no GitHub: um `.keras` vai de 0,8 MB (`resnet_small`) a 6,7 MB
-(`cnn_rainbow` com dueling e C51), então a arena inteira — 9 algoritmos × 3 sementes × 2
-modelos — dá algo em torno de 140 MB. Cabe num repositório, mas binário em git **nunca
+(`cnn_rainbow` com dueling e C51), então a arena inteira — 12 algoritmos × 3 sementes × 2
+modelos — passa de 180 MB. Cabe num repositório, mas binário em git **nunca
 some do histórico**: cada re-execução deixa mais uma cópia lá para sempre. Se começar a
 incomodar, o lugar certo é um *Release* do GitHub, que é feito para binário e não entra no
 clone.

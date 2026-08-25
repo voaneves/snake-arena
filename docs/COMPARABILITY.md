@@ -107,6 +107,40 @@ GIFs: a pasta de uma execução tem que ser autossuficiente. Um `history.json` q
 score sem o modelo que o produziu é, num repositório feito para tornar resultados
 comparáveis, exatamente o que não serve.
 
+## Políticas com memória, e o que o protocolo exige delas
+
+O contrato diz "1.000 episódios, greedy, `seed=123`". Para um agente sem estado interno isso
+é tudo. Três agentes daqui **têm** estado interno — o DreamerV3 carrega o latente do modelo do
+mundo, o SOAP carrega a crença sobre a opção corrente, o LBC carrega o comportamento sorteado
+por episódio — e para eles a frase esconde uma segunda metade.
+
+A política que `snakeai/eval.py` consome pode expor um método a mais:
+
+```python
+politica(obs, mask) -> logits          # obrigatório
+politica.apos_passo(acoes, done)       # opcional; quem tem memória precisa
+```
+
+`apos_passo` recebe **o que de fato aconteceu**: a ação escolhida — que pode não ser o
+argmax, se o filtro de segurança agiu — e onde o episódio terminou, para zerar o estado
+interno ali. Sem a segunda metade, duas coisas quebram, e nenhuma levanta exceção:
+
+* o estado interno **congela no valor inicial**, e o número publicado é de uma política mais
+  fraca que a treinada. A conclusão "modelo do mundo não ajuda aqui" viria do defeito de
+  medição, não do algoritmo;
+* o estado **atravessa a morte da cobra** e leva a crença de uma partida para dentro da
+  próxima.
+
+Isto é regra de contrato e não detalhe de implementação, porque muda o número oficial. A
+prova de que não é hipotético está na §3.6 da revisão: o renderizador de GIF **não** chamava
+`apos_passo`, e todos os GIFs de DreamerV3 gerados até a correção mostram uma política que
+nunca existiu.
+
+Uma consequência que também é de contrato: **a exportação para TFLite não afirma paridade de
+ação** para esses agentes. Um `.tflite` que recebe só a observação não consegue reproduzir
+uma política cuja ação depende de estado interno; os arquivos continuam sendo gerados e
+medidos, e o que não se afirma é a paridade.
+
 ## As três perguntas, separadas
 
 O gráfico principal responde **uma** pergunta: *quem vai mais longe com os mesmos dados?*

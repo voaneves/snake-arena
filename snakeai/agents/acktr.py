@@ -169,8 +169,7 @@ class ACKTR(A2C):
     def __init__(self, cfg: ACKTRConfig = None, model=None, variant=None):
         super().__init__(cfg or ACKTRConfig(), model=model, variant=variant)
         c = self.cfg
-        self.kfac = KFac(self.model, damping=c.damping, ema=c.kfac_ema,
-                         inv_every=c.inv_every)
+        self.kfac = self._cria_precondicionador()
         # `on_model_reloaded` recria o otimizador; o K-FAC tem que acompanhar, senão os
         # índices de `trainable_variables` apontam para o modelo antigo.
         self._ultimo = {}
@@ -181,6 +180,18 @@ class ACKTR(A2C):
         if variant is None:
             self.variant = self._com_sufixo(self._variante_da_regiao(c),
                                             getattr(c, "sufixo_variante", ""))
+
+    def _cria_precondicionador(self):
+        """Qual curvatura este agente usa.
+
+        Existe como método, e não como uma linha dentro do `__init__`, porque é o **único**
+        ponto que o `ACEKTR` sobrescreve. Enquanto for só isto, a diferença entre as duas
+        curvas na arena é atribuível à correção de autovalores e a mais nada — e
+        `tests/test_ekfac.py` confere que continua sendo só isto.
+        """
+        c = self.cfg
+        return KFac(self.model, damping=c.damping, ema=c.kfac_ema,
+                    inv_every=c.inv_every)
 
     @staticmethod
     def _variante_da_regiao(cfg):
@@ -299,8 +310,7 @@ class ACKTR(A2C):
     # -------------------------------------------------------------------- relato
     def on_model_reloaded(self):
         super().on_model_reloaded()
-        self.kfac = KFac(self.model, damping=self.cfg.damping, ema=self.cfg.kfac_ema,
-                         inv_every=self.cfg.inv_every)
+        self.kfac = self._cria_precondicionador()
 
     def resumo_kfac(self):
         return self.kfac.resumo()

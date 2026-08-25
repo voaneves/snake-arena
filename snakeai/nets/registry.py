@@ -29,6 +29,7 @@ __all__ = [
     "build_backbone",
     "build_actor_critic",
     "build_actor_critic_populacao",
+    "build_option_actor_critic",
     "build_q_network",
     "build_policy_q",
     "resumo",
@@ -204,6 +205,73 @@ def build_actor_critic_populacao(board_size=10, net="resnet_small", n_politicas=
 
     return keras.Model(inp, [logits, valor],
                        name=nome or f"lbc{n_politicas}_{canonico}")
+
+
+def build_option_actor_critic(board_size=10, net="resnet_small", n_opcoes=4,
+                              largura_densa=None, n_actions=N_ACTIONS, nome=None,
+                              canais=N_CHANNELS):
+    """Política com opções — o que o SOAP consome. Três saídas:
+
+    * `logits_a` `(lote, Z, ações)` — a sub-política `π_θ(a|s,z)`, uma por opção;
+    * `logits_z` `(lote, Z, ações, Z)` — a transição `π_ψ(z'|s,a,z)`;
+    * `valor` `(lote, Z)` — o crítico condicionado à opção corrente.
+
+    A transição depende de `(s, a, z)`, e não só de `s`: é a fatoração que o paper do SOAP
+    propõe contra a do Option-Critic, e é ela que permite a uma opção **persistir** por
+    conta própria em vez de ser re-sorteada a cada passo. O custo é um tensor de saída
+    `Z × A × Z` — com `Z = 4` e `A = 3`, 48 números por estado, que é barato.
+
+    Os logits da sub-política nascem com ganho pequeno, como no `build_actor_critic`: no
+    começo do treino toda opção precisa ser quase uniforme. Os da transição também, e por
+    um motivo mais forte — uma preferência inicial de troca de opção é um viés que o agente
+    gasta as primeiras iterações desfazendo, e enquanto isso a crença `ζ` já colapsou.
+    """
+    if int(n_opcoes) < 1:
+        raise ValueError("é preciso pelo menos uma opção")
+    n_opcoes = int(n_opcoes)
+
+    inp = _entrada(board_size, canais)
+    x, canonico = build_backbone(inp, net)
+    largura = LARGURA_DENSA_PADRAO if largura_densa is None else int(largura_densa)
+
+    def projeta(nome_curto, filtros):
+        if _e_espacial(x):
+            h = layers.Conv2D(filtros, 1, use_bias=False, name=f"{nome_curto}_c")(x)
+            h = layers.GroupNormalization(groups=2, name=f"{nome_curto}_n")(h)
+            h = layers.Activation("relu", name=f"{nome_curto}_a")(h)
+            h = layers.Flatten(name=f"{nome_curto}_f")(h)
+            if nome_curto != "pi":
+                h = layers.Dense(largura, activation="relu", name=f"{nome_curto}_d")(h)
+            return h
+        return layers.Dense(largura, activation="relu", name=f"{nome_curto}_d")(x)
+
+    p = projeta("pi", 4)
+    q = projeta("psi", 4)
+    v = projeta("v", 2)
+
+    logits_a = layers.Dense(
+        n_opcoes * n_actions, name="logits_a_d",
+        kernel_initializer=keras.initializers.Orthogonal(gain=0.01),
+        bias_initializer="zeros",
+    )(p)
+    logits_a = layers.Reshape((n_opcoes, n_actions), name="logits_a")(logits_a)
+
+    logits_z = layers.Dense(
+        n_opcoes * n_actions * n_opcoes, name="logits_z_d",
+        kernel_initializer=keras.initializers.Orthogonal(gain=0.01),
+        bias_initializer="zeros",
+    )(q)
+    logits_z = layers.Reshape((n_opcoes, n_actions, n_opcoes),
+                              name="logits_z")(logits_z)
+
+    valor = layers.Dense(
+        n_opcoes, name="value",
+        kernel_initializer=keras.initializers.Orthogonal(gain=1.0),
+        bias_initializer="zeros",
+    )(v)
+
+    return keras.Model(inp, [logits_a, logits_z, valor],
+                       name=nome or f"soap{n_opcoes}_{canonico}")
 
 
 def build_q_network(board_size=10, net="cnn_rainbow", largura_densa=None,

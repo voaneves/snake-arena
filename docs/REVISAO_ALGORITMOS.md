@@ -13,6 +13,7 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
+| §3.6 GIF gravado com o estado interno congelado | **corrigido** |
 | todo o resto | levantado, não tocado |
 
 Cada achado traz o grau de confiança:
@@ -604,73 +605,7 @@ genuinamente alto continua sustentando o valor.
 PER, em que a transição nova entra no topo e cai para o valor real assim que é amostrada uma
 vez. O defeito era só a catraca.
 
-### 2.25 ✔ `n_steps=3` não alcançava a recompensa — **corrigido, e é o achado que destravou tudo**
-`agents/rainbow.py:n_steps`
-
-O agente gasta ~12 passos por maçã. Com uma janela de 3, a decisão que o levou até a comida
-**sai do retorno antes de a recompensa entrar**: a atribuição de crédito passa a depender só
-do bootstrap, e o bootstrap depende das sincronias do alvo — dezenas num treino inteiro. É
-por isso que o agente passava mais de um milhão de passos parado em 100% de morte por fome:
-ele encontrava a comida e não conseguia ligar o encontro à decisão.
-
-| `n_steps` | decolagem | fome aos 850 k | `γ**n` |
-|---:|---:|---:|---:|
-| 3 | ~1,85 M | 100% | 0,985 |
-| **20** | **~700 k** | **69,8%** | **0,905** |
-
-Com 20, o score de treino vai de 2,24 a 8,45 em 150 mil passos e os episódios crescem de 158
-para 330 passos. O `γ**n` caindo para 0,905 também reduz o peso do bootstrap, que era
-exatamente o mecanismo que estava faltando.
-
-O 20 vem do **Data-Efficient Rainbow** (van Hasselt et al., 2019), que usa `multi-step 20`
-no regime de poucos dados. É um desvio declarado do Rainbow canônico, que usa 3.
-
-**Isto derruba o §2.16.** A hipótese de que o poço era falta de exploração foi testada
-diretamente: com `eps_mesmo_com_noisy=True` e ε=1,0 — 66% de desvio do greedy e 64 ambientes
-independentes — o agente **continuou** caindo em 100% de fome. Ele explorava de sobra; não
-aprendia com o que encontrava. Registrar hipóteses erradas junto com as certas é o ponto de
-ter um documento assim.
-
-### 2.23 ○ O regime de reamostragem é um quarto da referência — **aberto por decisão**
-`agents/rainbow.py:learn_every,target_update`
-
-O `Kaixhin/Rainbow` treina com lote 32 uma vez a cada 4 passos: **8 amostras sorteadas por
-passo de ambiente**, cada transição revisitada ~8 vezes. Com `learn_every=4` e lote 512 nós
-sorteamos `512/256 = 2,0`. `learn_every=1` daria exatamente 8,0 — o número não é chute, é o
-que a referência implica — ao custo de 4× o trabalho de gradiente.
-
-O mesmo vale para `target_update`: a referência sincroniza a cada **2.000 atualizações**
-(8.000 passos ÷ 4); nós estamos em 250, ou seja 8× mais frequente.
-
-Os dois chegaram a ser alterados para os valores da referência e **foram revertidos**. A
-execução que funcionou — decolagem aos 700 k — rodou com `learn_every=4` e
-`target_update=250`, e mudar os dois junto com o `n_steps=20` mediria a soma em vez do
-efeito. Ficam como a próxima ablação, de uma variável.
-
-### 2.24 ✔ O ruído das noisy nets era um sorteio para os 64 ambientes — **corrigido, desligado por padrão**
-`nets/heads.py:NoisyDense.por_amostra`
-
-Um `ε` por passada é fiel ao paper porque o paper tem **um** ambiente. Com `num_envs=64` os
-64 seguem a mesma política perturbada. Medido, com 60 passadas:
-
-| | P(desvia do greedy) | ambientes independentes |
-|---|---:|---:|
-| ruído compartilhado (padrão) | 0,299 | **10,9 / 64** |
-| ruído por ambiente | 0,293 | **64 / 64** |
-| ε = 1,0 | 0,665 | 64 / 64 |
-
-Mesma taxa marginal de exploração, seis vezes a diversidade efetiva. As implementações
-distribuídas do mesmo lineage (Ape-X, R2D2) dão a cada ator o seu ruído, então
-`ruido_por_ambiente=True` é a **vetorização correta** do paper, não um desvio. Fica desligado
-por padrão porque muda a política de comportamento e a execução medida não o usava.
-
-### 2.16 ✗ A exploração do Rainbow neste ambiente — **hipótese REFUTADA**
-
-> **Refutada em 24/08.** Ligado o ε com `eps_mesmo_com_noisy=True` (66% de desvio do greedy,
-> 64 ambientes independentes), o agente **continuou** convergindo para 100% de morte por
-> fome. Exploração não era o gargalo: o gargalo era atribuição de crédito, e está no §2.25.
-> O que está abaixo continua factualmente correto e é a razão de o §2.24 existir, mas a
-> conclusão que esta seção tirava estava errada.
+### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
 
 Depois de §2.8, §2.8b, §2.13 e §2.14, o Rainbow ainda não decola. O que está medido:
 
@@ -740,6 +675,21 @@ transições × 500 floats). A observação é 3 canais binários + 1 em (0,1] +
 `uint8`/`float16` ou reconstrução a partir de `CAMPOS_ESTADO` custaria uma fração. No DQN o
 mesmo padrão dá ~800 MB, com `next_obs` duplicando `obs` integralmente.
 
+### 3.6 ✔ O GIF era gravado com o estado interno congelado — **corrigido**
+`env/render.py` — `quadros_do_episodio` chamava `politica(obs, mask)` e nunca `apos_passo`.
+
+`snakeai/eval.py` respeita esse contrato desde o DreamerV3: uma política com memória precisa
+saber **qual ação de fato saiu** — que pode não ser o argmax, se o filtro de segurança agiu —
+e onde o episódio terminou, para zerar o estado interno ali. O renderizador não chamava, e o
+resultado era um GIF gravado com o latente parado no valor inicial: **o agente do vídeo não
+era o agente da curva**.
+
+Custo real: o GIF é o único artefato que responde *como* o agente joga, e é justamente para
+um agente com memória que essa pergunta é mais interessante. Todos os GIFs de DreamerV3 já
+gerados mostram uma política que nunca existiu. Achado ao implementar o SOAP, que tem o mesmo
+contrato; corrigido em uma linha, com teste
+(`test_soap.py::test_the_gif_advances_a_policy_with_memory`).
+
 ---
 
 ## 4. Se fosse para escolher
@@ -762,6 +712,66 @@ Ordenado por (impacto esperado) ÷ (custo de implementar e risco de quebrar o co
 
 O resto entra depois, e boa parte (§2.11) só faz sentido como ablação de uma variável, três
 sementes, no mesmo orçamento — do jeito que o `CANAL_DE_FOME.md` fez.
+
+---
+
+## 5. Os três algoritmos acrescentados depois desta revisão
+
+LBC, SOAP e ACEKTR entraram depois que esta lista foi escrita. Eles **não** foram revisados
+pelo mesmo processo (cinco revisões independentes por área); o que segue é o registro de como
+cada um se posiciona em relação aos achados de cima, e o que fica em aberto neles.
+
+### 5.1 O que eles herdam de graça
+
+Os três nascem sobre o `AgentBase` corrigido, e por isso não repetem os erros da §1:
+
+| achado | como os três se comportam |
+|---|---|
+| §1.1 truncamento por fome | tratado nos três. No LBC e no SOAP o bootstrap é **por política / por opção**, porque o crítico é vetorial — um bootstrap único ensinaria a todas as cabeças o valor terminal de uma delas |
+| §1.4 `avaliar_melhor` medindo o modelo final | o SOAP e o LBC sobrescrevem `politica_do_modelo`, então o checkpoint `best` é medido de verdade. O ACEKTR herda o caminho do ACKTR, que já estava certo |
+| §1.7 grade de avaliação | herdada do `proximo_multiplo` |
+| §3.2 laço de coleta triplicado | o LBC e o SOAP têm laço próprio (a coleta **é** diferente: crença, mistura de comportamento), mas usam `registra_fim` e `bootstrap_truncados` do andaime. O ACEKTR herda o `collect` do A2C sem tocar |
+
+### 5.2 ○ O que fica em aberto neles
+
+* **LBC — o estado do bandit não sobrevive a `retomar()`.** `salvar()` grava `self.model` e
+  o dicionário de estado fixo; a janela do `BanditUCB` e o `ψ` de cada ambiente ficam de
+  fora. Retomar um treino recomeça a seleção do uniforme. É o mesmo padrão do `_fator_kl` do
+  ACKTR, que também não é salvo — e a consequência é da mesma ordem: a janela reenche em
+  algumas dezenas de episódios. Vale registrar porque a curva depois de um `retomar()` tem um
+  degrau que não é do algoritmo.
+* **SOAP — `ζ` também não sobrevive a `retomar()`.** Menos grave: a crença é zerada a cada
+  episódio de qualquer forma, então o custo é um episódio por ambiente.
+* **SOAP — o sinal de opção morre no fim de cada rollout.** `U_{T} = 0` é a mesma truncatura
+  que o GAE já tem, mas ela cai sobre o eixo que é a razão de existir do algoritmo. Com
+  `rollout = 32`, um passo em 32 não recebe gradiente de troca de opção. ? Medir se subir o
+  rollout muda a persistência das opções.
+* **ACEKTR — `inv_every` está no valor do ACKTR, e isso handicapa o EK-FAC.** Deliberado, para
+  que a comparação isole uma variável; ver `docs/EKFAC.md` §3.2. Não é um defeito, é uma
+  escolha que precisa ser lida junto com a curva.
+* **ACEKTR — "autovalores exatos" numa convolução é exato só sob a hipótese de homogeneidade
+  espacial** que o KFC já faz. O EK-FAC corrige os autovalores *dentro* da hipótese, não a
+  hipótese. Ver `docs/EKFAC.md` §6.
+* **Os três dependem de `variancia_explicada` importado do `ppo.py`.** É a função certa e uma
+  definição só, mas amarra três agentes ao módulo do PPO — e faz o notebook de cada um
+  embarcar o PPO inteiro. ○ Candidata a subir para `snakeai/eval.py` numa próxima limpeza; o
+  custo hoje é ~400 linhas mortas por notebook.
+
+### 5.3 O que eles acrescentam à pergunta de fundo
+
+A pergunta desta revisão era **por que o melhor agente para em ~62 de um teto de 97**, e a
+resposta mais provável foi o orçamento de gradiente (§2.1), medida e confirmada em
+`docs/ORCAMENTO_DE_GRADIENTE.md`. Os três novos atacam três suspeitos diferentes do que
+sobrou:
+
+| algoritmo | o que ele propõe como causa |
+|---|---|
+| LBC | a exploração é **agendada** por uma reta que nunca olhou para o resultado |
+| SOAP | a observação do contrato **não é markoviana**, e o sexto canal foi a resposta errada para isso |
+| ACEKTR | a curvatura aproximada do K-FAC **subestima** a Fisher — e é isso que faz a região de confiança do ACKTR entregar KL 7× maior que a pedida |
+
+Nenhum dos três está medido no orçamento oficial. As previsões estão escritas nos documentos
+respectivos, **antes** da medição, de propósito.
 
 ---
 

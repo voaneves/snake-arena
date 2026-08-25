@@ -73,8 +73,8 @@ import numpy as np
 import tensorflow as tf
 from keras import layers
 
-__all__ = ["KFac", "captura_kfac", "patches_de_entrada", "fatores_de_camada",
-           "perda_fisher_categorica", "perda_fisher_gaussiana"]
+__all__ = ["KFac", "EKFac", "captura_kfac", "patches_de_entrada",
+           "fatores_de_camada", "perda_fisher_categorica", "perda_fisher_gaussiana"]
 
 REGISTRAVEIS = (layers.Dense, layers.Conv2D)
 
@@ -368,3 +368,238 @@ class KFac:
             "fracao": cobertos / max(1, total),
             "maior_fator": max((int(self._A[n].shape[0]) for n in self._A), default=0),
         }
+
+
+# ----------------------------------------------------------------------- EK-FAC
+class EKFac(KFac):
+    """EK-FAC — K-FAC com os autovalores **medidos** em vez de fatorados.
+
+    (George et al., 2018, *Fast Approximate Natural Gradient Descent in a
+    Kronecker-factored Eigenbasis*.)
+
+    A ideia em uma frase
+    --------------------
+    O K-FAC faz duas coisas ao mesmo tempo e só uma delas é boa. A decomposição
+    `A ⊗ G = (U_A ⊗ U_G)(S_A ⊗ S_G)(U_A ⊗ U_G)ᵀ` dá **um sistema de coordenadas** — a base
+    de autovetores, chamada de KFE — e **uma escala em cada eixo** dessa base. A base é uma
+    aproximação razoável dos autovetores da Fisher de verdade; as escalas, não: elas são
+    obrigadas a ter forma de produto de Kronecker, `λ_A(j)·λ_G(i)`, e essa restrição não
+    tem justificativa nenhuma além de ter saído junto.
+
+    O EK-FAC mantém a base e **joga fora as escalas**, medindo no lugar delas o segundo
+    momento verdadeiro do gradiente projetado::
+
+        s*_{ji} = E_n[ ((U_Aᵀ ∇W_n U_G)_{ji})² ]
+
+    O Teorema 2 do paper diz que `s*` é a melhor escala diagonal possível **naquela base**,
+    em norma de Frobenius; o Teorema 3 conclui que o EK-FAC nunca é pior que o K-FAC. Não é
+    uma heurística com um `ε` a mais: é o mínimo de um problema de mínimos quadrados, e o
+    K-FAC é um ponto qualquer do mesmo espaço de busca.
+
+    Por que sai barato
+    ------------------
+    O gradiente **por amostra** de uma camada densa é o produto externo `a_n g_nᵀ`. Projetar
+    um produto externo é projetar cada lado::
+
+        U_Aᵀ (a_n g_nᵀ) U_G = (U_Aᵀ a_n)(U_Gᵀ g_n)ᵀ
+
+    então o quadrado da entrada `(j,i)` é `(U_Aᵀa_n)_j² · (U_Gᵀg_n)_i²`, e a média sobre o
+    lote inteiro é **um produto de matrizes** entre as projeções ao quadrado. Nada de
+    materializar `N` gradientes por amostra, nada de laço em Python — e é por isso que a
+    implementação de referência em PyTorch precisa de um laço sobre o lote e esta não.
+
+    O que muda no custo em relação ao K-FAC:
+
+    * **por atualização**: uma projeção a mais das ativações e dos gradientes de
+      pré-ativação, `O(N·T·d²)` — da mesma ordem do que montar `A` já custa. O
+      pré-condicionamento em si troca dois `cholesky_solve` por quatro produtos de matriz;
+    * **a cada `inv_every`**: `eigh` em vez de `cholesky`, mais caro por uma constante.
+
+    O paper propõe **amortizar**: recalcular a base raramente (50 a 500 passos) e as escalas
+    a cada passo. Aqui `inv_every` continua com o padrão do ACKTR — ver `docs/EKFAC.md`
+    para por que o padrão fica assim e o que se ganha ao subi-lo.
+
+    O amortecimento, e por que a primeira atualização é idêntica à do K-FAC
+    -----------------------------------------------------------------------
+    O amortecimento de Tikhonov fatorado do K-FAC dá aos eixos da KFE a escala
+    `(λ_A + √λ·π)(λ_G + √λ/π)`, que expandida é
+    `λ_Aλ_G + λ_A·√λ/π + λ_G·√λ·π + λ`. O apêndice C do paper prescreve reproduzir
+    exatamente essa estrutura em torno de `s*`::
+
+        denominador_{ji} = s*_{ji} + λ_A(j)·√λ/π + λ_G(i)·√λ·π + λ
+
+    Isso tem uma consequência que vale como teste: com `s*` inicializado em `λ_A·λ_G` — que
+    é o que o EK-FAC assume antes de medir qualquer coisa —, o denominador é **idêntico** ao
+    do K-FAC amortecido, e as duas direções coincidem até o último bit. O EK-FAC começa
+    exatamente onde o K-FAC está e se afasta conforme mede; a diferença entre as duas curvas
+    não inclui "uma começou de um lugar diferente da outra".
+
+    A convolução, e o que "exato" quer dizer nela
+    ---------------------------------------------
+    Numa `Dense`, `s*` é o segundo momento exato — sem aproximação nenhuma. Numa `Conv2D`, o
+    gradiente por amostra é a **soma sobre as posições espaciais** de produtos externos, e o
+    quadrado de uma soma não se decompõe. Aqui, como no KFC, cada posição é tratada como uma
+    amostra independente, e `s*` é o segundo momento exato **sob essa hipótese** — a mesma
+    que o `A ⊗ G` do K-FAC para convolução já faz. Ou seja: o EK-FAC corrige os autovalores
+    dentro da hipótese de homogeneidade espacial, não a hipótese. Está registrado aqui
+    porque "autovalores exatos" numa camada convolucional é uma frase que promete mais do
+    que entrega.
+    """
+
+    def __init__(self, model, damping=1e-2, ema=0.95, inv_every=10, eps=1e-8,
+                 ema_escalas=0.5):
+        super().__init__(model, damping=damping, ema=ema, inv_every=inv_every, eps=eps)
+        #: Autovetores e autovalores dos dois fatores — a KFE.
+        self._UA, self._UG = {}, {}
+        self._lamA, self._lamG = {}, {}
+        #: `s*`, o segundo momento medido na KFE. Forma `(entrada[+1], saída)`, a mesma de
+        #: `∇W`, porque cada entrada dele é a escala de **um** eixo da base.
+        self._m2 = {}
+        #: `π` do amortecimento fatorado, guardado por camada para o denominador.
+        self._pi = {}
+        self.ema_escalas = float(ema_escalas)
+
+    # ------------------------------------------------------------- estatísticas
+    def acumula(self, capturado, grads_pre):
+        """Médias móveis de `A` e `G` (do K-FAC) **e** de `s*` (o que o EK-FAC acrescenta).
+
+        A ordem importa: a base tem que existir antes de projetar. `KFac.acumula` já chama
+        `atualiza_inversos` — que aqui virou a construção da KFE — no passo certo, então
+        basta medir as escalas depois.
+        """
+        super().acumula(capturado, grads_pre)
+        self._atualiza_escalas(capturado, grads_pre)
+
+    def atualiza_inversos(self):
+        """Constrói a KFE e **reinicia** `s*` nos autovalores do K-FAC.
+
+        Reiniciar é obrigatório, não uma escolha: `s*` são escalas de eixos de uma base
+        específica, e quando a base muda os números antigos passam a descrever eixos que
+        não existem mais. Reaproveitá-los daria um pré-condicionador que mistura duas
+        bases — plausível, silencioso e errado.
+
+        O valor de partida é `λ_A ⊗ λ_G`, que é a hipótese do K-FAC. É o prior honesto:
+        antes de medir, o EK-FAC não sabe mais do que o K-FAC sabia.
+        """
+        for nome in self._A:
+            A, G = self._A[nome], self._G[nome]
+            dA = tf.cast(tf.shape(A)[0], tf.float32)
+            dG = tf.cast(tf.shape(G)[0], tf.float32)
+            trA = tf.linalg.trace(A) / dA
+            trG = tf.linalg.trace(G) / dG
+            self._pi[nome] = tf.sqrt((trA + self.eps) / (trG + self.eps))
+
+            # `eigh` devolve autovalores em ordem crescente e uma base ortonormal. O
+            # `relu` corta os autovalores levemente negativos que aparecem por
+            # arredondamento numa matriz que é PSD por construção — deixá-los passar
+            # inverteria o sinal daquele eixo do pré-condicionamento.
+            lamA, UA = tf.linalg.eigh(A)
+            lamG, UG = tf.linalg.eigh(G)
+            self._lamA[nome], self._UA[nome] = tf.nn.relu(lamA), UA
+            self._lamG[nome], self._UG[nome] = tf.nn.relu(lamG), UG
+            self._m2[nome] = (self._lamA[nome][:, None]
+                              * self._lamG[nome][None, :])
+
+    def _atualiza_escalas(self, capturado, grads_pre):
+        """Mede `s*` neste lote e mistura na média móvel.
+
+        Tudo acontece em dois produtos de matriz por camada, pelo argumento do produto
+        externo no docstring da classe. A escala segue a convenção documentada em
+        `fatores_de_camada`: o gradiente de pré-ativação **por amostra** da perda somada
+        vale `N·g`, e a soma sobre as `T` posições espaciais entra dividindo por `N`, não
+        por `N·T` — é o que faz `s*` nascer na mesma escala de `λ_A·λ_G` e o amortecimento
+        do apêndice C fechar.
+        """
+        for (camada, entrada, _), gp in zip(capturado, grads_pre):
+            nome = camada.name
+            if gp is None or nome not in self._UA:
+                continue
+
+            a = patches_de_entrada(camada, entrada)
+            n = tf.cast(tf.shape(entrada)[0], tf.float32)
+            if camada.use_bias:
+                a = tf.concat([a, tf.ones([tf.shape(a)[0], 1], a.dtype)], axis=1)
+            g = tf.reshape(gp, [-1, tf.shape(gp)[-1]]) * n
+
+            pa = tf.square(tf.matmul(a, self._UA[nome]))
+            pg = tf.square(tf.matmul(g, self._UG[nome]))
+            s = tf.matmul(pa, pg, transpose_a=True) / n
+
+            d = self.ema_escalas
+            self._m2[nome] = d * self._m2[nome] + (1.0 - d) * s
+
+    # ----------------------------------------------------------- condicionamento
+    def precondiciona(self, grads):
+        """`grads` cru → direção natural, com as escalas medidas. Não coberto passa intacto."""
+        if not self._UA:
+            return list(grads)
+        saida = list(grads)
+        raiz = np.sqrt(self.damping)
+
+        for camada in self.camadas:
+            nome = camada.name
+            if nome not in self._UA:
+                continue
+            ik, ib = self._idx[nome]
+            gk = grads[ik]
+            if gk is None:
+                continue
+
+            forma = tf.shape(camada.kernel)
+            cout = camada.kernel.shape[-1]
+            plano = tf.reshape(gk, [-1, cout])
+            if ib is not None:
+                plano = tf.concat([plano, tf.reshape(grads[ib], [1, cout])], axis=0)
+
+            UA, UG = self._UA[nome], self._UG[nome]
+            pi = self._pi[nome]
+            # o amortecimento do apêndice C: a mesma forma do Tikhonov fatorado do K-FAC,
+            # escrita na base — ver o docstring da classe
+            denom = (self._m2[nome]
+                     + self._lamA[nome][:, None] * (raiz / pi)
+                     + self._lamG[nome][None, :] * (raiz * pi)
+                     + self.damping)
+
+            proj = tf.matmul(tf.matmul(UA, plano, transpose_a=True), UG)
+            x = tf.matmul(tf.matmul(UA, proj / denom), UG, transpose_b=True)
+
+            if ib is not None:
+                saida[ib] = x[-1]
+                x = x[:-1]
+            saida[ik] = tf.reshape(x, forma)
+        return saida
+
+    # ------------------------------------------------------------------- relato
+    def desvio_de_kronecker(self):
+        """Quanto `s*` já se afastou do palpite do K-FAC — o número que diz se isto serve.
+
+        `‖s* − λ_A⊗λ_G‖_F / ‖λ_A⊗λ_G‖_F`, média sobre as camadas: **o tamanho da correção
+        que o EK-FAC está aplicando** em relação ao que o K-FAC teria feito. Zero significa
+        que ele não está fazendo nada, e a curva dele tem que coincidir com a do ACKTR.
+        Sem esta medida, um resultado nulo na arena seria indistinguível de um bug — e o bug
+        é a explicação mais provável das duas.
+
+        Ele mede duas coisas somadas, e vale saber quais: quanto a Fisher deste problema
+        deixa de ser um produto de Kronecker **naquela base**, e quanto a base envelheceu
+        desde que foi construída. As duas são exatamente o que o EK-FAC existe para
+        absorver — a segunda é o argumento de amortização do §"update frequency" do paper —
+        mas elas não se separam neste número.
+
+        O formato é um **dente de serra**: cai a zero em cada reconstrução da base (é lá que
+        `s*` é reiniciado no palpite do K-FAC) e cresce até a próxima. Ler uma atualização
+        isolada não diz nada; o que interessa é o pico antes de cada reinício.
+        """
+        if not self._m2:
+            return 0.0
+        desvios = []
+        for nome, m2 in self._m2.items():
+            ref = self._lamA[nome][:, None] * self._lamG[nome][None, :]
+            n = tf.norm(ref)
+            desvios.append(float(tf.norm(m2 - ref) / tf.maximum(n, 1e-12)))
+        return float(np.mean(desvios))
+
+    def resumo(self):
+        r = super().resumo()
+        r["escalas_medidas"] = len(self._m2)
+        r["desvio_de_kronecker"] = self.desvio_de_kronecker()
+        return r

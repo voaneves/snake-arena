@@ -239,11 +239,43 @@ Antes de declarar pronto:
 
 - [ ] Todos os `history.json` passam no validador de esquema
 - [ ] `evaluate` com a mesma seed e o mesmo modelo dá o mesmo número em duas execuções
-- [ ] Todo algoritmo bate o piso 1,08 com folga (ou está documentado como não-convergido)
+- [ ] Todo algoritmo bate o piso **1,21** com folga (ou está documentado como não-convergido) —
+      o número mudou de 1,08 para 1,21 quando o viés de amostra do `evaluate` foi corrigido;
+      ver o README, "Por que o piso subiu"
 - [ ] Um agente treinado joga no `snake.py` com pygame e o score da tela bate com o do `evaluate`
-- [ ] O `.tflite` int8 e o `.keras` dão a mesma ação em 1.000 estados aleatórios
+- [ ] O `.tflite` int8 e o `.keras` dão a mesma ação em 1.000 estados aleatórios — **exceto**
+      para políticas com memória (DreamerV3, SOAP), onde um `.tflite` sem estado não consegue
+      reproduzir a política e a paridade não é afirmada; ver `COMPARABILITY.md`
 - [ ] Os 13 notebooks legados abrem e renderizam no GitHub
 - [ ] Um notebook de arena executado do zero num Colab limpo reproduz o gráfico do README
+
+---
+
+## Fase 11 — O que veio depois do plano ✅
+
+Este documento foi escrito para nove algoritmos. Chegaram doze, e a diferença não é uma
+extensão da lista: os três últimos entraram para atacar hipóteses que as **medições** deste
+repositório levantaram, e não porque estavam num plano.
+
+| algoritmo | a hipótese que ele testa | de onde ela veio |
+|---|---|---|
+| **LBC** (`10`) | a exploração aqui é agendada por uma reta que nunca olhou o resultado | os agendamentos lineares de `AgentBase`, nunca medidos |
+| **SOAP** (`11`) | a observação do contrato não é markoviana, e o sexto canal foi a resposta errada | `CANAL_DE_FOME.md`, que fechou com resultado negativo |
+| **ACEKTR** (`12`) | a Fisher aproximada do K-FAC subestima a curvatura | `REVISAO_ALGORITMOS.md` §2.7 e a medição de KL do ACKTR |
+
+O que a Fase 1 comprou aparece aqui: os três couberam **sem tocar** no ambiente, no contrato,
+no protocolo de avaliação nem no registro. O LBC e o SOAP precisaram de um construtor novo em
+`nets/registry.py` e de um laço de coleta próprio; o ACEKTR precisou de **um método**
+extraído do `__init__` do ACKTR. Nenhum precisou de um `if` no `AgentBase`.
+
+Duas peças de infraestrutura nasceram junto e são reutilizáveis:
+
+* `snakeai/bandit.py` — UCB não-estacionário com janela deslizante, testado isolado do treino;
+* `EKFac` em `snakeai/kfac.py` — subclasse do `KFac`, reaproveitando captura, patches e fatores.
+
+E uma dívida da Fase 1 apareceu só agora: `variancia_explicada` mora em `agents/ppo.py` e é
+importada por três agentes que não são PPO, o que faz cada notebook deles embarcar o módulo
+inteiro. O lugar certo é `snakeai/eval.py`. Ver `REVISAO_ALGORITMOS.md` §5.2.
 
 ---
 

@@ -55,6 +55,13 @@ def quadros_do_episodio(politica, board_size=10, safety=False, max_steps=2000,
     obs, mask = env.reset()
     quadros = [_quadro(env, escala=escala)]
     score, motivo = 0, "limite de passos"
+    # Políticas com memória — o `PoliticaRecorrente` do DreamerV3, o `PoliticaComOpcoes`
+    # do SOAP — precisam saber qual ação de fato saiu para avançar o estado interno.
+    # `snakeai.eval` já respeitava este contrato; aqui não, e o resultado era um GIF
+    # gravado com o latente congelado no valor inicial: o agente do vídeo não era o
+    # agente da curva, e o vídeo é justamente o artefato que se olha para entender *como*
+    # ele joga. Políticas sem memória não expõem o método e nada muda para elas.
+    apos_passo = getattr(politica, "apos_passo", None)
 
     for _ in range(max_steps):
         logits = np.asarray(politica(obs, mask), dtype=np.float32)
@@ -67,6 +74,8 @@ def quadros_do_episodio(politica, board_size=10, safety=False, max_steps=2000,
         comprimento_antes = int(env.length[0])
         fome_antes = int(env.hunger[0])
         obs, mask, r, d, info = env.step(a)
+        if apos_passo is not None:
+            apos_passo(a, d)
         quadros.append(_quadro(env, escala=escala))
 
         if d[0]:

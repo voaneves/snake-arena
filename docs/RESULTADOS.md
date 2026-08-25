@@ -11,9 +11,12 @@ Gerado por `python -m snakeai.arena --all`. Não editar à mão.
 | acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
 | acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
 | a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
+| rainbow · completo | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **65.43** | 65.43 | 2,250,240 | 4.0 | ±0.00 | 77 | 94 | 0.0% |
 | ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
 | acktr · resnet_small+kl_nominal+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **64.53** | 84.92 | 1,277,952 | 0.5 | ±0.00 | 69 | 97 | 26.7% |
 | a2c · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,005,312 | **53.60** | 53.60 | 4,005,888 | 0.3 | ±7.87 | 59 | 78 | 0.0% |
+| dqn · base | `resnet_small` | 333,475 | 3 | 5,000,192 | **47.11** | 51.79 | 3,500,032 | 1.9 | ±2.86 | 49 | 89 | 0.0% |
+| rainbow · completo+n3 | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **0.57** | 0.78 | não chegou | 2.6 | ±0.00 | 0 | 6 | 0.0% |
 
 Score perfeito no 10×10: **97**.
 
@@ -40,6 +43,8 @@ diferença entre algoritmos que a tabela mostra.
 
 - `acktr/resnet_small+kl0.002`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl_nominal+kl0.002`: 1 de 3 — faltam 2
+- `rainbow/completo`: 1 de 3 — faltam 2
+- `rainbow/completo+n3`: 1 de 3 — faltam 2
 
 ## Execuções que não entraram na arena
 
@@ -50,7 +55,7 @@ não é o carimbo que ficou gravado no dia do treino. Execuções marcadas
 e some-las seria pior do que incluí-las.
 
 - `acktr/resnet_small_regua_antiga/seed0`: comparable=False: medida com o protocolo de avaliação anterior a 14/08: sem as chaves de causa de fim, com a maçã do episódio vencedor faltando (score_max 96 num tabuleiro cujo perfeito é 97) e com `win_rate` de outra fórmula. Mantida como registro histórico; a semente 0 na régua atual está em `acktr/resnet_small/seed0`.
-- `dqn/base/seed0`: comparable=False: treinada antes da correção do truncamento por fome (§1.1 da revisão): a fome entrava no buffer como terminação e o `next_obs` gravado era o do episódio seguinte. 34,3% dos episódios finais terminaram por inanição — o sintoma que a correção ataca. Mantida como registro do 'antes'; refazer com o pacote corrigido.
+- `dqn/base_antigo/seed0`: comparable=False: treinada antes da correção do truncamento por fome (§1.1 da revisão): a fome entrava no buffer como terminação e o `next_obs` gravado era o do episódio seguinte. 34,3% dos episódios finais terminaram por inanição — o sintoma que a correção ataca. Mantida como registro do 'antes'; refazer com o pacote corrigido.
 - `ppo/resnet_small_fome_esparso/seed0`: comparable=False: observação com 6 canais (fome), fora do contrato de 5; orçamento de gradiente esparso (~2.400 atualizações), que era o padrão quando a ablação foi medida
 - `ppo/resnet_small_fome_esparso/seed1`: comparable=False: observação com 6 canais (fome), fora do contrato de 5; orçamento de gradiente esparso (~2.400 atualizações), que era o padrão quando a ablação foi medida
 - `ppo/resnet_small_fome_esparso/seed2`: comparable=False: observação com 6 canais (fome), fora do contrato de 5; orçamento de gradiente esparso (~2.400 atualizações), que era o padrão quando a ablação foi medida

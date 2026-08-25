@@ -50,6 +50,29 @@ O travessão marca execuções anteriores ao mecanismo de assinatura. Todas elas
 `comparable=False` por outros motivos, **exceto** `ppo/resnet_small_esparso`, que compete e
 cuja procedência precisa ser reconstruída pelo commit em que os dados foram acrescentados.
 
+## A fronteira de agosto: por que **todas** as assinaturas mudaram de uma vez
+
+Três algoritmos entraram no repositório em sequência — LBC, SOAP e ACEKTR —, e cada um deles
+acrescentou um construtor a `snakeai/nets/registry.py`. Esse módulo está no **núcleo** que o
+gerador injeta em todo notebook, então a assinatura dos dezessete mudou três vezes, mesmo nos
+notebooks que não usam nenhum dos construtores novos.
+
+Isso precisa estar escrito porque um revisor vai perguntar, e a resposta certa é a que
+tranquiliza: **a mudança é inerte**. O que entrou foram funções novas — nenhuma linha de
+`build_actor_critic`, do `VecSnake`, do `evaluate` ou do `record` foi tocada. Uma execução de
+PPO antes e depois da fronteira roda o mesmo código; o que mudou foi o hash do arquivo que o
+contém.
+
+Duas mudanças **não** são inertes e ficam registradas aqui:
+
+| mudança | efeito num número |
+|---|---|
+| `env/render.py` passou a chamar `apos_passo` (§3.6 da revisão) | **nenhum número da arena**. Ela afeta só o GIF — mas todo GIF de DreamerV3 anterior à fronteira mostra uma política com o latente congelado |
+| `agents/acktr.py` extraiu `_cria_precondicionador` do `__init__` | nenhum: o K-FAC continua sendo construído com os mesmos argumentos. É refatoração pura, e `test_ekfac.py` confere que o ACKTR e o ACEKTR só diferem nesse método |
+
+O procedimento de auditoria da seção seguinte continua valendo sem alteração: a assinatura é
+reprodutível a partir de qualquer commit, e é ela — não a data — que diz o que rodou.
+
 ## O método de auditoria
 
 A assinatura é reprodutível a partir de qualquer commit: basta reconstruir a concatenação

@@ -486,6 +486,8 @@ PAPERS = {
     "08_acktr.ipynb": "1708.05144",
     "09_dreamerv3.ipynb": "2301.04104",
     "10_lbc.ipynb": "2305.05239",
+    "11_soap.ipynb": "2407.18913",
+    "12_acektr.ipynb": "1806.03884",
 }
 
 #: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.
@@ -506,6 +508,31 @@ def test_every_algorithm_notebook_is_classified_as_paper_or_ablation():
     assert declarados == classificados, (
         f"não classificados: {sorted(declarados - classificados)} · "
         f"classificados que não existem: {sorted(classificados - declarados)}")
+
+
+def test_every_arxiv_link_in_the_readme_is_in_the_bibliography():
+    """A tabela do README e `docs/REFERENCIAS.md` não podem divergir.
+
+    São duas listas da mesma coisa, escritas em lugares diferentes — o arranjo que produz
+    divergência silenciosa. Aqui a bibliografia é a superset: tudo que o README cita tem que
+    estar lá, com o arquivo que implementa e o teste que prova. O contrário é permitido, e é
+    o ponto: `docs/REFERENCIAS.md` cobre peças que não têm linha na tabela de algoritmos.
+    """
+    import re
+
+    referencias = open(os.path.join(RAIZ, "docs", "REFERENCIAS.md"),
+                       encoding="utf-8").read()
+    no_readme = set(re.findall(r"arxiv\.org/abs/([\d.]+)", _readme()))
+    na_biblio = set(re.findall(r"arxiv\.org/abs/([\d.]+)", referencias))
+    faltando = sorted(no_readme - na_biblio)
+    assert not faltando, f"citados no README e ausentes da bibliografia: {faltando}"
+
+
+def test_the_bibliography_covers_every_notebook_paper():
+    referencias = open(os.path.join(RAIZ, "docs", "REFERENCIAS.md"),
+                       encoding="utf-8").read()
+    for arquivo, arxiv in sorted(PAPERS.items()):
+        assert arxiv in referencias, f"{arquivo}: {arxiv} não está em docs/REFERENCIAS.md"
 
 
 @pytest.mark.parametrize("arquivo,arxiv", sorted(PAPERS.items()))
