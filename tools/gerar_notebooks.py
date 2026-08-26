@@ -608,12 +608,13 @@ e `melhor` (o melhor checkpoint, com o passo em que apareceu). Junto vão `model
 e `modelos/best.keras` — a pasta é autossuficiente, quem a recebe consegue rodar o agente
 sem depender de nada que ficou nesta máquina.
 
-Sobre versionar isso no GitHub: um `.keras` vai de 0,8 MB (`resnet_small`) a 6,7 MB
-(`cnn_rainbow` com dueling e C51), então a arena inteira — 12 algoritmos × 3 sementes × 2
-modelos — passa de 180 MB. Cabe num repositório, mas binário em git **nunca
-some do histórico**: cada re-execução deixa mais uma cópia lá para sempre. Se começar a
-incomodar, o lugar certo é um *Release* do GitHub, que é feito para binário e não entra no
-clone.
+Sobre versionar isso no GitHub: o registro vai (`history.json`, `curva.png` e os GIFs), os
+**pesos não**. Um `.keras` vai de 0,8 MB (`resnet_small`) a 6,7 MB (`cnn_rainbow` com dueling
+e C51), e a arena inteira passa de 100 MB só de modelo — binário em git **nunca some do
+histórico**, então cada re-execução deixaria mais uma cópia lá para sempre. O `.gitignore` já
+tira `runs/**/*.keras` e `runs/**/*.npz`; o lugar deles é um *Release* do GitHub, que é feito
+para binário e não entra no clone. Os arquivos continuam na sua pasta — o que muda é só o que
+o git carrega.
 """),
         _code("""CAMINHO_REGISTRO = registro.save(skip_validation=True)
 print("registro:", CAMINHO_REGISTRO)

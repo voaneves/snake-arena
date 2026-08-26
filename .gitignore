@@ -13,8 +13,23 @@ export/
 *.tflite
 !models/**/*.tflite
 wandb/
+
+# Os pesos das execuções ficam no disco — `retomar()` e a exportação precisam deles — e
+# **fora do git**. Hoje são 83 MB em 58 arquivos; a arena completa passa de 100 MB, e
+# binário em git nunca sai do histórico: cada re-execução deixa mais uma cópia lá para
+# sempre. O caminho de publicação é um *Release*. O `.npz` acompanha o `.keras` porque é
+# ele que carrega o modelo do mundo do DreamerV3 (§1.4 da revisão) — separar os dois
+# guardaria um ator que não joga.
+runs/**/*.keras
+runs/**/*.npz
+
+# GIF de execução **entra**. São ~240 KB cada, 26 MB para a arena inteira — barato perto
+# dos 100 MB de peso — e é o único artefato que mostra *como* o agente perde: morrer preso
+# no próprio corpo e morrer de fome dão a mesma linha na curva. O resto do mundo continua
+# fora, para um `.gif` solto na raiz não entrar sem querer.
 *.gif
 !assets/*.gif
+!runs/**/*.gif
 
 # Sistema
 .DS_Store

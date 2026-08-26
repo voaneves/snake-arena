@@ -121,8 +121,17 @@ def _params(modelo):
     return int(sum(np.prod(w.shape) for w in modelo.weights))
 
 
+#: Sufixo das redes-alvo no repositório: `critico_alvo` no DreamerV3. Elas entram em
+#: `modelos_extra()` porque `retomar()` precisa delas em disco — mas **não** são capacidade:
+#: são cópias periódicas de uma rede que já está contada. Somá-las contaria o crítico duas
+#: vezes, e ainda por cima só no Dreamer, já que o alvo do DQN mora em `self.target` e nunca
+#: apareceu nesta conta. A tabela compara capacidade; o critério tem de ser o mesmo nas doze
+#: linhas.
+SUFIXO_ALVO = "_alvo"
+
+
 def _extras(ag):
-    """O que o otimizador move além de `self.model`.
+    """O que o agente treina além de `self.model`, sem contar rede-alvo.
 
     `modelos_extra()` cobre o DreamerV3, e não cobre o MuZero: ele salva `h`, `g` e `f` em
     três arquivos por conta própria, então nunca precisou do `.npz` — mas a dinâmica `g`
@@ -136,7 +145,21 @@ def _extras(ag):
         vistos = {id(w) for w in ag.model.weights}
         return int(sum(np.prod(v.shape) for v in ag._variaveis()
                        if id(v) not in vistos))
-    return sum(_params(m) for m in ag.modelos_extra().values())
+
+    extras = ag.modelos_extra()
+    total = 0
+    for nome, m in extras.items():
+        if not nome.endswith(SUFIXO_ALVO):
+            total += _params(m)
+            continue
+        # o alvo só é descartável porque é cópia; se um dia deixar de ser, isto acusa
+        fonte = extras.get(nome[: -len(SUFIXO_ALVO)])
+        if fonte is not None and _params(fonte) != _params(m):
+            raise AssertionError(
+                f"{nome} não é cópia de {nome[: -len(SUFIXO_ALVO)]} — "
+                "descartá-la esconderia capacidade de verdade"
+            )
+    return total
 
 
 def coleta():

@@ -154,7 +154,7 @@ forma. Um relatório de exportação anterior a essa correção não sustenta a 
 ## A capacidade **não** está igualada
 
 O contrato iguala o orçamento de passos de ambiente. Ele não iguala o tamanho da rede — e
-a variação entre os doze é de **22×**. Isso não é defeito: cada algoritmo precisa do que
+a variação entre os doze é de **21×**. Isso não é defeito: cada algoritmo precisa do que
 precisa, e obrigar o DreamerV3 a caber no orçamento de parâmetros do PPO seria mutilar o
 que ele é. O defeito seria não dizer. Até aqui o número só existia **depois** da execução,
 na coluna `params` do `RESULTADOS.md`, então "o ACER tem quase o dobro do A2C?" custava 5 M
@@ -166,6 +166,17 @@ notebook — `python tools/tabela_parametros.py` a regera, e um teste falha se e
 | notebook | algoritmo | tronco | `model` | extras | total | × PPO |
 |---|---|---|---:|---:|---:|---:|
 | `01_ppo` | ppo | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `02_dqn` | dqn | `resnet_small` | 333.475 | — | 333.475 | 1.85× |
+| `03_rainbow` | rainbow | `resnet_small` | 1.196.648 | — | 1.196.648 | 6.63× |
+| `04_a2c` | a2c | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `05_acer` | acer | `resnet_small` | 334.878 | — | 334.878 | 1.86× |
+| `06_alphazero` | alphazero | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `07_muzero` | muzero | `resnet_small` | 154.608 | 118.485 | 273.093 | 1.51× |
+| `08_acktr` | acktr | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `09_dreamerv3` | dreamerv3 | `dreamer_small` | 198.403 | 3.530.887 | 3.729.290 | 20.67× |
+| `10_lbc` | lbc | `resnet_small` | 286.896 | — | 286.896 | 1.59× |
+| `11_soap` | soap | `resnet_small` | 300.036 | — | 300.036 | 1.66× |
+| `12_acektr` | acektr | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
 | `02_dqn` | dqn | `resnet_small` | 333.475 | — | 333.475 | 1.85× |
 | `03_rainbow` | rainbow | `resnet_small` | 1.196.648 | — | 1.196.648 | 6.63× |
 | `04_a2c` | a2c | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
@@ -197,9 +208,17 @@ Como ler:
 * **MuZero** é o único que fica **abaixo** do PPO no `.keras` (0,86×) e acima no total: o
   `model` é o composto `h`+`f`, e a dinâmica `g` — 118.485 parâmetros que a busca usa a cada
   simulação — mora fora dele;
-* **DreamerV3, 22×**, é o modelo do mundo: encoder, GRU, prior, posterior, decoder e as
-  cabeças. O ator, que é o que joga, tem 198.403 — a mesma ordem do PPO. Comparar o Dreamer
-  pelo tamanho do `.keras` do ator seria comparar a ponta do iceberg;
+* **DreamerV3, 20,7×**, é o modelo do mundo — e **metade dele é uma única camada**. O
+  posterior sozinho tem 1.770.240 parâmetros, 47% do agente, porque recebe `[h, emb]` com
+  `emb` de **6.400**: o encoder não reduz a resolução, então achatar o tabuleiro 10×10 com 64
+  canais entrega 6.400 features a uma `Dense(256)`. O encoder que produz esse vetor tem
+  20.064 parâmetros — a conta inteira está na camada que o **consome**, não na que o produz.
+  Depois dele vêm decoder (421.925), GRU (394.752), cabeças de recompensa e continuação
+  (264.192), crítico (263.167), máscara (198.403), ator (198.403) e prior (131.840). O ator,
+  que é o que joga, está na mesma ordem do PPO; comparar o Dreamer pelo `.keras` do ator
+  seria comparar a ponta do iceberg. A rede-alvo do crítico **não** entra: é cópia
+  periódica, e contá-la contaria o crítico duas vezes — o alvo do DQN nunca entrou, e o
+  critério é o mesmo nas doze linhas;
 * **LBC 1,59× e SOAP 1,66×** carregam três políticas e quatro opções sobre um tronco
   **compartilhado**. O desvio está declarado em `LBC.md`: o paper trata cada política como
   um modelo independente, e três ResNets separadas triplicariam o custo por passo.

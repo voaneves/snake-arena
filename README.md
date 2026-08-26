@@ -334,9 +334,9 @@ Cabeças `dueling`, `noisy` e `c51` encaixam em qualquer tronco. O notebook
 `99_ablacoes.ipynb` fixa o algoritmo e varre as redes — assim "qual arquitetura é melhor" vira
 medida, não folclore.
 
-O tronco é metade da conta: a **cabeça** é que decide o tamanho final, e ele varia **22×**
-entre os doze notebooks — de 154.608 parâmetros no MuZero a 3.992.457 no DreamerV3, com seis
-deles empatados nos mesmos 180.464. A arena iguala passos de ambiente e **não** iguala isso,
+O tronco é metade da conta: a **cabeça** é que decide o tamanho final, e ele varia **21×**
+entre os doze notebooks — de 180.464 parâmetros nos seis do núcleo actor-critic a 3.729.290
+no DreamerV3, cujo modelo do mundo é quase tudo o que ele treina. A arena iguala passos de ambiente e **não** iguala isso,
 então a tabela por notebook está declarada em
 [`docs/COMPARABILITY.md`](docs/COMPARABILITY.md), computada dos próprios construtores —
 `python tools/tabela_parametros.py` a regera, e um teste falha se ela envelhecer.
@@ -426,8 +426,11 @@ ambiente. O que já foi medido fora do contrato, e portanto fora da arena:
 | melhor DQN de 2019 (treino, ambiente antigo) | 18,3 | `results/legacy/` |
 | ACER, 151 mil passos, rede `tiny`, CPU | 16,8 | execução de fumaça |
 
-**Os últimos modelos treinados moram neste repositório**, em [`models/`](models/) — `.keras`
-para retomar treino e TFLite fp16/int8 para embarcar no jogo.
+**Os modelos treinados não moram no git.** Cada execução guarda os seus em
+`runs/<algo>/<variante>/seed<N>/modelos/` no disco — `.keras` para retomar treino, mais o
+`.npz` do modelo do mundo quando o agente tem um — e o que se publica são os *Releases*. O
+que **está** versionado de cada execução é o registro: `history.json`, `curva.png` e os três
+GIFs. Ver [Onde ficam os arquivos](#arquivos).
 
 <a name="estrutura"></a>
 ## Estrutura do projeto
@@ -592,11 +595,23 @@ curva e os GIFs de cada execução vão para `runs/<algo>/<variante>/seed<N>/`, 
 autossuficiente. Baixe-a do Drive ou da saída do Kaggle, coloque em `runs/` e rode
 `python -m snakeai.arena --all`.
 
-Os modelos são o caso em que vale sair do git: um `.keras` vai de 0,8 MB (`resnet_small`) a
-6,7 MB (`cnn_rainbow` com dueling e C51), e a arena inteira — 12 algoritmos × 3 sementes × 2
-modelos — passa de 180 MB. Cabe num repositório, mas **binário em git nunca some do
-histórico**: cada re-execução deixa mais uma cópia lá para sempre. O lugar certo é um
-*Release* do GitHub, que é feito para binário e não entra no clone.
+<a name="arquivos"></a>
+### O que entra no git, e o que não entra
+
+A regra está no `.gitignore`, e a linha divisória é **peso contra evidência**:
+
+| | vai para o git | por quê |
+|---|---|---|
+| `history.json`, `curva.png` | **sim** | é o registro — é o que a arena lê e o que sustenta qualquer número publicado |
+| `episodio_s*.gif` | **sim** | ~240 KB cada, 26 MB na arena inteira, e é o único artefato que mostra *como* o agente perde: morrer preso no próprio corpo e morrer de fome dão a mesma linha na curva |
+| `modelos/*.keras`, `*.npz` | **não** | 83 MB hoje, >100 MB na arena completa. Ficam no disco, que é o que `retomar()` e a exportação precisam, e são publicados por *Release* |
+| `checkpoints/`, `export/` | **não** | intermediários, sobrescritos pela execução seguinte |
+
+O motivo de os pesos saírem é o mesmo de sempre: **binário em git nunca some do histórico** —
+cada re-execução deixa mais uma cópia lá para sempre. Um *Release* é feito para binário, não
+entra no clone, e ainda dá um nome e uma data ao conjunto. O GIF fica porque a conta é outra:
+o custo é um terço do de um único `.keras` do Rainbow, e o que se perde sem ele não é
+recuperável a partir do `history.json`.
 
 <p align="right">(<a href="#topo">voltar ao topo</a>)</p>
 
