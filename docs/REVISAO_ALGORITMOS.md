@@ -14,6 +14,7 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
 | §2.25 janela de n passos do Rainbow | **medido e corrigido** — o padrão passou a 20 |
+| §2.26 paridade `.keras` × TFLite | **corrigido** — quebrava no C51 e publicava número de acaso no LBC e no ACER |
 | §2.23 razão de reaproveitamento e rede alvo | levantado, **não** tocado — é a próxima ablação |
 | §3.6 GIF gravado com o estado interno congelado | **corrigido** |
 | todo o resto | levantado, não tocado |
@@ -687,6 +688,77 @@ Correções que acompanharam:
   passar o nome à mão — e esquecer faria as duas curvas virarem uma só na arena. Os nomes
   que a marcação automática produz são os mesmos que as execuções de agosto receberam;
 * o braço de controle virou notebook: `94_rainbow_nstep3`.
+
+### 2.26 ✔ A conferência de paridade do TFLite comparava eixos diferentes — **corrigido**
+`export.py:conferir_paridade`
+
+A terceira vez que a mesma suposição sobre a forma da saída cobra o preço, e a mais cara. O
+`.tflite` do Rainbow foi convertido e escrito em disco; foi a **validação** que quebrou:
+
+```
+ValueError: operands could not be broadcast together with shapes (200,) (200,121)
+```
+
+19.288 s de execução, na penúltima célula do notebook. O §2.14 foi o `Lambda` do dueling, o
+§2.17 foi a política do checkpoint, este é o exportador — as três são a mesma frase, "a
+saída da rede é `(lote, ações)`", escrita em três lugares diferentes.
+
+O mecanismo: com `n_atoms > 0` a rede devolve `(lote, ações, átomos)`. A função colapsava
+os átomos **só no lado Keras** e comparava o `argmax(1)` dos dois lados — `(200, 3)` contra
+`(200, 3, 121)`. E a busca pela saída de política (`c.shape[-1] == N_ACTIONS`) nunca acha o
+tensor do C51, cuja última dimensão são os 121 átomos: caía no `cand[0]` sem dizer nada.
+
+O defeito não é do Rainbow. O eixo das ações muda de lugar em três dos cinco formatos que
+`nets/registry.py` produz:
+
+| construtor | saída de política | quem usa |
+|---|---|---|
+| `build_actor_critic` | `(lote, ações)` | PPO, A2C, ACKTR, ACEKTR, AlphaZero, MuZero |
+| `build_q_network` sem C51 | `(lote, ações)` | DQN |
+| `build_q_network` com `n_atoms > 0` | `(lote, ações, átomos)` | Rainbow |
+| `build_actor_critic_populacao` | `(lote, políticas, ações)` | LBC |
+| `build_policy_q` | `(lote, ações)` **duas vezes** | ACER |
+
+E onde ele não quebrava, mentia. Medido, com conversão de verdade e pesos aleatórios:
+
+| modelo | `acoes_iguais` antes | depois (fp32) |
+|---|---|---|
+| C51, `n_atoms=121` | `ValueError` — leva o notebook junto | 1,000 |
+| LBC, 3 políticas | **0,315** | 1,000 |
+| ACER | **0,210** | 1,000 |
+
+0,315 e 0,210 são o acaso — 1/3, com três ações. No LBC a busca por `N_ACTIONS` colunas
+casava o **crítico** `(lote, 3)`, porque a população padrão tem 3 políticas e o jogo tem 3
+ações; no ACER as duas saídas têm a mesma forma, e qual delas o `Interpreter` lista primeiro
+decidia se a comparação era política × política ou política × crítico — a ordem das saídas
+do interpretador não é a do `keras.Model`. Esses dois números iam para o relatório de
+exportação como se fossem medição. É o pior dos três desfechos, porque não levanta nada.
+
+Correções:
+
+* `_escores_por_acao` — **uma** redução, aplicada nos dois lados, que cobre os três
+  formatos. O caso ambíguo `(lote, 3, 3)` do LBC é desempatado a favor da população: um C51
+  de três átomos não existe, o C51 existe para ter resolução;
+* `_q_de_logits_c51` — a esperança do índice do átomo sob a softmax, no lugar da média dos
+  logits. Como o suporte é afim e crescente (`z_i = v_min + i·Δz`), vale
+  `argmax_a Σ p(a,i)·z_i = argmax_a Σ p(a,i)·i`: a **ação escolhida** não depende de
+  `v_min`/`v_max`, que moram no agente e não chegam ao exportador. A média dos logits, que
+  estava ali, ignora a softmax e troca a ação escolhida — e o teste mostra que troca;
+* `_indice_da_politica` — casa a saída do `.tflite` pela **forma** do tensor do Keras e, no
+  empate, pelo valor. Usar a semelhança para escolher não enfraquece a afirmação: se
+  nenhuma candidata se parecer com a referência, todas reprovam igual;
+* uma falha da conferência não derruba mais a exportação. Ela vira `{"erro": ...}` no
+  relatório — que é impresso, então continua visível — em vez de matar a célula e levar
+  junto o `export/best`, o `int8` e o `.zip` da execução. A validação roda **depois** de os
+  arquivos estarem em disco; deixá-la apagar o resto foi exatamente o que aconteceu aqui.
+
+`tests/test_export.py`, 13 testes, três deles convertendo TFLite de verdade nos três
+formatos. Com `int8` a paridade fica entre 0,985 e 0,995 sobre pesos aleatórios — isso é a
+quantização, não o defeito.
+
+O que **não** mudou: DreamerV3 e SOAP continuam sem afirmação de paridade, pelo motivo do
+`COMPARABILITY.md` — a política tem memória e um `.tflite` sem estado não a reproduz. E
+nenhuma curva da arena se move: a conferência mede o arquivo exportado, não o treino.
 
 ### 2.16 ? A exploração do Rainbow neste ambiente — **hipótese aberta**
 

@@ -629,6 +629,14 @@ precisa passar por um SavedModel. `TFLiteConverter.from_concrete_functions(...)`
 gera um arquivo minúsculo — e **não captura os pesos**. A inferência devolve NaN sem nenhum aviso.
 Use `model.export(dir, format="tf_saved_model")` e converta a partir dele.
 
+**E uma segunda, do mesmo tipo:** a conferência de paridade `.keras` × `.tflite` só afirma
+alguma coisa se os dois lados forem reduzidos à ação escolhida **do mesmo jeito**. A saída da
+política não tem uma forma só aqui — `(lote, ações)` no PPO, `(lote, ações, átomos)` no C51,
+`(lote, políticas, ações)` no LBC, e duas saídas de forma idêntica no ACER — e a ordem em que
+o `Interpreter` lista as saídas não é a do `keras.Model`. Comparar `argmax` de eixos
+diferentes quebra num caso e devolve número de acaso nos outros dois. Ver
+[`docs/REVISAO_ALGORITMOS.md`](docs/REVISAO_ALGORITMOS.md) §2.26.
+
 <p align="right">(<a href="#topo">voltar ao topo</a>)</p>
 
 ---

@@ -141,6 +141,16 @@ ação** para esses agentes. Um `.tflite` que recebe só a observação não con
 uma política cuja ação depende de estado interno; os arquivos continuam sendo gerados e
 medidos, e o que não se afirma é a paridade.
 
+E onde a paridade **é** afirmada, ela precisa ser uma medição de verdade. Até a §2.26 da
+revisão não era: a conferência reduzia a saída da rede a "um escore por ação" só do lado
+Keras, então quebrava no Rainbow — cuja saída é `(lote, ações, átomos)` — e, pior, entregava
+número sem quebrar no LBC e no ACER, onde a saída de política do `.tflite` era escolhida por
+uma heurística que casava o crítico. Os valores publicados eram 0,315 e 0,210, que é o acaso
+com três ações. A regra que ficou: a mesma redução nos dois lados, a saída do `.tflite`
+casada pela forma do tensor do Keras, e desempate pelo valor quando duas saídas têm a mesma
+forma. Um relatório de exportação anterior a essa correção não sustenta a linha
+`acoes_iguais` — os arquivos continuam válidos, a afirmação sobre eles não.
+
 ## As três perguntas, separadas
 
 O gráfico principal responde **uma** pergunta: *quem vai mais longe com os mesmos dados?*
