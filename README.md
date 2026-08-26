@@ -334,6 +334,13 @@ Cabeças `dueling`, `noisy` e `c51` encaixam em qualquer tronco. O notebook
 `99_ablacoes.ipynb` fixa o algoritmo e varre as redes — assim "qual arquitetura é melhor" vira
 medida, não folclore.
 
+O tronco é metade da conta: a **cabeça** é que decide o tamanho final, e ele varia **22×**
+entre os doze notebooks — de 154.608 parâmetros no MuZero a 3.992.457 no DreamerV3, com seis
+deles empatados nos mesmos 180.464. A arena iguala passos de ambiente e **não** iguala isso,
+então a tabela por notebook está declarada em
+[`docs/COMPARABILITY.md`](docs/COMPARABILITY.md), computada dos próprios construtores —
+`python tools/tabela_parametros.py` a regera, e um teste falha se ela envelhecer.
+
 <p align="right">(<a href="#topo">voltar ao topo</a>)</p>
 
 ---

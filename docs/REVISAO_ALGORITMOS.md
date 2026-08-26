@@ -689,6 +689,29 @@ Correções que acompanharam:
   que a marcação automática produz são os mesmos que as execuções de agosto receberam;
 * o braço de controle virou notebook: `94_rainbow_nstep3`.
 
+**A nomenclatura, escrita para não depender de quem lembra.** O ponto de referência de
+`_variante` é o `RainbowConfig` **vigente**, não o paper: `completo` nomeia a configuração
+que de fato decolou aqui (`n_steps=20`, `lr=3e-4`) e o valor canônico de Hessel et al.
+aparece como `completo+n3`, porque é ele o desvio em relação ao que está rodando. Lido de
+fora o rótulo parece invertido, e a escolha é deliberada — renomear o padrão moveria os
+nomes das execuções de agosto, e o histórico vale mais que a coincidência com a literatura.
+Os desvios do canônico estão declarados campo a campo em `agents/rainbow.py`.
+
+Faltava uma marca, e ela custou uma colisão de identidade real. `_variante` cobria
+`n_steps`, os quatro componentes booleanos e `n_atoms`, mas **não** a exploração: trocar as
+noisy nets pela escada de ε — que é o braço do §2.16, outra política de comportamento
+inteira — saía como `completo`. A execução do Kaggle com `noisy=False, eps_start=1.0,
+n_steps=3` (score 49,17) gravou `variant: "completo"` e passou a dividir
+`(rainbow, completo, 0)` com a execução vigente da mesma semente; como `load_all` agrupa
+pela tripla e ignora o caminho, renomear a pasta à mão não resolvia — as duas curvas viravam
+uma só. Agora `_variante` marca `eps_greedy` quando a escada está **de fato** agindo, com a
+mesma condição de `DQN.eps()`: `eps_start > 0` e (`noisy=False` ou `eps_mesmo_com_noisy`).
+Marcar por `eps_start > 0` sozinho seria pior que não marcar — sob `noisy=True` sem
+`eps_mesmo_com_noisy` o ε é ignorado (§2.15), e o rótulo afirmaria uma exploração que a
+execução não teve. Aquela execução foi renomeada para
+`completo+n3+sem_noisy+eps_greedy`, com o motivo gravado em `meta["variante_corrigida"]`;
+o teste é `test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not`.
+
 ### 2.26 ✔ A conferência de paridade do TFLite comparava eixos diferentes — **corrigido**
 `export.py:conferir_paridade`
 

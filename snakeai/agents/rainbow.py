@@ -143,7 +143,7 @@ class Rainbow(DQN):
 
     @staticmethod
     def _variante(cfg):
-        """`completo`, mais uma marca por desvio da composição canônica.
+        """`completo`, mais uma marca por desvio da composição **vigente**.
 
         A composição canônica mora no código — e a **identidade da execução** também tem de
         morar. Até agora uma execução com `n_steps` diferente só se distinguia se quem a
@@ -151,6 +151,15 @@ class Rainbow(DQN):
         dividirem `(algo, variant, seed)` e virarem **uma** curva na arena: a de 0,57
         arrastaria a de 65,43 sem deixar rastro, e a média resultante não descreveria
         execução nenhuma.
+
+        **O ponto de referência é o `RainbowConfig` deste repositório, não o paper** — e
+        isso é escolha, não descuido. `completo` nomeia a configuração vigente, aquela que
+        de fato decolou aqui (`n_steps=20`, `lr=3e-4`); o valor canônico de Hessel et al.
+        aparece marcado, como `completo+n3`, porque é ele que é o desvio *em relação ao que
+        está rodando*. Um leitor que espere "completo = o paper" lê ao contrário, então
+        fica registrado: os desvios do canônico estão documentados campo a campo acima e na
+        `§2.25` da revisão. A alternativa — renomear o padrão — moveria os nomes das
+        execuções de agosto, e o histórico vale mais que a coincidência com a literatura.
 
         Os nomes que saem daqui são os mesmos que as execuções de agosto receberam à mão,
         então o histórico não se move.
@@ -162,9 +171,29 @@ class Rainbow(DQN):
         for nome in ("double", "dueling", "per", "noisy"):
             if not getattr(cfg, nome):
                 marcas.append(f"sem_{nome}")
+        if Rainbow._eps_ativo(cfg):
+            marcas.append("eps_greedy")
         if cfg.n_atoms != padrao.n_atoms:
             marcas.append(f"c51x{cfg.n_atoms}" if cfg.n_atoms else "sem_c51")
         return "+".join(["completo"] + marcas)
+
+    @staticmethod
+    def _eps_ativo(cfg):
+        """A escada de ε está **de fato** agindo? — a mesma condição de `DQN.eps()`.
+
+        Sem esta marca faltava um buraco na identidade: o Rainbow do §2.16 troca as noisy
+        nets pela escada de ε do DQN, e isso muda a **política de comportamento** inteira —
+        é outro experimento, não outra semente do mesmo. Com `eps_mesmo_com_noisy=True` ele
+        saía como `completo` e colidia com o padrão em silêncio, que é exatamente o defeito
+        que a marcação existe para fechar.
+
+        A condição não é `eps_start > 0`. Com `noisy=True` e `eps_mesmo_com_noisy=False` o ε
+        é ignorado (§2.15), e marcar por um parâmetro morto seria pior que não marcar: o
+        rótulo afirmaria uma exploração que a execução não teve.
+        """
+        if getattr(cfg, "eps_start", 0.0) <= 0.0:
+            return False
+        return not cfg.noisy or bool(getattr(cfg, "eps_mesmo_com_noisy", False))
 
     @staticmethod
     def componentes(cfg):

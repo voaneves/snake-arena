@@ -65,6 +65,24 @@ def test_a_deviation_from_the_canonical_composition_marks_the_variant():
     assert Rainbow(rb(n_steps=3, dueling=False)).variant == "completo+n3+sem_dueling"
 
 
+def test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not():
+    """Trocar as noisy nets pela escada de ε é **outro experimento**, não outra semente.
+
+    É o braço do §2.16, e ele saía como `completo`: mesma identidade do padrão, e a arena
+    juntaria as duas numa curva só. A execução do Kaggle que motivou esta marca rodou como
+    o padrão de então e virou ablação quando o padrão mudou — o rótulo tem de dizer isso
+    sozinho, sem depender de quem lembra.
+
+    O que **não** marca: `eps_start > 0` sob `noisy=True` sem `eps_mesmo_com_noisy`. Ali o
+    ε é ignorado (§2.15) e a marca afirmaria uma exploração que não aconteceu.
+    """
+    assert Rainbow(rb(eps_mesmo_com_noisy=True, eps_start=1.0)).variant \
+        == "completo+eps_greedy"
+    assert Rainbow(rb(eps_start=1.0)).variant == "completo"
+    assert Rainbow(rb(noisy=False, eps_start=1.0, eps_end=0.02, n_steps=3)).variant \
+        == "completo+n3+sem_noisy+eps_greedy"
+
+
 def test_an_explicit_variant_still_wins():
     """Os nomes que as execuções de agosto receberam à mão continuam valendo — o histórico
     não se move quando a marcação automática entra."""

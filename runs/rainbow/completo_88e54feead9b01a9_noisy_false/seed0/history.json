@@ -1,6 +1,6 @@
 {
   "algo": "rainbow",
-  "variant": "completo",
+  "variant": "completo+n3+sem_noisy+eps_greedy",
   "seed": 0,
   "net": "resnet_small",
   "params": 662148,
@@ -2086,6 +2086,10 @@
         "score": 78,
         "fim": "colisão"
       }
+    },
+    "variante_corrigida": {
+      "de": "completo",
+      "motivo": "rodou no Kaggle com o padrão de então (assinatura 88e54feead9b01a9): n_steps=3, noisy desligada e a escada de ε do DQN. Depois de §2.25 o padrão passou a n_steps=20 com noisy, então esta execução virou ablação — e com `variant: completo` ela dividia (algo, variant, seed) com a execução vigente de seed 0 e as duas viravam uma curva só. O nome novo é o que `Rainbow._variante` produz para esta config."
     }
   },
   "schema_version": 1

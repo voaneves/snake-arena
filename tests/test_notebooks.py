@@ -198,6 +198,25 @@ def test_absolute_imports_survive():
     assert "numpy" in limpo and "dataclass" in limpo and "field" in limpo
 
 
+# ------------------------------------------------- capacidade declarada
+def test_the_capacity_table_matches_what_the_builders_produce():
+    """A tabela do `COMPARABILITY.md` é computada, não escrita à mão.
+
+    A arena iguala passos de ambiente e **não** iguala capacidade — 22× entre o menor e o
+    maior. Uma tabela que envelhece em silêncio seria pior que nenhuma: ela afirmaria
+    capacidade igualada onde não está. Se alguém mexer numa cabeça de rede, este teste
+    falha e diz para rodar `python tools/tabela_parametros.py`.
+    """
+    from tabela_parametros import coleta, markdown            # noqa: PLC0415
+
+    with open(os.path.join(RAIZ, "docs", "COMPARABILITY.md"), encoding="utf-8") as f:
+        doc = f.read()
+    assert markdown(coleta()) in doc, (
+        "a tabela de capacidade divergiu — rode `python tools/tabela_parametros.py` e "
+        "cole a saída no `docs/COMPARABILITY.md`"
+    )
+
+
 # --------------------------------------------------- o README contra a pasta
 def _readme():
     with open(os.path.join(RAIZ, "README.md"), encoding="utf-8") as f:

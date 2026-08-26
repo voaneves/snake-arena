@@ -151,6 +151,64 @@ casada pela forma do tensor do Keras, e desempate pelo valor quando duas saídas
 forma. Um relatório de exportação anterior a essa correção não sustenta a linha
 `acoes_iguais` — os arquivos continuam válidos, a afirmação sobre eles não.
 
+## A capacidade **não** está igualada
+
+O contrato iguala o orçamento de passos de ambiente. Ele não iguala o tamanho da rede — e
+a variação entre os doze é de **22×**. Isso não é defeito: cada algoritmo precisa do que
+precisa, e obrigar o DreamerV3 a caber no orçamento de parâmetros do PPO seria mutilar o
+que ele é. O defeito seria não dizer. Até aqui o número só existia **depois** da execução,
+na coluna `params` do `RESULTADOS.md`, então "o ACER tem quase o dobro do A2C?" custava 5 M
+de passos para ser respondido.
+
+A tabela sai dos mesmos construtores que os agentes chamam, na configuração padrão de cada
+notebook — `python tools/tabela_parametros.py` a regera, e um teste falha se ela divergir:
+
+| notebook | algoritmo | tronco | `model` | extras | total | × PPO |
+|---|---|---|---:|---:|---:|---:|
+| `01_ppo` | ppo | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `02_dqn` | dqn | `resnet_small` | 333.475 | — | 333.475 | 1.85× |
+| `03_rainbow` | rainbow | `resnet_small` | 1.196.648 | — | 1.196.648 | 6.63× |
+| `04_a2c` | a2c | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `05_acer` | acer | `resnet_small` | 334.878 | — | 334.878 | 1.86× |
+| `06_alphazero` | alphazero | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `07_muzero` | muzero | `resnet_small` | 154.608 | 118.485 | 273.093 | 1.51× |
+| `08_acktr` | acktr | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+| `09_dreamerv3` | dreamerv3 | `dreamer_small` | 198.403 | 3.794.054 | 3.992.457 | 22.12× |
+| `10_lbc` | lbc | `resnet_small` | 286.896 | — | 286.896 | 1.59× |
+| `11_soap` | soap | `resnet_small` | 300.036 | — | 300.036 | 1.66× |
+| `12_acektr` | acektr | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
+
+Como ler:
+
+* **seis dos doze são a mesma rede**, 180.464 parâmetros de `build_actor_critic` sobre o
+  `resnet_small`: PPO, A2C, ACKTR, ACEKTR e AlphaZero. As comparações dentro desse grupo —
+  que são as do §"as três perguntas" e as três ablações de orçamento — têm capacidade
+  igualada por construção, e são as únicas que têm;
+* **ACER, 1,86×**, e a diferença inteira está numa linha sem justificativa escrita.
+  `build_policy_q` projeta o tronco com `Conv2D(8, 1)` antes de achatar, enquanto
+  `build_actor_critic` usa `Conv2D(2, 1)`: 800 features entrando na `Dense(256)` em vez de
+  200, ou 205.056 parâmetros contra 51.456. O que o algoritmo **de fato** exige — o crítico
+  devolver `Q(s,·)` por ação em vez de um escalar, que é o que o Retrace consome — custa 771
+  contra 257. A assimetria é do `8`, não do Retrace;
+* **DQN 1,85× e Rainbow 6,63×** — a mesma projeção de 8 filtros, mais o que o Rainbow soma
+  em cima: `dueling` duplica a corrente densa, `n_atoms=121` multiplica a saída por 121, e
+  cada `NoisyDense` guarda μ **e** σ. A cabeça sozinha tem 1.069.000 parâmetros, oito vezes
+  o tronco que a alimenta;
+* **MuZero** é o único que fica **abaixo** do PPO no `.keras` (0,86×) e acima no total: o
+  `model` é o composto `h`+`f`, e a dinâmica `g` — 118.485 parâmetros que a busca usa a cada
+  simulação — mora fora dele;
+* **DreamerV3, 22×**, é o modelo do mundo: encoder, GRU, prior, posterior, decoder e as
+  cabeças. O ator, que é o que joga, tem 198.403 — a mesma ordem do PPO. Comparar o Dreamer
+  pelo tamanho do `.keras` do ator seria comparar a ponta do iceberg;
+* **LBC 1,59× e SOAP 1,66×** carregam três políticas e quatro opções sobre um tronco
+  **compartilhado**. O desvio está declarado em `LBC.md`: o paper trata cada política como
+  um modelo independente, e três ResNets separadas triplicariam o custo por passo.
+
+A regra de leitura que sai disto: **quando duas curvas diferem e a capacidade também, o
+efeito não está isolado** — o par mede algoritmo *mais* tamanho de rede, e a conclusão tem
+de dizer isso. Os pares limpos são os seis de 180.464 entre si, e cada ablação contra o seu
+próprio braço de controle, que por construção compartilha a rede.
+
 ## As três perguntas, separadas
 
 O gráfico principal responde **uma** pergunta: *quem vai mais longe com os mesmos dados?*
