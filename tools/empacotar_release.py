@@ -31,6 +31,10 @@ import zipfile
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+#: O título do release, num lugar só: ele aparece na tag anotada e no `gh release create`,
+#: e os dois divergirem é o tipo de detalhe que ninguém confere depois de publicado.
+TITULO = "{tag} — a plataforma completa, a arena pela metade"
+
 #: Os pesos: o que sai do git e entra no anexo. Ver o `.gitignore` e o §"O que entra no
 #: git" do README — as duas listas têm de dizer a mesma coisa.
 PESOS = (".keras", ".npz")
@@ -93,11 +97,18 @@ def main(argv=None):
     if pesos:
         empacotar(os.path.join(args.saida, f"modelos-{args.tag}.zip"), pesos)
     empacotar(os.path.join(args.saida, f"runs-{args.tag}.zip"), tudo)
-    print("\nagora:")
-    print(f"  gh release create {args.tag} --prerelease \\")
-    print(f"    --title \"{args.tag} — a plataforma completa, a arena pela metade\" \\")
-    print("    --notes-file docs/RELEASE_v0.1.0.md")
+    # Sem quebra de linha: `\\` é continuação no bash e **não** no PowerShell, onde o
+    # comando sai partido no meio e o shell reclama de um argumento que não existe.
+    print("\nagora, com a tag no GitHub primeiro — as imagens das notas apontam para ela:")
+    print(f"  git tag -a {args.tag} -m \"{TITULO.format(tag=args.tag)}\"")
+    print(f"  git push origin {args.tag}")
+    print("\ncom o GitHub CLI (`winget install --id GitHub.cli -e`):")
+    print(f"  gh release create {args.tag} --prerelease --title \"{TITULO.format(tag=args.tag)}\" --notes-file docs/RELEASE_v0.1.0.md")
     print(f"  gh release upload {args.tag} modelos-{args.tag}.zip runs-{args.tag}.zip")
+    print("\nou sem CLI nenhum: github.com/voaneves/snake-arena/releases/new?tag="
+          + args.tag)
+    print("  escolha a tag existente, cole o conteúdo de docs/RELEASE_v0.1.0.md,")
+    print("  arraste os dois .zip e marque \"Set as a pre-release\".")
     return 0
 
 
