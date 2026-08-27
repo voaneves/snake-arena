@@ -12,9 +12,9 @@ do próprio controle, na mesma cor, responde outra pergunta.
 | algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | passos até 40 | horas | amplitude | mediana/ep | máx | cheio |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | 1 | — | 0% |
+| acer · resnet_small | `resnet_small` | 334,878 | 2 | 5,001,216 | **83.96** | 88.25 | 1,251,328 | 1.4 | ±12.24 | 91 | 97 | 47.3% |
 | ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
 | acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
-| acer · resnet_small | `resnet_small` | 334,878 | 1 | 5,001,216 | **77.84** | 85.77 | 1,251,328 | 1.4 | ±0.00 | 85 | 97 | 11.5% |
 | acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
 | a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
 | ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
@@ -45,12 +45,16 @@ duas é a resposta da outra.
 ## E no eixo de quem fecha o tabuleiro
 
 A média e a taxa de vitória são dois funcionais da **mesma** distribuição —
-`E[X]` e `P(X = 97)` — e aqui elas discordam: o Rainbow é o penúltimo em média e
-o terceiro em vitórias, na frente do ACER e do A2C, que têm 15 e 23 pontos a mais
-de score. O limiar joga fora tudo abaixo do teto (um 96 conta igual a um 3); a
-média joga fora o formato (não distingue "sempre 78" de "metade perfeito,
-metade zero"). Por isso a barra mostra a **repartição inteira** das causas de
-fim, com a vitória como primeiro segmento.
+`E[X]` e `P(X = 97)` — e não têm obrigação de concordar. O limiar joga fora tudo
+abaixo do teto: um episódio de 96 conta igual a um de 3. A média joga fora o
+formato: não distingue "sempre 78" de "metade perfeito, metade zero". **Quando
+a ordem desta figura difere da ordem do gráfico oficial, é exatamente isso que
+está acontecendo** — e nenhuma das duas é "a qualidade do modelo".
+
+Por isso a barra não é a taxa de vitória sozinha: é a repartição inteira das
+causas de fim, com a vitória como primeiro segmento. Ela mostra o que nenhum dos
+dois números mostra — perder por fome e perder por colisão são fracassos
+diferentes, e a curva de score é idêntica nos dois casos.
 
 ![quem fecha o tabuleiro](../assets/arena_vitorias_light.png)
 
@@ -60,7 +64,7 @@ Entram no gráfico, mas **não sustentam comparação**: a amplitude entre
 sementes do PPO neste ambiente é de 19 pontos, maior que quase toda
 diferença entre algoritmos que a tabela mostra.
 
-- `acer/resnet_small`: 1 de 3 — faltam 2
+- `acer/resnet_small`: 2 de 3 — faltam 1
 - `acktr/resnet_small+kl0.002`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl_nominal+kl0.002`: 1 de 3 — faltam 2
 - `rainbow/completo`: 2 de 3 — faltam 1

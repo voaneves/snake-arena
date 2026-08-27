@@ -674,8 +674,9 @@ def arena_vitorias(registros, mode="light", figsize=(8.6, 4.4), titulo=None,
     --------------------------
     "Melhor" não é uma coisa só. A média e a taxa de vitória são dois funcionais da mesma
     distribuição — `E[X]` e `P(X = perfeito)` — e **elas discordam nestes dados**: o
-    Rainbow é o penúltimo em média e o terceiro em vitórias, na frente do ACER e do A2C,
-    que têm 15 e 23 pontos a mais de score. Publicar só a média deixaria isso invisível.
+    Rainbow é o penúltimo em média e ainda assim fecha o tabuleiro **nove vezes mais** que
+    o A2C, que tem 15 pontos a mais de score (19,9% contra 2,2%). Publicar só a média
+    deixaria isso invisível.
 
     O que cada uma joga fora explica a discordância. A taxa de vitória é um limiar no
     extremo: um episódio de 96 conta igual a um de 3, e é por isso que o A2C — que joga

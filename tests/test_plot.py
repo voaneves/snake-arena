@@ -412,9 +412,9 @@ def fim(r, cheio=0.0, colisao=1.0, fome=0.0, media=None):
 def test_the_win_panel_orders_by_wins_and_not_by_mean():
     """É o ponto inteiro da figura: as duas réguas discordam.
 
-    Nos dados reais o Rainbow é penúltimo em média e terceiro em vitórias, na frente do
-    ACER e do A2C — que têm 15 e 23 pontos a mais de score. Se este painel ordenasse pela
-    média, ele não teria nada a dizer que o painel oficial já não diga.
+    Nos dados reais o Rainbow é penúltimo em média e fecha o tabuleiro nove vezes mais
+    que o A2C, que tem 15 pontos a mais de score. Se este painel ordenasse pela média, ele
+    não teria nada a dizer que o painel oficial já não diga.
     """
     registros = [
         fim(run(algo="acer", variant="resnet_small"), cheio=.115, colisao=.821, fome=.064,

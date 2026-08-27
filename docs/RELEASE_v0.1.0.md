@@ -1,11 +1,14 @@
-# v0.1.0 — a plataforma completa, a arena pela metade
+# v0.1.0-alpha — a plataforma completa, a arena pela metade
 
 Doze algoritmos implementados, testados e gerados a partir do mesmo pacote. **Seis já
-treinados no orçamento oficial** — os outros seis esperam GPU, não código. Este release
-existe para dar um nome e uma data ao que já está de pé, e para tirar os pesos de dentro do
-git sem que ninguém perca o acesso a eles.
+treinados no orçamento oficial** — os outros seis esperam GPU, não código.
 
-![arena](https://raw.githubusercontent.com/voaneves/snake-arena/v0.1.0/assets/arena_light.png)
+É um **alpha** por uma razão só, e ela está escrita no fim desta página: metade da arena
+não foi medida, e duas das seis configurações treinadas têm menos de três sementes. O
+código está de pé; a comparação ainda não. Marcar como estável um benchmark pela metade
+seria o tipo exato de coisa que este repositório existe para não fazer.
+
+![arena](https://raw.githubusercontent.com/voaneves/snake-arena/v0.1.0-alpha/assets/arena_light.png)
 
 ---
 
@@ -14,27 +17,87 @@ git sem que ninguém perca o acesso a eles.
 Score médio do modelo do **último passo** — o número oficial, mediana entre sementes.
 Tabuleiro 10×10, teto perfeito **97**, 5 M passos de ambiente para todos.
 
-| algoritmo | sementes | | score |
-|---|---:|---|---:|
-| **PPO** | 3 | `█████████████████████████░░░░░` | **81,50** |
-| **ACKTR** | 3 | `████████████████████████░░░░░░` | **78,13** |
-| **ACER** | 1 | `████████████████████████░░░░░░` | **77,84** |
-| **A2C** | 3 | `█████████████████████░░░░░░░░░` | **69,61** |
-| **Rainbow** | 2 | `█████████████████░░░░░░░░░░░░░` | **54,46** |
-| **DQN** | 3 | `███████████████░░░░░░░░░░░░░░░` | **47,11** |
-| _piso aleatório_ | — | `▏░░░░░░░░░░░░░░░░░░░░░░░░░░░░░` | **1,21** |
+| algoritmo | sementes | | score | tabuleiro cheio |
+|---|---:|---|---:|---:|
+| **ACER** | 2 | `██████████████████████████░░░░` | **83,96** | 47,3% |
+| **PPO** | 3 | `█████████████████████████░░░░░` | **81,50** | 61,4% |
+| **ACKTR** | 3 | `████████████████████████░░░░░░` | **78,13** | 60,7% |
+| **A2C** | 3 | `██████████████████████░░░░░░░░` | **69,61** | 2,2% |
+| **Rainbow** | 2 | `█████████████████░░░░░░░░░░░░░` | **54,46** | 19,9% |
+| **DQN** | 3 | `███████████████░░░░░░░░░░░░░░░` | **47,11** | 0,0% |
+| _piso aleatório_ | — | `█░░░░░░░░░░░░░░░░░░░░░░░░░░░░░` | **1,21** | 0,0% |
 
-**25 execuções oficiais**, 6 curvas históricas do repositório antigo e **5 execuções
+**26 execuções oficiais**, 6 curvas históricas do repositório antigo e **5 execuções
 listadas fora da arena** com o motivo escrito — protocolo antigo, truncamento por fome
 anterior à correção, observação de 6 canais. Excluir em silêncio é pior que incluir; a lista
-está no topo da saída do `arena --all`.
+sai no topo do `arena --all`.
 
-O melhor checkpoint conta outra história, e ela também está publicada: o ACKTR passou por
-**85,84**, o ACER por **85,77** e uma semente do Rainbow por **86,13** antes de terminar em
+**O ACER lidera, e a liderança não está estabelecida.** As duas sementes dele são 77,84 e
+**90,08** — amplitude de 12,24 contra 3,45 do PPO em três sementes. Some a isso a
+capacidade: ele é o único do topo com 1,86× a rede dos outros (ver abaixo), e essa
+diferença não tem justificativa escrita no código. Duas coisas para desconfiar, as duas
+declaradas.
+
+O melhor checkpoint conta outra história, e ela também está publicada: o ACER passou por
+**88,25**, o ACKTR por **85,84** e uma semente do Rainbow por **86,13** antes de terminar em
 43,50. **RL profundo não melhora monotonicamente** — por isso `last` e `best` são duas
 colunas, e não uma escolha.
 
-### As ablações, no mesmo eixo
+---
+
+## Média não é vitória, e aqui elas discordam
+
+![quem fecha o tabuleiro](https://raw.githubusercontent.com/voaneves/snake-arena/v0.1.0-alpha/assets/arena_vitorias_light.png)
+
+São dois funcionais da **mesma** distribuição — `E[X]` e `P(X = 97)` — e a ordem muda entre
+eles. O **ACER lidera a média e é o terceiro em vitórias**; o Rainbow é o penúltimo em média
+e fecha o tabuleiro **nove vezes mais** que o A2C, que tem 15 pontos a mais de score
+(19,9% contra 2,2%).
+
+O que cada régua joga fora explica a discordância. A taxa de vitória é um limiar no extremo:
+um episódio de 96 conta igual a um de 3. A média usa o episódio inteiro, mas não distingue
+"sempre 78" de "metade perfeito, metade zero". Por isso a barra mostra a **repartição
+inteira** das causas de fim — e ela diz coisas que nenhum dos dois números diz: o Rainbow
+perde 31,6% dos episódios **por fome**, o A2C perde 97,5% **por colisão**. São dois modos de
+falhar completamente diferentes.
+
+---
+
+## O agente jogando
+
+Um GIF responde o que a curva não responde: *como* ele perde.
+
+| ACER · 97, tabuleiro cheio | Rainbow · 97, tabuleiro cheio | Rainbow · 0, morreu de fome |
+|---|---|---|
+| <img src="https://raw.githubusercontent.com/voaneves/snake-arena/v0.1.0-alpha/runs/acer/resnet_small/seed1/episodio_s7.gif" width="240"> | <img src="https://raw.githubusercontent.com/voaneves/snake-arena/v0.1.0-alpha/runs/rainbow/completo/seed1/episodio_s42.gif" width="240"> | <img src="https://raw.githubusercontent.com/voaneves/snake-arena/v0.1.0-alpha/runs/rainbow/completo/seed1/episodio_s7.gif" width="240"> |
+
+Os dois GIFs do Rainbow são **o mesmo modelo, a mesma semente, a mesma avaliação** — só muda
+a semente do episódio. Um jogo perfeito e um zero por inanição, lado a lado. É isso que a
+média de 54,46 está resumindo, e é por isso que ela não descreve execução nenhuma.
+
+Os GIFs de cada execução ficam versionados em `runs/<algo>/<variante>/seed<N>/` — três por
+execução, sementes 7, 21 e 42, sempre as mesmas.
+
+---
+
+## Os doze
+
+| # | algoritmo | estado | o que ele existe para responder |
+|---|---|---|---|
+| 01 | PPO | **treinado** · 3 sementes | a referência do benchmark |
+| 02 | DQN | **treinado** · 3 sementes | a família inteira como flags independentes |
+| 03 | Rainbow | **treinado** · 2 sementes | os seis componentes ligados juntos |
+| 04 | A2C | **treinado** · 3 sementes | o PPO sem clipping e sem reaproveitar rollout |
+| 05 | ACER | **treinado** · 2 sementes | Retrace(λ), IS truncado, região de confiança |
+| 06 | AlphaZero | implementado | busca sobre o simulador **real** |
+| 07 | MuZero | implementado | a mesma busca, sobre um modelo aprendido |
+| 08 | ACKTR | **treinado** · 3 sementes | gradiente natural com K-FAC — a dívida de 2019 paga |
+| 09 | DreamerV3 | implementado | treinar dentro de um modelo do mundo |
+| 10 | LBC | implementado | exploração **selecionada** em vez de agendada |
+| 11 | SOAP | implementado | opções discretas para uma observação não markoviana |
+| 12 | ACEKTR | implementado | EK-FAC: os autovalores medidos, não fatorados |
+
+### As ablações, cada uma contra o seu controle
 
 | ablação | contra | resultado | o que isso mede |
 |---|---|---|---|
@@ -50,26 +113,7 @@ a diferença qualitativa fecha.
 
 ---
 
-## Os doze
-
-| # | algoritmo | estado | o que ele existe para responder |
-|---|---|---|---|
-| 01 | PPO | **treinado** · 3 sementes | a referência do benchmark |
-| 02 | DQN | **treinado** · 3 sementes | a família inteira como flags independentes |
-| 03 | Rainbow | **treinado** · 2 sementes | os seis componentes ligados juntos |
-| 04 | A2C | **treinado** · 3 sementes | o PPO sem clipping e sem reaproveitar rollout |
-| 05 | ACER | **treinado** · 1 semente | Retrace(λ), IS truncado, região de confiança |
-| 06 | AlphaZero | implementado | busca sobre o simulador **real** |
-| 07 | MuZero | implementado | a mesma busca, sobre um modelo aprendido |
-| 08 | ACKTR | **treinado** · 3 sementes | gradiente natural com K-FAC — a dívida de 2019 paga |
-| 09 | DreamerV3 | implementado | treinar dentro de um modelo do mundo |
-| 10 | LBC | implementado | exploração **selecionada** em vez de agendada |
-| 11 | SOAP | implementado | opções discretas para uma observação não markoviana |
-| 12 | ACEKTR | implementado | EK-FAC: os autovalores medidos, não fatorados |
-
----
-
-## Capacidade: igualada em seis, e declarada nos doze
+## Capacidade: igualada em seis, declarada nos doze
 
 A arena iguala o orçamento de **passos de ambiente**. Ela **não** iguala o tamanho da rede,
 e a variação é de 21×. Isso não é defeito — obrigar o DreamerV3 a caber no orçamento de
@@ -89,8 +133,15 @@ parâmetros do PPO seria mutilar o que ele é. O defeito seria não dizer.
 **Seis dos doze são a mesma rede** — as comparações dentro desse grupo têm capacidade
 igualada por construção, e são as únicas que têm. A tabela sai dos próprios construtores
 (`python tools/tabela_parametros.py`) e um teste falha se ela envelhecer. A regra de leitura
-está em [`docs/COMPARABILITY.md`](https://github.com/voaneves/snake-arena/blob/v0.1.0/docs/COMPARABILITY.md): **quando duas curvas diferem e a
-capacidade também, o efeito não está isolado**.
+está no [`COMPARABILITY.md`](https://github.com/voaneves/snake-arena/blob/v0.1.0-alpha/docs/COMPARABILITY.md):
+**quando duas curvas diferem e a capacidade também, o efeito não está isolado**.
+
+### E no eixo do custo
+
+O eixo oficial iguala os *dados vistos*; ele não iguala o *esforço*. Um passo de AlphaZero é
+uma busca em árvore inteira, um de DQN é uma passada de rede.
+
+![custo](https://raw.githubusercontent.com/voaneves/snake-arena/v0.1.0-alpha/assets/arena_tempo_light.png)
 
 ---
 
@@ -116,30 +167,32 @@ ignorado, e marcar um parâmetro morto seria pior que não marcar.
 ACER tem quase o dobro do A2C?" sem gastar 5 M de passos para descobrir. Resposta: tem —
 1,86×, e a diferença inteira está numa `Conv2D(8, 1)` que não tem justificativa escrita.
 
-**O gráfico principal virou um braço por algoritmo.** Ablação sai da figura e continua na
-tabela: o `ppo · esparso` desenhado ao lado do PPO, na mesma cor, se lê de longe como "o PPO é
-instável" em vez de "este é o controle de orçamento". Quantas ficaram de fora vai no rodapé da
-figura — sumir em silêncio seria a mesma falha que a arena já não comete com as execuções fora
-do contrato.
+**Três painéis, três perguntas.** O gráfico principal passou a mostrar **um braço por
+algoritmo** — ablação sai da figura e continua na tabela, porque desenhada ao lado do
+controle, na mesma cor, ela se lê de longe como instabilidade do braço principal. Quantas
+ficaram de fora vai no rodapé da própria figura. E entrou o painel de vitórias, pelo motivo
+da seção acima. Os três saem de `python -m snakeai.arena --all`, junto com a tabela.
 
-**Os pesos saíram do git.** `runs/**/*.keras` e `*.npz` ficam no disco, onde `retomar()` e a
-exportação precisam deles, e são publicados aqui. Os **GIFs entram**: ~240 KB cada, e são o
-único artefato que mostra *como* o agente perde — morrer preso no próprio corpo e morrer de
-fome dão a mesma linha na curva.
+**Os pesos saem do git.** `runs/**/*.keras` e `*.npz` ficam no disco, onde `retomar()` e a
+exportação precisam deles, e são publicados **aqui**, como anexo. Os **GIFs entram**: ~240 KB
+cada, 26 MB para a arena inteira, e são o único artefato que mostra *como* o agente perde.
 
 ---
 
 ## O que ainda não está de pé
 
-Isto não é roadmap, é a lista do que **não** se pode afirmar com esta versão na mão:
+Isto não é roadmap. É a lista do que **não** se pode afirmar com esta versão na mão — e é
+por ela que este release é um alpha:
 
 - **seis dos doze nunca rodaram** no orçamento oficial. AlphaZero, MuZero, DreamerV3, LBC,
   SOAP e ACEKTR estão implementados e testados — não medidos;
-- **ACER e Rainbow têm menos de três sementes.** Com uma semente não existe amplitude, e a
-  ordem entre 78,13 e 77,84 não está estabelecida;
-- **a assimetria de capacidade do ACER** (1,86×) é um confundidor declarado e ainda não
-  medido: alinhar a cabeça do crítico ao actor-critic é ablação, não conserto;
-- **o posterior do DreamerV3 é 47% do agente** porque recebe um `emb` de 6.400 — o encoder
+- **ACER e Rainbow têm duas sementes.** A amplitude do ACER entre elas é de 12,24 pontos, e
+  a do ACKTR em três sementes é de 19,11: **maior que quase toda diferença entre algoritmos
+  que a tabela mostra**. A ordem no topo não está estabelecida;
+- **a assimetria de capacidade do ACER** (1,86×) é um confundidor declarado e não medido —
+  e ele é justamente quem lidera. Alinhar a cabeça do crítico ao actor-critic é ablação, não
+  conserto;
+- **o posterior do DreamerV3 é 47% do agente** porque recebe um `emb` de 6.400: o encoder
   não reduz resolução. Uma projeção 1×1 antes do achatamento levaria o total de 3,73 M para
   ~2,30 M sem colapsar espaço nenhum. Também é ablação;
 - **a exploração do Rainbow** (§2.16) tem uma semente de cada lado e um mecanismo plausível.
@@ -151,20 +204,27 @@ Isto não é roadmap, é a lista do que **não** se pode afirmar com esta versã
 
 | arquivo | conteúdo | tamanho |
 |---|---|---|
-| `modelos-v0.1.0.zip` | os 58 `.keras` de `runs/**/modelos/`, com a estrutura de pastas preservada | ~83 MB |
-| `runs-v0.1.0.zip` | as 30 execuções inteiras — `history.json`, `curva.png`, GIFs e modelos | ~110 MB |
+| `modelos-v0.1.0-alpha.zip` | os 58 `.keras` e `.npz` de `runs/**/modelos/`, com a estrutura de pastas preservada | ≈83 MB |
+| `runs-v0.1.0-alpha.zip` | as 31 execuções inteiras — registro, curva, GIFs e modelos | ≈105 MB |
 | _código-fonte_ | gerado pelo GitHub | — |
 
-O `history.json`, a `curva.png` e os GIFs continuam **versionados no repositório** — o
+O `history.json`, a `curva.png` e os GIFs continuam **versionados no repositório**: o
 registro é o que sustenta qualquer número acima, e ele não depende de baixar anexo nenhum.
-Os `.zip` existem para quem quer os pesos.
+O primeiro `.zip` existe porque os pesos **não** estão no git; o segundo é o instantâneo
+autossuficiente desta tag, para quem quer estes números depois que o `main` já andou.
+
+Os dois saem de um comando, e a estrutura de pastas vai preservada dentro deles — o que
+uma linha de `Compress-Archive` alimentada por pipeline **não** faz: ela achata tudo e
+entrega vinte e nove arquivos chamados `last.keras`.
 
 ```bash
-# reproduzir a arena a partir do que já está no clone
-python -m snakeai.arena --all
+python tools/empacotar_release.py v0.1.0-alpha     # → os dois .zip
+
+# reproduzir a arena inteira a partir do que já está no clone
+python -m snakeai.arena --all                      # → 3 figuras + docs/RESULTADOS.md
 
 # treinar do zero: abra um notebook no Colab ou no Kaggle
-notebooks/01_ppo.ipynb        # ~0,9 h de T4 por semente
+notebooks/01_ppo.ipynb                             # ~0,9 h de T4 por semente
 ```
 
 ---
@@ -206,6 +266,7 @@ notebooks/01_ppo.ipynb        # ~0,9 h de T4 por semente
 - `7cdfe2c` Refine arena stats and A2C controls
 - `6302c72` Add A2C resnet_small_esparso runs and test
 - `31786e1` Atualiza resultados DQN base e registra seed1
+- `e3b5346` acer | resnet_small | seed1 | training_data
 
 **A caça aos defeitos do Rainbow**
 - `ba10543` Rainbow debug and fixing
@@ -224,8 +285,10 @@ notebooks/01_ppo.ipynb        # ~0,9 h de T4 por semente
 - `f493bcb` Fix TFLite/Keras parity docs; add Rainbow artifacts
 - `6c5b924` Add parameter-count tool and fix Rainbow variant
 - `550bfa4` Adicionando os GIFs
+- `b080f4a` Plot: show only main arm per algorithm
 
 ---
 
-**954 testes**, 3 pulados, nenhuma falha. TensorFlow ≥ 2.20, Keras 3, licença MIT. As referências — um identificador arXiv conferido um a um contra título e
-autores — estão em [`docs/REFERENCIAS.md`](https://github.com/voaneves/snake-arena/blob/v0.1.0/docs/REFERENCIAS.md).
+**962 testes**, 2 pulados, nenhuma falha. TensorFlow ≥ 2.20, Keras 3, licença MIT. As
+referências — um identificador arXiv conferido um a um contra título e autores — estão em
+[`docs/REFERENCIAS.md`](https://github.com/voaneves/snake-arena/blob/v0.1.0-alpha/docs/REFERENCIAS.md).
