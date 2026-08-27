@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["PALETA", "cores_por_algoritmo", "arena_figure", "arena_familias",
-           "arena_tempo", "arena_table", "plot_run", "mesmo_hardware"]
+__all__ = ["PALETA", "VARIANTE_PRINCIPAL", "cores_por_algoritmo", "e_principal",
+           "separa_principais", "arena_figure", "arena_familias",
+           "arena_tempo", "arena_vitorias", "arena_table", "plot_run",
+           "mesmo_hardware"]
 
 # ---------------------------------------------------------------------- paleta
 PALETA = {
@@ -62,6 +64,55 @@ PALETA = {
 ORDEM_ALGORITMOS = ["ppo", "dqn", "rainbow", "a2c", "acer", "alphazero",
                     "muzero", "acktr", "acektr", "dreamerv3", "lbc", "soap",
                     "dqn-legacy"]
+
+#: A variante que **o notebook principal de cada algoritmo** produz na configuração padrão.
+#: É a definição de "resultado principal" deste repositório: um braço por algoritmo, o que
+#: `NN_algo.ipynb` roda sem tocar em nada.
+#:
+#: Existe porque o gráfico e a tabela respondem perguntas diferentes. A tabela é o registro
+#: e leva tudo; o gráfico é a **comparação entre algoritmos**, e uma ablação ali dentro
+#: compete visualmente com o braço que ela deveria explicar — o `ppo · esparso` desenha uma
+#: segunda curva azul 17 pontos abaixo do PPO, e quem olha de longe lê "o PPO é instável"
+#: em vez de "este é o controle de orçamento de gradiente". Ablação tem par próprio, e o
+#: par está na tabela.
+#:
+#: Os nomes seguem o padrão dos agentes: a base é `cfg.net` na maioria, `base` no DQN,
+#: `completo` no Rainbow, o preset no DreamerV3 e o parâmetro de busca no AlphaZero e no
+#: MuZero. Qualquer desvio vira `+marca` ou `_sufixo` e, por construção, **deixa** de casar
+#: com este mapa. Uma execução que não casa não some em silêncio: `arena --all` lista as que
+#: ficaram fora do gráfico, pelo mesmo motivo do `COMPARABILITY.md`.
+VARIANTE_PRINCIPAL = {
+    "ppo": "resnet_small",
+    "dqn": "base",
+    "rainbow": "completo",
+    "a2c": "resnet_small",
+    "acer": "resnet_small",
+    "alphazero": "sims32",
+    "muzero": "unroll5",
+    "acktr": "resnet_small",
+    "acektr": "resnet_small",
+    "dreamerv3": "dreamer_small",
+    "lbc": "resnet_small",
+    "soap": "resnet_small",
+}
+
+
+def e_principal(r):
+    """A execução é o braço principal do algoritmo dela?
+
+    `"default"` e `""` contam: é o que o `AgentBase` dá a quem não declara variante
+    nenhuma, e não declarar é a definição de padrão. O mapa cobre os agentes que
+    **derivam** o nome da configuração — todos os doze hoje.
+    """
+    return r.variant in ("default", "") or VARIANTE_PRINCIPAL.get(r.algo) == r.variant
+
+
+def separa_principais(registros):
+    """`(principais, ablacoes)` — a divisão que o gráfico usa e a tabela não."""
+    principais = [r for r in registros if e_principal(r)]
+    ablacoes = [r for r in registros if not e_principal(r)]
+    return principais, ablacoes
+
 
 #: Famílias, na ordem em que os painéis aparecem. Existem porque a arena passou de oito
 #: algoritmos e **oito é o limite honesto de uma paleta categórica**: a nona cor seria
@@ -204,7 +255,7 @@ def _agrupa(registros):
 
 # -------------------------------------------------------------------- figuras
 def arena_familias(registros, mode="light", figsize=(14.5, 4.8), titulo=None,
-                   x_log=True, mostrar_legado=True):
+                   x_log=True, mostrar_legado=True, so_principais=True):
     """*Small multiples*: um painel por família, com as demais em cinza ao fundo.
 
     Esta é a forma que a arena assume quando passa de oito algoritmos. Ela não é um
@@ -223,6 +274,8 @@ def arena_familias(registros, mode="light", figsize=(14.5, 4.8), titulo=None,
     p = PALETA[mode]
     cores = cores_por_familia(mode)
     comparaveis = [r for r in registros if r.oficial]
+    if so_principais:
+        comparaveis, _ = separa_principais(comparaveis)
 
     agregados = {}
     for (algo, variante), rs in sorted(_agrupa(comparaveis).items()):
@@ -324,7 +377,7 @@ def arena_familias(registros, mode="light", figsize=(14.5, 4.8), titulo=None,
 
 
 def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
-                 mostrar_legado=True, x_log=True, familias="auto"):
+                 mostrar_legado=True, x_log=True, familias="auto", so_principais=True):
     """A figura principal do benchmark. Devolve `(fig, (ax, ax_legado))`.
 
     `familias="auto"` (o padrão) troca para *small multiples* assim que o número de
@@ -334,6 +387,13 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
 
     `registros` é uma lista de `snakeai.record.RunRecord` — tipicamente
     `record.load_all("runs")` mais as curvas legadas convertidas.
+
+    `so_principais=True` (o padrão) desenha **um braço por algoritmo** — o que o notebook
+    principal produz na configuração padrão, conforme `VARIANTE_PRINCIPAL`. As ablações
+    saem do gráfico e continuam na tabela: aqui a pergunta é *quem vai mais longe com os
+    mesmos dados*, e uma ablação desenhada ao lado do seu controle, na mesma cor, responde
+    outra. Elas não somem em silêncio — a contagem vai no rodapé da figura e a lista, no
+    `arena --all`.
 
     O painel grande tem só as execuções `comparable=True`, no eixo oficial de passos de
     ambiente. As legadas, quando existem, vão para um painel estreito à direita com o
@@ -345,12 +405,15 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
 
     p = PALETA[mode]
     comparaveis = [r for r in registros if r.oficial]
+    ablacoes = []
+    if so_principais:
+        comparaveis, ablacoes = separa_principais(comparaveis)
     legado = [r for r in registros if not r.comparable] if mostrar_legado else []
 
     algos = {r.algo for r in comparaveis}
     if familias is True or (familias == "auto" and len(algos) > len(p["series"])):
         return arena_familias(registros, mode=mode, titulo=titulo, x_log=x_log,
-                              mostrar_legado=mostrar_legado)
+                              mostrar_legado=mostrar_legado, so_principais=so_principais)
 
     cores = cores_por_algoritmo(algos, mode)
 
@@ -385,8 +448,18 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
                 label=f"{nome}  (n={ag['n_sementes']})", solid_capstyle="round")
         rotulos.append((ag["x"][-1], ag["mediana"][-1], nome, cor))
 
+    # o teto do eixo y vem de TODOS os dados, inclusive os legados: os dois painéis
+    # compartilham a escala de score, e calcular só a partir das curvas oficiais faz o
+    # painel da direita ser cortado quando a arena ainda está vazia. Ele é calculado
+    # **antes** dos rótulos porque é a escala deles: ver `_sem_colisao`.
+    topo_oficial = max((y for _, y, _, _ in rotulos), default=0.0)
+    topo_legado = max(
+        (max(c["train_score_mean"] for c in r.curve) for r in legado), default=0.0
+    ) if legado else 0.0
+    topo = max(topo_oficial * 1.3, topo_legado * 1.15, PISO_ALEATORIO * 4)
+
     # --- rótulo direto no fim de cada curva (a "relief rule" do contraste)
-    for x, y, nome, cor in _sem_colisao(rotulos):
+    for x, y, nome, cor in _sem_colisao(rotulos, minimo=0.033, escala=topo):
         ax.annotate(nome, xy=(x, y), xytext=(6, 0), textcoords="offset points",
                     color=p["ink2"], fontsize=9, va="center", ha="left", zorder=5)
 
@@ -409,14 +482,6 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
     ax.tick_params(colors=p["muted"], labelsize=9, length=0)
     ax.xaxis.set_major_formatter(FuncFormatter(_formata_passos))
 
-    # o teto do eixo y vem de TODOS os dados, inclusive os legados: os dois painéis
-    # compartilham a escala de score, e calcular só a partir das curvas oficiais faz o
-    # painel da direita ser cortado quando a arena ainda está vazia
-    topo_oficial = max((y for _, y, _, _ in rotulos), default=0.0)
-    topo_legado = max(
-        (max(c["train_score_mean"] for c in r.curve) for r in legado), default=0.0
-    ) if legado else 0.0
-    topo = max(topo_oficial * 1.3, topo_legado * 1.15, PISO_ALEATORIO * 4)
     ax.set_ylim(0, topo)
     if rotulos:
         ax.margins(x=.18)
@@ -436,17 +501,40 @@ def arena_figure(registros, mode="light", figsize=(12.5, 6.2), titulo=None,
             t.set_color(p["ink2"])
 
     # --- painel legado: eixo próprio, unidade própria, mesma escala de score
+    # o rodapé é uma linha por assunto: emendar os dois numa só passa da largura da
+    # figura e o texto sai cortado na borda, que foi como ele nasceu
+    linhas_rodape = [_nota_de_ablacoes(ablacoes)]
     if ax_leg is not None:
         _painel_legado(ax_leg, legado, p, ylim=ax.get_ylim())
-        fig.text(0.012, 0.015,
-                 "Os dois painéis não compartilham eixo x — e não podem. À esquerda, "
-                 "passos de ambiente no jogo novo; à direita, episódios no jogo de 2019, "
-                 "com outra recompensa e score de treino em vez de avaliação.",
-                 color=p["muted"], fontsize=8)
-        fig.subplots_adjust(left=.075, right=.985, top=.88, bottom=.135)
+        linhas_rodape.append(
+            "Os dois painéis não compartilham eixo x — e não podem. À esquerda, "
+            "passos de ambiente no jogo novo; à direita, episódios no jogo de 2019, "
+            "com outra recompensa e score de treino em vez de avaliação.")
+        fig.subplots_adjust(left=.075, right=.985, top=.88, bottom=.155)
     else:
         fig.tight_layout()
+        if any(linhas_rodape):
+            fig.subplots_adjust(bottom=.16)
+    for i, linha in enumerate([t for t in linhas_rodape if t]):
+        fig.text(0.012, 0.030 - i * 0.020, linha, color=p["muted"], fontsize=8)
     return fig, (ax, ax_leg)
+
+
+def _nota_de_ablacoes(ablacoes):
+    """O que ficou fora do gráfico, dito no próprio gráfico.
+
+    Uma figura que esconde execuções sem avisar afirma que aquilo é tudo o que existe — o
+    mesmo defeito que o `COMPARABILITY.md` chama de pior que incluir. O rodapé dá a
+    contagem; a tabela dá os nomes, os números e o par de comparação de cada uma.
+    """
+    quantas = len({(r.algo, r.variant) for r in ablacoes})
+    if not quantas:
+        return ""
+    if quantas == 1:
+        fora = "1 configuração de ablação fica de fora dele e está na tabela"
+    else:
+        fora = (f"{quantas} configurações de ablação ficam de fora dele e estão na tabela")
+    return f"O gráfico mostra o braço principal de cada algoritmo: {fora}, com o controle de cada uma."
 
 
 def _painel_legado(ax, legado, p, ylim=None):
@@ -508,14 +596,21 @@ def _ate_o_limiar(registros, limiar):
             "sementes_ate": len(chegaram), "limiar": limiar}
 
 
-def _sem_colisao(rotulos, minimo=0.045):
-    """Empurra rótulos que ficariam sobrepostos, preservando a ordem vertical."""
+def _sem_colisao(rotulos, minimo=0.045, escala=None):
+    """Empurra rótulos que ficariam sobrepostos, preservando a ordem vertical.
+
+    `escala` é o **teto do eixo**, e passá-la é o que faz a separação valer em pixels em
+    vez de em pontos de score. Sem ela a referência é a faixa dos próprios rótulos — que
+    encolhe justamente quando as curvas convergem, ou seja, o mínimo fica menor no único
+    caso em que ele importa. Com os seis braços principais terminando entre 47 e 82, PPO,
+    ACKTR e ACER escreviam um por cima do outro.
+    """
     if not rotulos:
         return []
     ordenado = sorted(rotulos, key=lambda t: t[1])
     ys = [t[1] for t in ordenado]
     faixa = max(ys[-1] - ys[0], 1e-9)
-    minimo = minimo * faixa
+    minimo = minimo * (escala if escala else faixa)
     for i in range(1, len(ys)):
         if ys[i] - ys[i - 1] < minimo:
             ys[i] = ys[i - 1] + minimo
@@ -571,8 +666,120 @@ def plot_run(record, mode="light", figsize=(11, 3.4)):
 
 
 # --------------------------------------------------------------------- tabela
+def arena_vitorias(registros, mode="light", figsize=(8.6, 4.4), titulo=None,
+                   so_principais=True):
+    """Como cada episódio **termina** — e a taxa de vitória dentro disso.
+
+    Por que este painel existe
+    --------------------------
+    "Melhor" não é uma coisa só. A média e a taxa de vitória são dois funcionais da mesma
+    distribuição — `E[X]` e `P(X = perfeito)` — e **elas discordam nestes dados**: o
+    Rainbow é o penúltimo em média e o terceiro em vitórias, na frente do ACER e do A2C,
+    que têm 15 e 23 pontos a mais de score. Publicar só a média deixaria isso invisível.
+
+    O que cada uma joga fora explica a discordância. A taxa de vitória é um limiar no
+    extremo: um episódio de 96 conta igual a um de 3, e é por isso que o A2C — que joga
+    bem e morre na casa dos 90 — tem 69,61 de média e 2,2% de vitória. A média usa o
+    episódio inteiro, mas não distingue "sempre 78" de "metade perfeito, metade zero".
+
+    Por isso a barra não é a taxa de vitória sozinha: é a **repartição inteira** das causas
+    de fim, com a vitória como primeiro segmento. É a mesma leitura que o log de treino já
+    faz por iteração — score sozinho é ambíguo, 1,2 ponto pode ser "bate em tudo" ou "anda
+    em círculo até morrer de fome" — trazida para o fim da execução.
+
+    Ele **não substitui** o painel oficial, pela mesma razão que o `arena_tempo` não
+    substitui: é outra pergunta. Esta aqui é *qual eu levaria para o jogo*; a oficial é
+    *quem aprende mais com os mesmos dados*.
+    """
+    import matplotlib.pyplot as plt
+
+    p = PALETA[mode]
+    comparaveis = [r for r in registros if r.oficial]
+    if so_principais:
+        comparaveis, _ = separa_principais(comparaveis)
+
+    linhas = []
+    for (algo, variante), rs in _agrupa(comparaveis).items():
+        partes = [_mediana_do_final(rs, k) for k in
+                  ("fim_tabuleiro_cheio", "fim_colisao", "fim_fome")]
+        if any(v is None for v in partes):
+            continue                      # protocolo antigo, sem as chaves de causa
+        # as três medianas são tomadas por semente e independentes, então a soma foge de
+        # 1 por frações de ponto. Normalizar é honesto porque o que a barra afirma é a
+        # **proporção** entre as causas; o número impresso é a mediana, não o normalizado.
+        total = sum(partes) or 1.0
+        linhas.append({
+            "nome": algo if variante in ("default", "") else f"{algo} · {variante}",
+            "vitoria": partes[0],
+            "fatias": [v / total for v in partes],
+            "media": _mediana_do_final(rs, "score_mean") or 0.0,
+            "n": len(rs),
+        })
+
+    linhas.sort(key=lambda d: d["vitoria"])
+    fig, ax = plt.subplots(figsize=figsize, facecolor=p["plane"])
+    ax.set_facecolor(p["surface"])
+
+    cores = (p["series"][2], p["series"][1], p["muted"])
+    nomes = ("tabuleiro cheio", "colisão", "fome")
+    y = list(range(len(linhas)))
+    for i, linha in enumerate(linhas):
+        esquerda = 0.0
+        for fatia, cor, nome in zip(linha["fatias"], cores, nomes):
+            ax.barh(i, fatia * 100, left=esquerda * 100, color=cor, height=.62,
+                    zorder=3, label=nome if i == 0 else None,
+                    edgecolor=p["surface"], linewidth=1.2)
+            esquerda += fatia
+        # o número fica **fora** da barra: dentro ele some quando a fatia é 2%, que é
+        # justamente o caso que esta figura existe para mostrar
+        ax.annotate(f"{linha['vitoria'] * 100:.1f}%".replace(".", ","),
+                    xy=(101, i), xytext=(0, 0), textcoords="offset points",
+                    color=p["ink"], fontsize=9.5, va="center", ha="left", zorder=5)
+        ax.annotate(f"média {linha['media']:.2f}".replace(".", ","),
+                    xy=(119, i), color=p["muted"], fontsize=9, va="center", ha="left",
+                    zorder=5)
+
+    ax.set_yticks(y, [linha["nome"] for linha in linhas],
+                  color=p["ink2"], fontsize=9.5)
+    ax.set_xlim(0, 145)
+    ax.set_xticks([0, 25, 50, 75, 100], ["0", "25%", "50%", "75%", "100%"])
+    ax.set_xlabel("como os 1.000 episódios de avaliação terminam",
+                  color=p["ink2"], fontsize=10, loc="left")
+    ax.set_title(titulo or "snake-arena · quem fecha o tabuleiro",
+                 color=p["ink"], fontsize=13, pad=14, loc="left")
+    ax.grid(True, axis="x", color=p["grid"], lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for lado in ("top", "right", "left"):
+        ax.spines[lado].set_visible(False)
+    ax.spines["bottom"].set_color(p["axis"])
+    # a linha do eixo para nos 100%: ela não tem o que dizer embaixo dos rótulos
+    ax.spines["bottom"].set_bounds(0, 100)
+    ax.tick_params(colors=p["muted"], labelsize=9, length=0)
+
+    if linhas:
+        leg = ax.legend(loc="lower right", bbox_to_anchor=(1.0, 1.0), ncols=3,
+                        frameon=False, fontsize=9, handlelength=1.2)
+        for t in leg.get_texts():
+            t.set_color(p["ink2"])
+
+    for i, linha in enumerate((
+            "A ordem aqui não é a ordem do painel oficial — e é isso que a figura tem a "
+            "dizer.",
+            "Média e taxa de vitória medem coisas diferentes da mesma distribuição; "
+            "nenhuma das duas é 'a qualidade do modelo'.")):
+        fig.text(.012, .042 - i * .024, linha, color=p["muted"], fontsize=8)
+    fig.subplots_adjust(left=.20, right=.985, top=.80, bottom=.24)
+    return fig, ax
+
+
+def _mediana_do_final(registros, chave):
+    """Mediana entre sementes de um campo de `final` — a estatística oficial da arena."""
+    valores = [r.final.get(chave) for r in registros if r.final.get(chave) is not None]
+    return float(np.median(valores)) if valores else None
+
+
 def arena_tempo(registros, mode="light", figsize=(7.4, 5.0), titulo=None,
-                limiar=LIMIAR_PADRAO):
+                limiar=LIMIAR_PADRAO, so_principais=True):
     """A arena no eixo de **custo**: score contra horas de GPU. Devolve `(fig, ax)`.
 
     O eixo oficial — passos de ambiente — iguala os *dados vistos*. É o padrão da
@@ -592,12 +799,15 @@ def arena_tempo(registros, mode="light", figsize=(7.4, 5.0), titulo=None,
 
     p = PALETA[mode]
     comparaveis = [r for r in registros if r.oficial]
+    if so_principais:
+        comparaveis, _ = separa_principais(comparaveis)
 
     algos = {r.algo for r in comparaveis}
     if len(algos) > len(p["series"]):
         # A mesma regra do painel principal: acima de oito, a saída é mudar a forma do
         # gráfico, não gerar cor nova. Aqui isso vira um painel de tempo por família.
-        return arena_tempo_familias(registros, mode=mode, titulo=titulo)
+        return arena_tempo_familias(registros, mode=mode, titulo=titulo,
+                                    so_principais=so_principais)
     # `cores_por_algoritmo`, e **não** `cores_por_familia`: num painel único a cor por
     # posição-dentro-da-família repete matiz entre famílias, e três curvas azuis no mesmo
     # eixo é exatamente a ambiguidade que a paleta existe para evitar.
@@ -656,13 +866,16 @@ def arena_tempo(registros, mode="light", figsize=(7.4, 5.0), titulo=None,
     return fig, ax
 
 
-def arena_tempo_familias(registros, mode="light", figsize=(14.5, 4.6), titulo=None):
+def arena_tempo_familias(registros, mode="light", figsize=(14.5, 4.6), titulo=None,
+                         so_principais=True):
     """`arena_tempo` acima de oito algoritmos: um painel por família, o resto em cinza."""
     import matplotlib.pyplot as plt
 
     p = PALETA[mode]
     cores = cores_por_familia(mode)
     comparaveis = [r for r in registros if r.oficial]
+    if so_principais:
+        comparaveis, _ = separa_principais(comparaveis)
 
     agregados = {}
     for chave, rs in sorted(_agrupa(comparaveis).items()):

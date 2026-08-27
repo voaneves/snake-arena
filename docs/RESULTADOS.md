@@ -4,17 +4,24 @@ Gerado por `python -m snakeai.arena --all`. Não editar à mão.
 
 ![arena](../assets/arena_light.png)
 
+O gráfico mostra o **braço principal** de cada algoritmo — o que o notebook roda na
+configuração padrão. A tabela abaixo mostra **tudo**, ablações inclusive: a figura
+responde *quem vai mais longe com os mesmos dados*, e uma ablação desenhada ao lado
+do próprio controle, na mesma cor, responde outra pergunta.
+
 | algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | passos até 40 | horas | amplitude | mediana/ep | máx | cheio |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | 1 | — | 0% |
 | ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
 | acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
+| acer · resnet_small | `resnet_small` | 334,878 | 1 | 5,001,216 | **77.84** | 85.77 | 1,251,328 | 1.4 | ±0.00 | 85 | 97 | 11.5% |
 | acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
 | a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
-| rainbow · completo | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **65.43** | 65.43 | 2,250,240 | 4.0 | ±0.00 | 77 | 94 | 0.0% |
 | ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
 | acktr · resnet_small+kl_nominal+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **64.53** | 84.92 | 1,277,952 | 0.5 | ±0.00 | 69 | 97 | 26.7% |
+| rainbow · completo | `resnet_small` | 1,196,648 | 2 | 5,000,192 | **54.46** | 75.78 | 1,875,200 | 4.3 | ±21.93 | 44 | 97 | 19.9% |
 | a2c · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,005,312 | **53.60** | 53.60 | 4,005,888 | 0.3 | ±7.87 | 59 | 78 | 0.0% |
+| rainbow · completo+n3+sem_noisy+eps_greedy | `resnet_small` | 662,148 | 1 | 5,000,192 | **49.17** | 49.97 | 4,000,000 | 8.0 | ±0.00 | 49 | 90 | 0.0% |
 | dqn · base | `resnet_small` | 333,475 | 3 | 5,000,192 | **47.11** | 51.79 | 3,500,032 | 1.9 | ±2.86 | 49 | 89 | 0.0% |
 | rainbow · completo+n3 | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **0.57** | 0.78 | não chegou | 2.6 | ±0.00 | 0 | 6 | 0.0% |
 
@@ -35,16 +42,30 @@ duas é a resposta da outra.
 
 ![arena por tempo](../assets/arena_tempo_light.png)
 
+## E no eixo de quem fecha o tabuleiro
+
+A média e a taxa de vitória são dois funcionais da **mesma** distribuição —
+`E[X]` e `P(X = 97)` — e aqui elas discordam: o Rainbow é o penúltimo em média e
+o terceiro em vitórias, na frente do ACER e do A2C, que têm 15 e 23 pontos a mais
+de score. O limiar joga fora tudo abaixo do teto (um 96 conta igual a um 3); a
+média joga fora o formato (não distingue "sempre 78" de "metade perfeito,
+metade zero"). Por isso a barra mostra a **repartição inteira** das causas de
+fim, com a vitória como primeiro segmento.
+
+![quem fecha o tabuleiro](../assets/arena_vitorias_light.png)
+
 ## Configurações com menos de 3 sementes
 
 Entram no gráfico, mas **não sustentam comparação**: a amplitude entre
 sementes do PPO neste ambiente é de 19 pontos, maior que quase toda
 diferença entre algoritmos que a tabela mostra.
 
+- `acer/resnet_small`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl0.002`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl_nominal+kl0.002`: 1 de 3 — faltam 2
-- `rainbow/completo`: 1 de 3 — faltam 2
+- `rainbow/completo`: 2 de 3 — faltam 1
 - `rainbow/completo+n3`: 1 de 3 — faltam 2
+- `rainbow/completo+n3+sem_noisy+eps_greedy`: 1 de 3 — faltam 2
 
 ## Execuções que não entraram na arena
 

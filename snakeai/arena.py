@@ -19,7 +19,8 @@ import argparse
 import glob
 import os
 
-from .plot import arena_figure, arena_table, arena_tempo, mesmo_hardware
+from .plot import (arena_figure, arena_table, arena_tempo, arena_vitorias,
+                   mesmo_hardware, separa_principais)
 from .record import (ORCAMENTO_OFICIAL, SEMENTES_OFICIAIS, configuracoes_incompletas,
                      from_legacy_csv, load_all, validate)
 
@@ -95,6 +96,14 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
               + "; ".join(f"{c['algo']}/{c['variant']} ({c['sementes']})"
                           for c in incompletas))
 
+    # O gráfico mostra um braço por algoritmo; a tabela mostra tudo. A lista existe pelo
+    # mesmo motivo da lista de `[fora da arena]`: uma execução que some da figura sem
+    # aparecer em lugar nenhum é uma afirmação de que ela não existe.
+    _, ablacoes = separa_principais(oficiais)
+    if verbose and ablacoes:
+        print("  [fora do gráfico] ablações — estão na tabela, com o controle de cada "
+              "uma: " + "; ".join(sorted({f"{r.algo}/{r.variant}" for r in ablacoes})))
+
     os.makedirs(assets, exist_ok=True)
     os.makedirs(docs, exist_ok=True)
     saidas = {}
@@ -118,6 +127,18 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
         except Exception as e:                    # nunca derrubar a arena pelo secundário
             saidas[f"tempo_{modo}_erro"] = repr(e)
 
+    # O painel de vitórias. Terceira pergunta, terceiro painel: média e taxa de vitória
+    # são funcionais diferentes da mesma distribuição e **discordam** nestes dados.
+    for modo in ("light", "dark"):
+        try:
+            fig, _ = arena_vitorias(oficiais, mode=modo)
+            caminho = os.path.join(assets, f"arena_vitorias_{modo}.png")
+            fig.savefig(caminho, dpi=165, facecolor=fig.get_facecolor())
+            plt.close(fig)
+            saidas[f"vitorias_{modo}"] = caminho
+        except Exception as e:                    # nunca derrubar a arena pelo secundário
+            saidas[f"vitorias_{modo}_erro"] = repr(e)
+
     igual, hw = mesmo_hardware(oficiais)
     if verbose and oficiais and not igual:
         print("  [atenção] execuções de hardwares diferentes (" + " · ".join(sorted(hw))
@@ -131,6 +152,11 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
         "",
         "![arena](../assets/arena_light.png)",
         "",
+        "O gráfico mostra o **braço principal** de cada algoritmo — o que o notebook roda na",
+        "configuração padrão. A tabela abaixo mostra **tudo**, ablações inclusive: a figura",
+        "responde *quem vai mais longe com os mesmos dados*, e uma ablação desenhada ao lado",
+        "do próprio controle, na mesma cor, responde outra pergunta.",
+        "",
         tabela,
         "",
         "## O mesmo resultado, no eixo do custo",
@@ -141,6 +167,18 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
         "duas é a resposta da outra.",
         "",
         "![arena por tempo](../assets/arena_tempo_light.png)",
+        "",
+        "## E no eixo de quem fecha o tabuleiro",
+        "",
+        "A média e a taxa de vitória são dois funcionais da **mesma** distribuição —",
+        "`E[X]` e `P(X = 97)` — e aqui elas discordam: o Rainbow é o penúltimo em média e",
+        "o terceiro em vitórias, na frente do ACER e do A2C, que têm 15 e 23 pontos a mais",
+        "de score. O limiar joga fora tudo abaixo do teto (um 96 conta igual a um 3); a",
+        "média joga fora o formato (não distingue \"sempre 78\" de \"metade perfeito,",
+        "metade zero\"). Por isso a barra mostra a **repartição inteira** das causas de",
+        "fim, com a vitória como primeiro segmento.",
+        "",
+        "![quem fecha o tabuleiro](../assets/arena_vitorias_light.png)",
         "",
     ]
     if incompletas:

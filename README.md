@@ -355,6 +355,13 @@ então a tabela por notebook está declarada em
 configurações principais; as ablações de orçamento, do canal de fome e da região de confiança
 do ACKTR têm linhas próprias lá.
 
+O **gráfico** segue a mesma divisão: um braço por algoritmo, o que o notebook roda na
+configuração padrão. Ablação não entra na figura — ela compete visualmente com o braço que
+deveria explicar, e o `ppo · esparso` desenhado ao lado do PPO, na mesma cor, se lê de longe
+como "o PPO é instável" em vez de "este é o controle de orçamento de gradiente". Quantas
+ficaram de fora está escrito no rodapé da própria figura, e cada uma está na tabela ao lado do
+seu controle.
+
 Todas as execuções rodam o orçamento de 5 M passos e o mesmo protocolo — 1.000 episódios
 greedy na semente 123. As colunas são **medianas entre as sementes**, a estatística oficial da
 arena; os documentos de ablação reportam **média e desvio**, porque lá a pergunta é o tamanho

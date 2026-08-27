@@ -16,6 +16,10 @@ import matplotlib.pyplot as plt
 
 from snakeai.plot import (
     PALETA,
+    arena_vitorias,
+    VARIANTE_PRINCIPAL,
+    e_principal,
+    separa_principais,
     arena_tempo,
     mesmo_hardware,
     agrega_sementes,
@@ -314,4 +318,132 @@ def test_the_cost_panel_uses_one_colour_per_algorithm():
     cores = [l.get_color() for l in ax.get_lines()
              if l.get_label() and not l.get_label().startswith("_")]
     assert len(cores) == len(set(cores)), "duas curvas com a mesma cor no mesmo painel"
+    plt.close(fig)
+
+
+# ----------------------------------------------- o gráfico principal não leva ablação
+def test_the_main_figure_draws_one_arm_per_algorithm():
+    """A figura responde *quem vai mais longe com os mesmos dados*.
+
+    Uma ablação desenhada ali dentro compete visualmente com o braço que ela deveria
+    explicar: o `ppo · esparso` é uma segunda curva azul 17 pontos abaixo do PPO, e de
+    longe isso se lê como "o PPO é instável" em vez de "este é o controle de orçamento".
+    """
+    registros = [run(algo="ppo", variant="resnet_small", seed=s) for s in range(3)]
+    registros += [run(algo="ppo", variant="resnet_small_esparso", seed=s, teto=12.0)
+                  for s in range(3)]
+    registros += [run(algo="rainbow", variant="completo+n3", teto=1.0)]
+
+    principais, ablacoes = separa_principais(registros)
+    assert {(r.algo, r.variant) for r in principais} == {("ppo", "resnet_small")}
+    assert {(r.algo, r.variant) for r in ablacoes} == {
+        ("ppo", "resnet_small_esparso"), ("rainbow", "completo+n3")}
+
+    fig, (ax, _) = arena_figure(registros)
+    assert len(ax.get_lines()) >= 1
+    rotulos = [t.get_text() for t in ax.texts]
+    assert not any("esparso" in t or "n3" in t for t in rotulos), \
+        "ablação não entra no gráfico principal"
+    plt.close(fig)
+
+
+def test_the_ablations_left_out_are_counted_in_the_figure():
+    """Sumir da figura sem aparecer em lugar nenhum é afirmar que não existe."""
+    registros = [run(algo="ppo", variant="resnet_small", seed=s) for s in range(3)]
+    registros += [run(algo="ppo", variant="resnet_small_esparso", teto=12.0)]
+
+    fig, _ = arena_figure(registros)
+    rodape = " ".join(t.get_text() for t in fig.texts)
+    assert "ablação" in rodape or "ablacao" in rodape
+    plt.close(fig)
+
+    fig, _ = arena_figure([r for r in registros if "esparso" not in r.variant])
+    assert "ablação" not in " ".join(t.get_text() for t in fig.texts)
+    plt.close(fig)
+
+
+def test_a_run_with_no_declared_variant_is_a_main_arm():
+    """`default` é o que o `AgentBase` dá a quem não declara nada — e não declarar é ser
+    o padrão. Sem isto, uma execução assim sumiria do gráfico em silêncio."""
+    assert e_principal(run(algo="ppo", variant="default"))
+    assert e_principal(run(algo="ppo", variant=""))
+
+
+def test_the_main_variant_map_matches_what_the_agents_actually_produce():
+    """O mapa é uma cópia — e cópia diverge. Aqui ela é conferida contra a fonte.
+
+    Se alguém trocar o tronco padrão do PPO ou o preset do DreamerV3, a execução nova
+    deixaria de casar com o mapa e sumiria do gráfico. Este teste falha antes.
+    """
+    from dataclasses import fields                              # noqa: PLC0415
+
+    import snakeai.agents as A                                  # noqa: PLC0415
+
+    # nada aqui muda a variante: são só campos de orçamento, para o agente caber na
+    # memória enquanto é construído
+    peq = dict(num_envs=2, memory_size=64, total_steps=32, warmup_steps=0, batch_size=8,
+               eval_episodes=2, eval_envs=2, salvar_gif=False, salvar_grafico=False)
+    classes = {"ppo": "PPO", "dqn": "DQN", "rainbow": "Rainbow", "a2c": "A2C",
+               "acer": "ACER", "alphazero": "AlphaZero", "muzero": "MuZero",
+               "acktr": "ACKTR", "acektr": "ACEKTR", "dreamerv3": "DreamerV3",
+               "lbc": "LBC", "soap": "SOAP"}
+    assert set(classes) == set(VARIANTE_PRINCIPAL), "um algoritmo ficou sem braço principal"
+
+    for algo, nome in classes.items():
+        Config = getattr(A, nome + "Config")
+        campos = {f.name for f in fields(Config)}
+        agente = getattr(A, nome)(Config(**{k: v for k, v in peq.items() if k in campos}))
+        assert agente.variant == VARIANTE_PRINCIPAL[algo], (
+            f"{algo}: a configuração padrão produz {agente.variant!r}, mas o mapa diz "
+            f"{VARIANTE_PRINCIPAL[algo]!r} — o gráfico perderia essa execução"
+        )
+
+
+# ------------------------------------------------------ o painel de quem fecha o tabuleiro
+def fim(r, cheio=0.0, colisao=1.0, fome=0.0, media=None):
+    """Acrescenta a repartição das causas de fim a uma execução de teste."""
+    r.final.update({"fim_tabuleiro_cheio": cheio, "fim_colisao": colisao,
+                    "fim_fome": fome, "win_rate": cheio})
+    if media is not None:
+        r.final["score_mean"] = media
+    return r
+
+
+def test_the_win_panel_orders_by_wins_and_not_by_mean():
+    """É o ponto inteiro da figura: as duas réguas discordam.
+
+    Nos dados reais o Rainbow é penúltimo em média e terceiro em vitórias, na frente do
+    ACER e do A2C — que têm 15 e 23 pontos a mais de score. Se este painel ordenasse pela
+    média, ele não teria nada a dizer que o painel oficial já não diga.
+    """
+    registros = [
+        fim(run(algo="acer", variant="resnet_small"), cheio=.115, colisao=.821, fome=.064,
+            media=77.8),
+        fim(run(algo="rainbow", variant="completo"), cheio=.199, colisao=.485, fome=.316,
+            media=54.5),
+        fim(run(algo="dqn", variant="base"), cheio=0.0, colisao=.998, fome=.002,
+            media=47.1),
+    ]
+    fig, ax = arena_vitorias(registros)
+    # o eixo y cresce para cima e as barras entram em ordem crescente de vitória: de baixo
+    # para cima é dqn, acer, rainbow — ou seja, o rainbow **acima** do acer
+    nomes = [t.get_text() for t in ax.get_yticklabels()]
+    assert nomes == ["dqn · base", "acer · resnet_small", "rainbow · completo"]
+    plt.close(fig)
+
+
+def test_the_win_panel_leaves_ablations_out_like_the_main_one():
+    registros = [fim(run(algo="ppo", variant="resnet_small"), cheio=.6, colisao=.4),
+                 fim(run(algo="ppo", variant="resnet_small_esparso"), cheio=.1,
+                     colisao=.9)]
+    fig, ax = arena_vitorias(registros)
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["ppo · resnet_small"]
+    plt.close(fig)
+
+
+def test_a_run_without_the_end_causes_is_skipped_not_crashed():
+    """O protocolo anterior a 14/08 não gravava as chaves de causa de fim. Elas já saem da
+    arena por `comparable=False`, mas o painel não pode depender disso para não quebrar."""
+    fig, ax = arena_vitorias([run(algo="ppo", variant="resnet_small")])
+    assert [t.get_text() for t in ax.get_yticklabels()] == []
     plt.close(fig)
