@@ -31,6 +31,12 @@ runs/**/*.npz
 !assets/*.gif
 !runs/**/*.gif
 
+# Os anexos do release nascem na raiz (`tools/empacotar_release.py`) e **não** voltam para
+# o git: eles são um empacotamento do que já está aqui — os pesos, que saem de propósito, e
+# um instantâneo do registro, que já está versionado. Commitá-los é pagar 190 MB de
+# histórico eterno para guardar duas vezes a mesma coisa. O lugar deles é o Release.
+/*.zip
+
 # Sistema
 .DS_Store
 Thumbs.db

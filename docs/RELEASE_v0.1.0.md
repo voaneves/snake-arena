@@ -218,7 +218,7 @@ uma linha de `Compress-Archive` alimentada por pipeline **não** faz: ela achata
 entrega vinte e nove arquivos chamados `last.keras`.
 
 ```bash
-python tools/empacotar_release.py v0.1.0-alpha     # → os dois .zip
+python tools/empacotar_release.py v0.1.0-alpha     # → os dois .zip, e os comandos do release
 
 # reproduzir a arena inteira a partir do que já está no clone
 python -m snakeai.arena --all                      # → 3 figuras + docs/RESULTADOS.md
