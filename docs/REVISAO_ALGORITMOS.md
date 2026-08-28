@@ -13,9 +13,9 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
-| §2.29 a temperatura do AlphaZero transforma o alvo de política em rótulo duro | **medido** — entropia do alvo de 0,66 a 0,015 da metade do treino em diante; braço `alvo_cru` |
-| §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **medido** — `‖∇v‖/‖∇π‖` de 4,8× a 255× conforme o agente melhora; braços `vf_025` e `valor_symlog` |
-| §2.27 PUCT com `Q = 0` para filho não visitado, num jogo de valor positivo | **medido e instrumentado** — dois consertos atrás de flag, ablações no `93_alphazero_ablacoes`; ver `docs/BUSCA_DEGENERADA.md` |
+| §2.29 a temperatura do AlphaZero transforma o alvo de política em rótulo duro | **corrigido e é o padrão** — `temp_alvo=1,0` separa o alvo da exploração e `temp_passos=30` traz o agendamento do paper; braço `sem_conserto_do_alvo` |
+| §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **corrigido e é o padrão** — `valor_symlog` + `vf_coef=0,5` levam `‖∇v‖/‖∇π‖` de 71× para 7× no `|z|` real; braço `sem_conserto_do_tronco`. **Não tocado no MuZero** |
+| §2.27 PUCT com `Q = 0` para filho não visitado, num jogo de valor positivo | **corrigido e é o padrão** — `fpu="pai"` + `q_normalizado`; o braço `sem_conserto_da_busca` do `93` mede quanto valeu |
 | §2.25 janela de n passos do Rainbow | **medido e corrigido** — o padrão passou a 20 |
 | §2.26 paridade `.keras` × TFLite | **corrigido** — quebrava no C51 e publicava número de acaso no LBC e no ACER |
 | §2.23 razão de reaproveitamento e rede alvo | levantado, **não** tocado — é a próxima ablação |

@@ -206,17 +206,35 @@ def test_dirichlet_noise_changes_the_root_priors():
 
 
 # ---------------------------------------------- escala do valor dentro do PUCT
-def test_the_search_flags_are_off_by_default():
-    """A execução de contrato não pode mudar de comportamento.
+def test_the_fixes_are_the_default_and_can_all_be_turned_off():
+    """Os onze consertos do §2.27–§2.29 são o padrão desde que a medição os validou.
 
-    `06_alphazero` é o braço de controle das ablações do `93`, e ele já está rodando.
-    Se um padrão mudar aqui, o controle deixa de ser controle.
+    Duas metades, e as duas importam. A primeira: o padrão do `AlphaZeroConfig` **é** o
+    agente consertado — quem roda `06_alphazero` sem tocar em nada roda a versão boa. A
+    segunda: cada conserto continua desligável, senão o `93_alphazero_ablacoes` não teria
+    como medir quanto cada um valeu, e uma melhoria que não dá para desligar é uma
+    afirmação sem controle.
+
+    O `MCTS` continua nascendo com a convenção do paper (`fpu="zero"`, sem normalização):
+    a escala do valor é propriedade do **agente**, não da busca, e o MuZero ainda não foi
+    tocado. Quem decide é quem sabe a escala.
     """
-    m = MCTS(uniforme)
-    assert m.fpu == "zero" and m.q_normalizado is False
     cfg = AlphaZeroConfig()
-    assert cfg.fpu == "zero" and cfg.q_normalizado is False
-    assert cfg.temp_passos == 0 and cfg.temp_alvo == 0.0
+    assert (cfg.fpu, cfg.q_normalizado) == ("pai", True)
+    assert (cfg.valor_symlog, cfg.vf_coef) == (True, 0.5)
+    assert (cfg.temp_alvo, cfg.temp_passos) == (1.0, 30)
+    assert (cfg.epochs_por_iter, cfg.lr_final) == (8, 5e-5)
+    assert (cfg.desempate, cfg.bootstrap_fim_janela) == ("aleatorio", True)
+    assert cfg.dirichlet_alpha == 1.0
+
+    velho = AlphaZeroConfig(fpu="zero", q_normalizado=False, valor_symlog=False,
+                            vf_coef=1.0, epochs_por_iter=1, lr_final=0.0, temp_alvo=0.0,
+                            temp_passos=0, dirichlet_alpha=0.5, desempate="ordem",
+                            bootstrap_fim_janela=False)
+    assert velho.fpu == "zero" and velho.bootstrap_fim_janela is False
+
+    m = MCTS(uniforme)
+    assert m.fpu == "zero" and m.q_normalizado is False and m.desempate == "ordem"
 
 
 def test_search_collapses_when_the_value_is_positive_and_q_is_unnormalized():
@@ -366,7 +384,7 @@ def test_search_evaluation_follows_the_same_protocol():
 
 def test_temperature_decays():
     ag = AlphaZero(cfg_min(total_steps=1000, temp_inicio=1.0, temp_fim=0.25,
-                           temp_frac=0.5))
+                           temp_frac=0.5, temp_passos=0))
     assert ag.temperatura() == pytest.approx(1.0)
     ag.global_step = 500
     assert ag.temperatura() == pytest.approx(0.25)
@@ -470,7 +488,7 @@ def test_the_learning_rate_decays_only_when_asked():
     e o `best` fica 2,4 pontos acima do `last`, que é o número oficial. Passo grande demais
     no fim de um treino tem exatamente esse desenho.
     """
-    fixo = AlphaZero(cfg_min(total_steps=1000))
+    fixo = AlphaZero(cfg_min(total_steps=1000, lr_final=0.0))
     fixo.iterate()
     assert float(fixo.optimizer.learning_rate) == pytest.approx(fixo.cfg.lr)
     fixo.global_step = 1000

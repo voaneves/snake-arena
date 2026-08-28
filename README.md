@@ -154,7 +154,7 @@ teste que prova que a implementação faz o que o paper diz — está em
 | **Rainbow** — os seis componentes juntos | [📎](https://arxiv.org/abs/1710.02298) | `03_rainbow.ipynb` | novo | ✅ algoritmo próprio, com linha própria na arena |
 | **A2C** — actor-critic síncrono, o controle experimental do PPO | [📎](https://arxiv.org/abs/1602.01783) | `04_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | ✅ implementado, com o `t_max=5` canônico do A3C |
 | **ACER** — Retrace(λ), IS truncado com correção de viés, região de confiança | [📎](https://arxiv.org/abs/1611.01224) | `05_acer.ipynb` | 2 notebooks quebrados | ✅ reescrito e **convergindo** (16,8 em 151k passos) |
-| **AlphaZero** — MCTS sobre o simulador real | [📎](https://arxiv.org/abs/1712.01815) | `06_alphazero.ipynb` | novo | ✅ implementado; a busca sozinha faz **30,3** |
+| **AlphaZero** — MCTS sobre o simulador real | [📎](https://arxiv.org/abs/1712.01815) | `06_alphazero.ipynb` | novo | ✅ implementado, e **reconstruído** depois que a primeira execução de 5 M revelou três defeitos somados (§2.27–§2.29): a busca que só confirmava a rede, o alvo de valor que dominava o tronco, e a temperatura que virava rótulo duro. Os onze consertos são o padrão; a versão anterior virou o braço `sem_correcoes` do `93`. Ver [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) |
 | **MuZero** — a mesma busca, sobre um modelo aprendido | [📎](https://arxiv.org/abs/1911.08265) | `07_muzero.ipynb` | novo | ✅ implementado |
 | **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | [📎](https://arxiv.org/abs/1708.05144) | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC em Keras 3, região **calibrada** por padrão, 19 testes de curvatura |
 | **ACEKTR** — ACKTR com EK-FAC: a base do K-FAC, os autovalores **medidos** | [📎](https://arxiv.org/abs/1806.03884) | `12_acektr.ipynb` | novo | ✅ implementado, 21 testes; com a medição desligada é **bit a bit** o ACKTR |
@@ -166,7 +166,7 @@ teste que prova que a implementação faz o que o paper diz — está em
 | ↳ **PPO com o orçamento antigo** — ~2.400 atualizações em vez de ~38.300 | — | `96_ppo_orcamento_esparso.ipynb` | — | ✅ braço de controle da ablação de orçamento |
 | ↳ **A2C com o rollout antigo** — ~610 atualizações em vez de ~1.953 | — | `95_a2c_orcamento_esparso.ipynb` | — | ✅ a mesma ablação com **um** botão só, fora da família PPO |
 | ↳ **PPO com o sexto canal** — a observação passa a ver o relógio da fome | — | `97_ppo_canal_de_fome.ipynb` | — | ⚠️ `comparable=False`: muda a entrada da rede, não divide eixo com as curvas de 5 canais |
-| ↳ **AlphaZero — os consertos, e os braços que os isolam** | — | `93_alphazero_ablacoes.ipynb` | — | 🔬 três mecanismos medidos — o PUCT colapsa com valor positivo, o alvo de valor não normalizado domina o tronco, e τ = 0,25 transforma o alvo de política em rótulo duro. Braço `consertos` = o pacote; 14 braços isolados para atribuir causa. Ver [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) |
+| ↳ **AlphaZero — quanto cada conserto valeu** | — | `93_alphazero_ablacoes.ipynb` | — | 🔬 17 braços que **removem** um conserto do padrão, um por vez, como o `98` faz com o `08`. Três deles removem um mecanismo inteiro (§2.27, §2.28, §2.29) e respondem a pergunta em três execuções; `sem_correcoes` reproduz o agente anterior. Comparar com `06_alphazero` na mesma semente |
 | ↳ **eixo de otimizadores** (primeira ordem) | — | `99_ablacoes.ipynb` | — | ✅ Adam, AdamW, RMSprop, Lion e SGD como ablação medida |
 
 <details>
@@ -725,8 +725,8 @@ medição de propósito, para que o resultado não possa ser reinterpretado depo
 | a parte *learnable* do LBC vale alguma coisa, ou o mérito é do espaço de comportamento? | [`docs/LBC.md`](docs/LBC.md) §3 | `10_lbc` × `10_lbc+selecao_aleatoria` |
 | memória discreta resolve a fome melhor que o sexto canal resolveu? | [`docs/SOAP.md`](docs/SOAP.md) §4 | `11_soap` × `01_ppo`, contra `97` × `01_ppo` |
 | o desvio sistemático da região de confiança do ACKTR vem da Fisher aproximada? | [`docs/EKFAC.md`](docs/EKFAC.md) §5 | `kl_fator` de `12_acektr` × `08_acktr` |
-| o PUCT do AlphaZero colapsa porque o valor aprendido é positivo e o `Q` do filho virgem é 0? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | `93_alphazero_ablacoes` braços `fpu_pai` e `q_normalizado` × `06_alphazero`, mesma semente |
-| a destilação do AlphaZero está parada por três mecanismos somados, ou por um só? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | `93` braço `consertos` × `06_alphazero`; se ganhar, os braços isolados atribuem |
+| qual dos três mecanismos do §2.27–§2.29 carregava o resultado do AlphaZero? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | `93` braços `sem_conserto_da_busca`, `sem_conserto_do_tronco` e `sem_conserto_do_alvo` × `06_alphazero`, mesma semente |
+| quanto vale o lookahead: a rede pura chega perto da busca, ou a distância é estrutural? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | a coluna **com busca** do `06_alphazero`, protocolo oficial, contra a curva da rede pura na mesma execução |
 
 O plano detalhado, com o diagnóstico completo dos treze notebooks e a lista de bugs encontrados,
 está em [`docs/PLANO.md`](docs/PLANO.md).

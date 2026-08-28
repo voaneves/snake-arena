@@ -325,9 +325,12 @@ def test_the_value_target_bootstraps_everywhere_but_the_last_step(agente):
     assert "min(cfg.n_step, limite - t)" in fonte
     assert "limite = T - 1" in fonte and "limite = T " in fonte
     assert "t + k + 1 < T" not in fonte
-    # e o padrão continua sendo o de §2.5, sem a flag ligada por acidente
+    # o bootstrap do fim da janela virou o padrão depois que a medição o validou; o que
+    # o §2.5 garante continua valendo dos dois lados — um passo sem bootstrap, e só ele,
+    # quando a flag está desligada
     from snakeai.agents import AlphaZeroConfig
-    assert AlphaZeroConfig().bootstrap_fim_janela is False
+    assert AlphaZeroConfig().bootstrap_fim_janela is True
+    assert AlphaZeroConfig(bootstrap_fim_janela=False).bootstrap_fim_janela is False
 
 
 # ================================================================== §1.9 / arena

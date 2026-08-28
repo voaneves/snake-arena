@@ -20,12 +20,18 @@ bônus de exploração (`c_puct · P · √N`) só o cobre onde o prior já é a
 confirmar a rede em vez de corrigi-la. Com a mesma heurística somada de uma constante —
 ranking idêntico — o score cai de 21,7 para **0,00**.
 
-O resultado dessa execução: política pura em **10,62** (pico de 13,03 em 3,0 M), com
-**86,9% dos episódios terminando por fome**, `perda_pi` em 0,016 (a rede reproduz o alvo
-quase perfeitamente) e `perda_v` 58× maior que ela. Três problemas somados — a busca que
-não discorda, o valor não normalizado que domina o tronco, e a temperatura que transforma o
-alvo em rótulo duro. Os consertos estão atrás de flags, desligados por padrão; as ablações
-estão em `93_alphazero_ablacoes`. Ver `docs/BUSCA_DEGENERADA.md`.
+Essa execução — hoje em `runs/alphazero/…_sem_correcoes_sims32`, e o braço `sem_correcoes`
+do `93` — terminou com política pura em **10,62** (pico 13,03 em 3,0 M), **86,9% dos
+episódios por fome**, `perda_pi` em 0,016 (a rede reproduz o alvo quase perfeitamente) e
+`perda_v` 58× maior que ela. Três problemas somados: a busca que não discorda da rede, o
+alvo de valor não normalizado que domina o tronco compartilhado, e a temperatura que
+transforma o alvo de política em rótulo duro.
+
+**Os três consertos são o padrão desde então** — `fpu`, `q_normalizado`, `valor_symlog` com
+`vf_coef=0,5`, `temp_alvo`, `temp_passos`, mais o orçamento de gradiente, o decaimento de
+`lr`, o desempate e o bootstrap do fim da janela. Cada um pode ser desligado
+individualmente, e é isso que o `93_alphazero_ablacoes` faz: um braço por conserto
+removido, para medir quanto cada um valeu. Ver `docs/BUSCA_DEGENERADA.md`.
 
 Os dois alvos de treino
 -----------------------
@@ -86,7 +92,11 @@ class AlphaZeroConfig(BaseConfig):
 
     num_simulations: int = 32
     c_puct: float = 1.5
-    dirichlet_alpha: float = 0.5
+    #: α ∝ 1/(ações legais) é a heurística do paper, calibrada em ~10/n: Go 0,03 com
+    #: ~250 ações, Xadrez 0,3 com ~35. Para **3** ações isso daria 3,3; 1,0 é o meio do
+    #: caminho. O 0,5 anterior punha mais de 90% da massa do ruído numa única ação em
+    #: 15% dos lances. Ver `docs/BUSCA_DEGENERADA.md`.
+    dirichlet_alpha: float = 1.0
     dirichlet_frac: float = 0.25
 
     gamma: float = 0.997
@@ -101,19 +111,22 @@ class AlphaZeroConfig(BaseConfig):
     #: avaliação oscila entre 9,6 e 12,5 sem tendência, e o `best` (13,03 em 3,0 M) fica
     #: **2,4 pontos acima** do `last` (10,62), que é o número oficial. Passo grande demais
     #: no fim de um treino é exatamente esse desenho de curva.
-    lr_final: float = 0.0
+    lr_final: float = 5e-5
     max_grad_norm: float = 5.0
     batch_size: int = 512
-    epochs_por_iter: int = 1
+    #: Passos de gradiente por iteração. Com 1, o orçamento de 5 M passos comprava ~4.900
+    #: atualizações contra as ~38.300 do PPO, e cada amostra coletada era usada 0,5 vez.
+    #: Custa ~5% de tempo, porque a busca já gasta 512 avaliações de rede por iteração.
+    epochs_por_iter: int = 8
     memory_size: int = 100_000
 
     #: Como o Q de um filho ainda não visitado entra no PUCT: `"zero"` (a convenção do
     #: AlphaZero, e o padrão histórico daqui) ou `"pai"` (o valor do próprio nó).
     #: Ver `MinMax` em `search/mcts.py` e `docs/BUSCA_DEGENERADA.md`.
-    fpu: str = "zero"
+    fpu: str = "pai"
     #: Normalização min-max do Q dentro da árvore (MuZero, Apêndice B). Devolve `c_puct`
     #: à escala em que foi calibrado, num jogo cujo valor não é limitado a [-1, 1].
-    q_normalizado: bool = False
+    q_normalizado: bool = True
 
     #: Temperatura da amostragem na coleta. Cai de `temp_inicio` a `temp_fim` ao longo de
     #: `temp_frac` do **treino** — não do episódio.
@@ -132,15 +145,15 @@ class AlphaZeroConfig(BaseConfig):
     #: a temperatura passa a depender do lance dentro do episódio (τ = `temp_inicio` nos
     #: primeiros `temp_passos` lances, `temp_fim` no resto) em vez da fração do treino.
     #: Substitui `temp_frac` por completo — não são dois agendamentos somados.
-    temp_passos: int = 0
+    temp_passos: int = 30
 
     #: Temperatura usada para construir o **alvo** de política, independente da usada para
     #: agir. `0` mantém o comportamento atual (o alvo é a mesma π temperada que escolheu a
     #: ação); `1.0` é o AlphaZero de verdade — o alvo é a distribuição de visitas crua, e
     #: a temperatura fica sendo só um botão de exploração.
-    temp_alvo: float = 0.0
+    temp_alvo: float = 1.0
 
-    vf_coef: float = 1.0
+    vf_coef: float = 0.5
     ent_coef: float = 0.0     # a exploração vem do ruído de Dirichlet, não da entropia
 
     #: Treinar o valor em **symlog** em vez de na escala crua (DreamerV3; a mesma
@@ -157,11 +170,11 @@ class AlphaZeroConfig(BaseConfig):
     #:
     #: A busca continua vendo o valor na escala **real** — `_frente` desfaz o symlog antes
     #: de devolver. A transformação é só a representação que a rede aprende.
-    valor_symlog: bool = False
+    valor_symlog: bool = True
 
     #: Empate exato no PUCT: `"ordem"` (o primeiro filho do dicionário, que é sempre
     #: *virar à esquerda*) ou `"aleatorio"`. Ver `MCTS.desempate`.
-    desempate: str = "ordem"
+    desempate: str = "aleatorio"
 
     #: Fazer bootstrap no **último** passo da janela de coleta. Com `rollout=16` o passo
     #: `t = T-1` não tem estado seguinte dentro do buffer, e hoje o alvo dele é a
@@ -170,7 +183,7 @@ class AlphaZeroConfig(BaseConfig):
     #: Ligado, o valor da rede no estado em que a coleta parou fecha a janela.
     #: É o valor da **rede**, não o da busca: no fim da janela não houve busca. Menos
     #: preciso que os outros bootstraps do vetor, e ainda assim melhor que nenhum.
-    bootstrap_fim_janela: bool = False
+    bootstrap_fim_janela: bool = True
 
     #: Simulações usadas na coluna "com busca" da tabela. Zero desliga.
     sims_avaliacao: int = 32

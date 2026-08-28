@@ -104,6 +104,8 @@ rede alvo em atualizações de gradiente em vez de passos de ambiente.
 | 5 | DreamerV3 | `09_dreamerv3` | pendente | desconhecido |
 | 6 | AlphaZero | `06_alphazero` | pendente | desconhecido — busca em árvore |
 | 7 | MuZero | `07_muzero` | pendente | desconhecido |
+
+**Pendência de código, não de GPU:** o MuZero busca na hora de agir e **não tem** `avaliar_com_busca`. O AlphaZero ganhou a coluna com busca no protocolo oficial (1.000 episódios, greedy, semente 123) e o MuZero ainda não — sem ela, o único algoritmo que existe para buscar sobre um modelo aprendido seria publicado medido só sem buscar, que é meia medição. O `MCTS` é o mesmo objeto; muda a dinâmica que a árvore percorre. Os consertos do §2.27–§2.29 também não foram aplicados lá: o `_selecionar` e o `_passo` do MuZero têm exatamente os mesmos defeitos.
 | 8 | LBC | `10_lbc` | pendente | desconhecido — ~4 épocas sobre o rollout, como o PPO |
 | 9 | SOAP | `11_soap` | pendente | desconhecido — PPO com 4 cabeças e uma crença em NumPy |
 | 10 | ACEKTR | `12_acektr` | pendente | ~2,1× o `kfac_ms` do ACKTR, medido em lote pequeno |

@@ -239,6 +239,40 @@ então ele muda *quando* a temperatura cai, não o quanto. Já `temp_por_lance` 
 um `temp_fim` baixo **sem** `alvo_cru` deixaria o alvo duro a partir do lance 30 — pior que
 hoje. Os dois andam juntos dentro do `consertos` por esse motivo.
 
+## O que aconteceu depois
+
+Os onze consertos **são o padrão** do `AlphaZeroConfig` desde que a medição os validou:
+`fpu="pai"`, `q_normalizado`, `valor_symlog` com `vf_coef=0,5`, `temp_alvo=1,0`,
+`temp_passos=30`, `epochs_por_iter=8`, `lr_final=5e-5`, `dirichlet_alpha=1,0`,
+`desempate="aleatorio"` e `bootstrap_fim_janela`. Quem roda `06_alphazero` sem tocar em
+nada roda o agente consertado.
+
+Cada um continua desligável, e é isso que o `93_alphazero_ablacoes` mede — 17 braços que
+**removem** uma coisa do padrão, não que a acrescentam. É a mesma inversão que o
+`98_acktr_kl_nominal` sofreu quando a calibração da região de confiança venceu e virou o
+padrão do `08`. Três braços removem um mecanismo inteiro e respondem a pergunta em três
+execuções em vez de onze:
+
+| braço | remove | seção |
+|---|---|---|
+| `sem_conserto_da_busca` | `fpu`, `q_normalizado` | §2.27 |
+| `sem_conserto_do_tronco` | `valor_symlog`, `vf_coef` | §2.28 |
+| `sem_conserto_do_alvo` | `temp_alvo`, `temp_passos` | §2.29 |
+| `sem_correcoes` | tudo — é o agente anterior | as três |
+
+A execução que motivou este documento continua na arena como
+`alphazero/sims32_sem_correcoes/seed0`, renomeada para não dividir a identidade
+`(algo, variant, seed)` com as novas; o `meta["renomeado_de"]` guarda o motivo e a
+assinatura de código antiga, e o `caveat` diz do que ela é anterior.
+
+**Uma coluna que faltava.** O AlphaZero existe para buscar, e era avaliado só sem buscar.
+`avaliar_com_busca` estava no agente desde sempre — protocolo oficial, 1.000 episódios,
+greedy, semente 123 — e **nenhuma célula do notebook chamava**. Agora o `06` e o `93` têm a
+célula, com dois orçamentos de simulação, e o resultado vai para `meta["com_busca"]` do
+registro. A curva oficial continua sendo a rede pura, porque a busca gasta 33 avaliações de
+rede por jogada contra 1 do PPO; a coluna separada é como se reporta isso sem trapacear no
+eixo. Falta fazer o mesmo no MuZero — ver `docs/ANTES_DO_ARTIGO.md`.
+
 ## O que este documento **não** mede
 
 * Nada aqui usou a rede treinada. A avaliação de folha é uma heurística, escolhida

@@ -61,8 +61,8 @@ ENSAIO_MD = """## Ensaio — 2 minutos antes de queimar 8 horas
 Um treino de 5 M passos com busca custa ~8 h de T4. Descobrir na hora 6 que a cabeça de
 valor divergiu, ou que o alvo saiu `NaN`, é o pior jeito possível de gastar esse tempo.
 
-Esta célula roda **40 iterações** do braço escolhido e imprime o que precisa estar são
-antes de valer a pena continuar. O que olhar:
+Esta célula roda **40 iterações** da configuração escolhida e imprime o que precisa
+estar são antes de valer a pena continuar. O que olhar:
 
 | sinal | saudável | o que significa se sair errado |
 |---|---|---|
@@ -74,7 +74,7 @@ antes de valer a pena continuar. O que olhar:
 
 Ela **não** valida a configuração. São 40 iterações — ~20 mil passos de ambiente, 0,4% do
 orçamento — num `resnet_tiny` com 32 ambientes, para caber em dois minutos. Herda do `cfg`
-tudo que define o braço (`fpu`, `q_normalizado`, `valor_symlog`, `vf_coef`, temperatura,
+tudo que define o comportamento (`fpu`, `q_normalizado`, `valor_symlog`, `vf_coef`, temperatura,
 `epochs_por_iter`, `num_simulations`) e troca só o tamanho. Serve para pegar o que é
 catastrófico e independente de arquitetura: `NaN`, valor explodindo, busca degenerada, alvo
 duro. Nada aqui é gravado em `runs/`, e o agente do ensaio é descartado antes do treino
@@ -167,77 +167,167 @@ print("ensaio aprovado — perdas, valor e alvo finitos. Pode seguir para o trei
 del _ens'''
 
 
+BUSCA_MD = """## Veredito com busca — a coluna separada do contrato
+
+A curva oficial mede a **rede pura**, greedy, sem nenhuma ajuda. É o que torna as curvas
+comparáveis: a busca gasta `num_simulations` avaliações de rede e outros tantos passos de
+simulador **por jogada**, contra 1 avaliação do PPO. Somar as duas no mesmo eixo diria "o
+AlphaZero ganha do PPO" quando o que aconteceu foi gastar 32× mais computação na hora de
+decidir — a mesma razão que manda o filtro de flood-fill para uma coluna própria.
+
+Reportar, no entanto, é obrigação. Um agente que existe para buscar, avaliado só sem
+buscar, é meia medição — e a busca é o que você levaria para jogar de verdade, já que em
+Snake o simulador está disponível na hora de agir. Então: coluna separada, não coluna
+proibida.
+
+O protocolo é o mesmo do contrato — 1.000 episódios, greedy (argmax das visitas), semente
+123 — e a busca roda com a **mesma** configuração do treino (`fpu`, `q_normalizado`,
+`desempate`, `c_puct`, `gamma`). Dois orçamentos, para mostrar a curva computação ×
+qualidade: quanto do resultado vem da rede e quanto vem do lookahead.
+
+**Custo:** com episódios longos e 33 avaliações de rede por jogada, os 32 sims em 1.000
+episódios levam dezenas de minutos numa T4. Baixe `EPISODIOS` para um número rápido — perde
+a comparabilidade com o contrato, mas dá a ordem de grandeza.
+"""
+
+BUSCA_CODE = '''import time
+
+import numpy as np
+
+EPISODIOS = 1000              # @param {type:"integer"}
+ORCAMENTOS = [8, 32]          # @param
+AVALIAR_MELHOR = False        # @param {type:"boolean"}
+
+if not hasattr(agente, "avaliar_com_busca"):
+    raise RuntimeError("este agente não busca na hora de agir — a coluna não se aplica")
+
+# reaproveita o `resultado` da célula anterior: sem busca é barato, mas o filtro de
+# flood-fill é laço Python e é a parte cara da avaliação
+_base = globals().get("resultado")
+if _base is None:
+    _base = verdict(agente.politica(), episodes=EPISODIOS, com_filtro=False)
+_tabela = {**_base, "linhas": list(_base["linhas"])}
+_pura = _tabela["linhas"][1]["score_mean"]
+_medidas = {}
+
+
+def _mede_com_busca(modelo_nome):
+    for _i, _sims in enumerate(ORCAMENTOS):
+        _t0 = time.time()
+        _st = agente.avaliar_com_busca(episodes=EPISODIOS, num_simulations=_sims)
+        _dt = time.time() - _t0
+        _st["segundos"] = round(_dt, 1)
+        _medidas[f"{modelo_nome}_sims{_sims}"] = _st
+        _tabela["linhas"].append(
+            {"regime": f"agente + busca ({_sims} sims)"
+                       + ("" if modelo_nome == "last" else f" · {modelo_nome}"), **_st})
+        print(f"  {modelo_nome} · {_sims} sims: score {_st['score_mean']:.2f} · "
+              f"cheio {_st['win_rate']:.1%} · {_dt / 60:.1f} min", flush=True)
+        if _i == 0 and len(ORCAMENTOS) > 1:
+            _resto = sum(ORCAMENTOS[1:]) / max(ORCAMENTOS[0], 1) * _dt
+            print(f"     (os orçamentos restantes devem levar ~{_resto / 60:.0f} min)",
+                  flush=True)
+
+
+print(f"rede pura (a curva oficial): {_pura:.2f}   ·   piso {_tabela['piso']:.2f}")
+print(f"medindo com busca, {EPISODIOS} episódios por orçamento...", flush=True)
+_mede_com_busca("last")
+
+if AVALIAR_MELHOR:
+    _melhor = agente.modelo_melhor()
+    if _melhor is not None:
+        _guardado, agente.model = agente.model, _melhor
+        try:
+            agente.on_model_reloaded()   # a busca lê `self._avaliar`; religa no modelo novo
+            _mede_com_busca("best")
+        finally:
+            agente.model = _guardado
+            agente.on_model_reloaded()
+
+print()
+print(format_verdict(_tabela))
+print()
+for _nome, _st in _medidas.items():
+    _s = _st["score_mean"]
+    _linha = f"{_nome:>16}: busca {_s:>6.2f}  ·  rede pura {_pura:>6.2f}"
+    # as razões só significam alguma coisa longe do zero; cedo no treino ambas são ~0 e
+    # dividir uma pela outra imprime um número de sete dígitos que não quer dizer nada
+    if _pura > 0.5 and _s > 0.5:
+        _linha += f"  ·  {_s / _pura:.2f}x  ·  a rede captura {_pura / _s:.0%} da busca"
+    else:
+        _linha += "  ·  (razões omitidas: alguma das duas ainda está perto de zero)"
+    print(_linha)
+
+# o número precisa sobreviver ao fim da sessão, senão vira print no console
+registro.record.meta["com_busca"] = _medidas
+print()
+print("gravado em meta['com_busca'] de", registro.save(skip_validation=True))'''
+
+
 BRACOS_ABLACAO = [
-    "consertos", "controle",
-    "fpu_pai", "q_normalizado", "valor_symlog", "vf_05", "gradiente_8x", "lr_decai",
-    "alvo_cru", "temp_por_lance", "desempate", "bootstrap_janela",
-    "busca64", "dirichlet_1", "gamma_995", "tudo",
+    # os três mecanismos, um removido por vez — é a pergunta científica, em 3 execuções
+    "sem_conserto_da_busca", "sem_conserto_do_tronco", "sem_conserto_do_alvo",
+    "sem_correcoes",
+    # o mesmo, botão a botão, para quem quiser atribuir dentro de um mecanismo
+    "sem_fpu", "sem_q_normalizado", "sem_symlog", "vf_1", "sem_alvo_cru",
+    "sem_temp_por_lance", "gradiente_1x", "sem_lr_decai", "dirichlet_05",
+    "sem_desempate", "sem_bootstrap_janela",
+    # o que a literatura sugere e **não** entrou no padrão
+    "busca64", "gamma_995",
 ]
 
-#: O braço que o `@param` oferece pré-selecionado. **Não** é o controle: o controle é o
-#: `06_alphazero`, que roda separado. Quem abre este notebook quer medir alguma coisa.
-BRACO_PADRAO = "consertos"
+#: O braço pré-selecionado. Aqui não existe "só rodar": o agente oficial é o
+#: `06_alphazero`, e este notebook é o menu de ablações. Vem em `sem_conserto_da_busca`
+#: porque é a hipótese com o maior efeito esperado — a busca saiu de score 25 para 94,8
+#: entre a execução sem consertos e a com.
+BRACO_PADRAO = "sem_conserto_da_busca"
 
 _PRE_CFG_ABLACAO = """BRACOS = {
-    # ---------------------------------------------------------------- o pacote curado
-    # Os consertos com mecanismo medido, mais os que não têm como piorar. Fica de fora
-    # tudo que só tem argumento de literatura (`busca64`, `dirichlet_1`, `gamma_995`) e
-    # tudo que dobra o tempo de parede. Não isola causa — isola *risco*.
-    "consertos": {"fpu": "pai", "q_normalizado": True,          # BUSCA_DEGENERADA §PUCT
-                  "valor_symlog": True, "vf_coef": 0.5,         # BUSCA_DEGENERADA §tronco
-                  "epochs_por_iter": 8,                         # ORCAMENTO_DE_GRADIENTE
-                  "lr_final": 5e-5,                             # como o PPO e o ACKTR
-                  "temp_alvo": 1.0, "temp_passos": 30,          # o agendamento do paper
-                  "dirichlet_alpha": 1.0,                       # 0,5 é sharp para 3 ações
-                  "desempate": "aleatorio",
-                  "bootstrap_fim_janela": True},
+    # ------------------------------------------ os tres mecanismos, um de cada vez
+    # Cada um destes remove um conserto INTEIRO do padrao. Tres execucoes respondem
+    # "qual dos tres mecanismos carregava o resultado", que e a pergunta que importa.
+    # Comparar contra `06_alphazero` na MESMA semente.
 
-    # o `06_alphazero` sem tocar em nada, para quando não houver uma execução de `06` na
-    # mesma semente com que comparar
-    "controle": {},
+    # §2.27 - o PUCT dava Q=0 a filho nao visitado; com valor positivo a busca so
+    # confirmava o que a rede ja achava, em vez de discordar
+    "sem_conserto_da_busca":  {"fpu": "zero", "q_normalizado": False},
 
-    # ------------------------------- a escala do valor dentro do PUCT (REVISAO §2.27)
-    "fpu_pai":        {"fpu": "pai"},
-    "q_normalizado":  {"q_normalizado": True},
+    # §2.28 - o alvo de valor nao normalizado dominava o tronco compartilhado
+    "sem_conserto_do_tronco": {"valor_symlog": False, "vf_coef": 1.0},
 
-    # ------------------------- o balanço das perdas no tronco compartilhado (§2.28)
-    "valor_symlog":   {"valor_symlog": True},
-    "vf_05":          {"vf_coef": 0.5},
-    "lr_decai":       {"lr_final": 5e-5},
+    # §2.29 - a temperatura transformava o alvo de politica em rotulo duro
+    "sem_conserto_do_alvo":   {"temp_alvo": 0.0, "temp_passos": 0},
 
-    # ------------------------------------- o orçamento de gradiente (o eixo do 95/96)
-    "gradiente_8x":   {"epochs_por_iter": 8},
+    # tudo desligado: o agente de antes. Ja existe na arena como
+    # `alphazero/sims32_sem_correcoes/seed0` (10,62). Rode de novo so se quiser o
+    # controle sob o codigo atual, com a assinatura atual.
+    "sem_correcoes": {"fpu": "zero", "q_normalizado": False, "valor_symlog": False,
+                      "vf_coef": 1.0, "epochs_por_iter": 1, "lr_final": 0.0,
+                      "temp_alvo": 0.0, "temp_passos": 0, "dirichlet_alpha": 0.5,
+                      "desempate": "ordem", "bootstrap_fim_janela": False},
 
-    # ------------------------------------------------ a destilação e a temperatura
-    # `alvo_cru` sozinho é o mais barato dos consertos: com tau=0,25 a partir de metade
-    # do treino, o alvo de politica vira rotulo duro (entropia 0,66 -> 0,015 nas
-    # contagens de visita medidas). `temp_por_lance` mexe so em QUANDO a temperatura cai.
-    "alvo_cru":       {"temp_alvo": 1.0},
-    "temp_por_lance": {"temp_passos": 30},
+    # ------------------------------------------------------- botao a botao, dentro
+    "sem_fpu":              {"fpu": "zero"},
+    "sem_q_normalizado":    {"q_normalizado": False},
+    "sem_symlog":           {"valor_symlog": False},
+    "vf_1":                 {"vf_coef": 1.0},
+    "sem_alvo_cru":         {"temp_alvo": 0.0},
+    "sem_temp_por_lance":   {"temp_passos": 0},
+    "gradiente_1x":         {"epochs_por_iter": 1},
+    "sem_lr_decai":         {"lr_final": 0.0},
+    "dirichlet_05":         {"dirichlet_alpha": 0.5},
+    "sem_desempate":        {"desempate": "ordem"},
+    "sem_bootstrap_janela": {"bootstrap_fim_janela": False},
 
-    # ------------------------------------------------------- dois vieses pequenos
-    "desempate":       {"desempate": "aleatorio"},
-    "bootstrap_janela": {"bootstrap_fim_janela": True},
-
-    # --------------------------------- o que a literatura sugere, e que eu nao endosso
-    # `busca64` DOBRA o tempo de parede (~16 h em vez de ~8 h por semente).
-    "busca64":        {"num_simulations": 64, "sims_avaliacao": 64},
-    "dirichlet_1":    {"dirichlet_alpha": 1.0},
-    "gamma_995":      {"gamma": 0.995},
-
-    # ------------------------------------------------------------------- tudo junto
-    "tudo": {"fpu": "pai", "q_normalizado": True, "valor_symlog": True, "vf_coef": 0.5,
-             "epochs_por_iter": 8, "lr_final": 5e-5,
-             "temp_alvo": 1.0, "temp_passos": 30,
-             "desempate": "aleatorio", "bootstrap_fim_janela": True,
-             "num_simulations": 64, "sims_avaliacao": 64, "dirichlet_alpha": 1.0,
-             "gamma": 0.995},
+    # ------------------------- o que a literatura sugere e nao entrou no padrao
+    # `busca64` DOBRA o tempo de parede (~16 h em vez de ~8 h por semente) e a medicao
+    # diz que compra ~1,3 plies de profundidade, nao horizonte.
+    "busca64":   {"num_simulations": 64, "sims_avaliacao": 64},
+    "gamma_995": {"gamma": 0.995},
 }
-print(f"braço: {BRACO}")
+print(f"braco: {BRACO}  (o padrao e o 06_alphazero; aqui se remove uma coisa dele)")
 for _k, _v in sorted(BRACOS[BRACO].items()):
     print(f"   {_k} = {_v!r}")
-if not BRACOS[BRACO]:
-    print("   (nada — é o 06_alphazero)")
 
 """
 
@@ -301,14 +391,37 @@ NOTEBOOKS = [
     },
     {
         "arquivo": "06_alphazero.ipynb",
+        "celulas_extra": [{"md": ENSAIO_MD, "codigo": ENSAIO_CODE, "titulo": "Ensaio"}],
+        "celulas_pos_veredito": [{"md": BUSCA_MD, "codigo": BUSCA_CODE,
+                                  "titulo": "Veredito com busca"}],
         "titulo": "AlphaZero — busca sobre o simulador real",
         "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
                     "snakeai/agents/alphazero.py"],
         "agente": "AlphaZero",
         "config": "AlphaZeroConfig",
         "resumo": "Snake é determinístico e o simulador é rápido — então a árvore percorre "
-                  "o jogo de verdade. Use `num_simulations` alto: é o parâmetro que decide "
-                  "se a destilação funciona.",
+                  "o jogo de verdade, sem precisar aprender um modelo do mundo. Abra e rode: "
+                  "os padrões são os da versão consertada.\n\n"
+                  "**O que mudou, e por quê.** A primeira execução de 5 M passos terminou em "
+                  "**10,62** com **86,9% dos episódios morrendo de fome** — o pior número da "
+                  "arena. A autópsia achou três defeitos somados, todos medidos em separado "
+                  "(§2.27–§2.29 da revisão): o PUCT dava `Q = 0` a um filho não visitado e, "
+                  "com o valor positivo que este jogo produz, a busca passava a **confirmar** "
+                  "a rede em vez de discordar dela; o alvo de valor não normalizado dominava "
+                  "o tronco compartilhado numa razão de gradiente de 71×; e a mesma "
+                  "distribuição temperada que escolhia a ação virava o alvo de treino, "
+                  "levando a entropia do alvo de 0,66 a 0,015 — rótulo duro, o oposto de "
+                  "destilar a distribuição de visitas.\n\n"
+                  "Os onze consertos são o padrão desde então. A execução anterior virou o "
+                  "braço `sem_correcoes` do `93_alphazero_ablacoes`, que mede quanto cada um "
+                  "valeu removendo-os um a um. Ver "
+                  "[`docs/BUSCA_DEGENERADA.md`]"
+                  "(https://github.com/voaneves/snake-arena/blob/main/docs/BUSCA_DEGENERADA.md).\n\n"
+                  "**Duas colunas, de propósito.** A curva oficial mede a rede pura, greedy, "
+                  "sem busca — é o que torna as curvas comparáveis, já que a busca gasta 33 "
+                  "avaliações de rede por jogada contra 1 do PPO. A célula *Veredito com "
+                  "busca* mede o agente como você o levaria para jogar, no mesmo protocolo, "
+                  "e grava em `meta[\"com_busca\"]`.",
     },
     {
         "arquivo": "07_muzero.ipynb",
@@ -366,82 +479,72 @@ NOTEBOOKS = [
     },
     {
         "arquivo": "93_alphazero_ablacoes.ipynb",
-        "titulo": "AlphaZero — as ablações, e o pacote de consertos",
+        "titulo": "AlphaZero — quanto cada conserto valeu",
         "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
                     "snakeai/agents/alphazero.py"],
         "agente": "AlphaZero",
         "config": "AlphaZeroConfig",
         "param_braco": True,
         "celulas_extra": [{"md": ENSAIO_MD, "codigo": ENSAIO_CODE, "titulo": "Ensaio"}],
+        "celulas_pos_veredito": [{"md": BUSCA_MD, "codigo": BUSCA_CODE,
+                                  "titulo": "Veredito com busca"}],
         "resumo":
-            "**Como rodar.** Escolha o `BRACO` no `@param`, rode a célula de ensaio (2 min, "
-            "pega o que é catastrófico antes de você gastar 8 h) e depois o treino. O "
-            "`sufixo_variante` mantém cada braço separado na arena. O braço vem "
-            "pré-selecionado em `consertos`, **não** em `controle`: o controle é o "
-            "`06_alphazero` da mesma semente, que roda em outro notebook.\n\n"
-            "**O que comparar.** A curva oficial é o `[eval]`, que mede a rede pura, greedy, "
-            "sem busca — não o `score` do log de treino, que é o da busca. O piso aleatório "
-            "é 1,21. A execução de referência do `06` está em 2,45 em 1 M de passos com a "
-            "busca fazendo 17,8: busca boa, destilação parada.\n\n"
+            "Este notebook **remove** coisas do padrão, uma por vez. Não é aqui que se roda "
+            "o AlphaZero — o agente oficial é o `06_alphazero`, e o padrão dele já é a "
+            "versão consertada. É a mesma inversão que o `98_acktr_kl_nominal` sofreu quando "
+            "a calibração da região de confiança venceu a medição e virou o padrão do `08`: "
+            "o braço que sobrevive é o *sem*.\n\n"
+            "**Como rodar.** Escolha o `BRACO`, rode o ensaio (2 min, pega o que é "
+            "catastrófico antes de você gastar ~8 h) e depois o treino. Compare com "
+            "`06_alphazero` **na mesma semente**; o `sufixo_variante` mantém os braços "
+            "separados na arena. E olhe o `[eval]`, que mede a rede pura — não o `score` do "
+            "log de treino, que é o da busca.\n\n"
             "---\n\n"
-            "### O braço `consertos` — o que está dentro e por quê\n\n"
-            "Não isola causa. Isola **risco**: entra o que tem mecanismo medido ou não tem "
-            "como piorar, e fica de fora tudo que só tem argumento de literatura ou que "
-            "dobra o tempo de parede.\n\n"
-            "| chave | o que conserta | evidência |\n"
+            "### De onde vieram os consertos\n\n"
+            "A primeira execução de 5 M passos terminou com a política pura em **10,62** "
+            "(pico 13,03 em 3,0 M), **86,9% dos episódios por fome** e 0% de tabuleiro "
+            "cheio — o pior número da arena, com folga. Ela está aqui como o braço "
+            "`sem_correcoes` e na arena como `alphazero/sims32_sem_correcoes/seed0`. A "
+            "autópsia achou três defeitos somados, cada um medido em separado:\n\n"
+            "| § | o defeito | a evidência |\n"
             "|---|---|---|\n"
-            "| `fpu=\"pai\"` + `q_normalizado` | o PUCT dá `Q = 0` a filho não visitado; com "
-            "`V ≈ 3,5` (medido) o bônus `c_puct·P·√N` só cobre isso onde o prior já é alto, "
-            "e a busca passa a confirmar a rede em vez de corrigi-la | medido: somar uma "
-            "constante ao valor da folha, sem mudar o ranking de estado nenhum, leva o "
-            "score de 21,70 (100% colisão) a **0,00** (100% fome) |\n"
-            "| `valor_symlog` + `vf_coef=0.5` | o alvo de valor não é normalizado e domina "
-            "o tronco compartilhado | medido **na execução real**: `perda_v/perda_pi` = "
-            "**57,6×** depois de 4 M. No `|z|` dessa execução, symlog leva o gradiente de "
-            "71× para 14×, e `vf_coef=0,5` para **7,0×** — a faixa saudável. `0,25` daria "
-            "3,5× e passaria do ponto: a `perda_v` **não** convergiu (subiu de 0,34 para "
-            "1,0), então enfraquecer o valor mais que isso piora a busca, que depende dele |\n"
-            "| `epochs_por_iter=8` | ~4.900 atualizações contra as ~38.300 do PPO no mesmo "
-            "orçamento de ambiente | **atenção**: na execução real a `perda_pi` já chega a "
-            "0,016, então mais gradiente **não** ajuda a política — ajuda o valor, que "
-            "ficou em 1,0 sem convergir. Custa ~5% de tempo |\n"
-            "| `lr_final=5e-5` | o `lr` era constante, e este é o único agente do "
-            "repositório sem decaimento | na execução real o score oscila entre 9,6 e 12,5 "
-            "depois de 3 M sem tendência, e o `best` (13,03) fica 2,4 pontos acima do "
-            "`last` (10,62), que é o número oficial |\n"
-            "| `temp_alvo=1.0` | a mesma π temperada escolhe a ação **e** vira o alvo; com "
-            "τ = 0,25 o alvo vira rótulo duro | medido: entropia do alvo de 0,66 a "
-            "**0,015** nas contagens de visita reais |\n"
-            "| `temp_passos=30` | `temp_frac` é fração do **treino**, não do episódio: a "
-            "cobra joga solta quando o tabuleiro aperta | é o agendamento canônico do paper |\n"
-            "| `dirichlet_alpha=1.0` | com 3 ações, α = 0,5 põe mais de 90% da massa numa "
-            "única ação em 15% dos lances | a heurística do paper é α ≈ 10/n, que dá 3,3 "
-            "para 3 ações. **Julgamento, não medição** — é o item mais fraco da lista |\n"
-            "| `desempate=\"aleatorio\"` | empate exato no PUCT fica sempre com a primeira "
-            "ação da máscara, que é *virar à esquerda* | viés sistemático, sempre para o "
-            "mesmo lado |\n"
-            "| `bootstrap_fim_janela` | o último passo de cada janela tem alvo sem "
-            "bootstrap — 1/16 das amostras aprendendo \"aqui não há futuro\" | |\n\n"
-            "### O que a execução de controle já mediu\n\n"
-            "`runs/alphazero/…` (5 M passos, 7,54 h, seed 0): política pura **10,62** "
-            "(pico 13,03 em 3,0 M), `score_median` 5, **86,9% de fim por fome**, 0% de "
-            "tabuleiro cheio. Os três GIFs do fim terminam por fome. Para comparar: PPO "
-            "62–81, ACKTR ~84. Este notebook existe para descobrir se os 11 pontos são o "
-            "algoritmo ou os três mecanismos acima.\n\n"
-            "**Fora do pacote, de propósito:** `busca64` dobra o tempo de parede (~16 h em "
-            "vez de ~8 h) e a medição diz que compra ~1,3 plies, não horizonte; "
-            "`gamma_995` é alinhamento com o resto do repositório, não conserto, e com "
-            "symlog o argumento de escala do valor já está resolvido.\n\n"
-            "### Os braços isolados\n\n"
-            "Cada um muda **uma** coisa em relação ao `06_alphazero`, para atribuir causa "
-            "depois que o `consertos` disser se há o que atribuir. Um cuidado: "
-            "`temp_por_lance` sozinho mantém `temp_fim = 0,25`, então ele muda *quando* a "
-            "temperatura cai, não o quanto — a dureza do alvo continua sendo assunto do "
-            "`alvo_cru`.\n\n"
-            "Tudo isto está escrito em [`docs/BUSCA_DEGENERADA.md`]"
-            "(https://github.com/voaneves/snake-arena/blob/main/docs/BUSCA_DEGENERADA.md) e "
-            "nas §2.27 e §2.28 da revisão, com os scripts que regeneram as tabelas "
-            "(`tools/diag_busca.py`, `tools/diag_balanco_perdas.py`).",
+            "| **2.27** | o PUCT dá `Q = 0` a um filho não visitado — a convenção do "
+            "AlphaZero, correta onde o valor é uma `tanh` em `[-1,1]`. Aqui a cabeça é "
+            "linear e o `valor_raiz` medido vai de 0,26 a **3,5**, então o bônus "
+            "`c_puct·P·√N` só cobre a diferença onde o prior já é alto: a busca passa a "
+            "**confirmar** a rede em vez de discordar dela | somar uma constante ao valor "
+            "da folha — sem mudar o ranking de estado nenhum — leva o score de 21,70 (100% "
+            "colisão) a **0,00** (100% fome) |\n"
+            "| **2.28** | o alvo de valor não é normalizado e domina o tronco "
+            "compartilhado | na execução real, `perda_v/perda_pi` = **57,6×** depois de "
+            "4 M — a `perda_pi` desabou para 0,016 enquanto a `perda_v` **subiu** de 0,34 "
+            "para 1,0 e nunca convergiu. No `|z|` real, `symlog` leva o gradiente de 71× "
+            "para 14×, e `vf_coef=0,5` para 7,0× |\n"
+            "| **2.29** | a mesma π temperada escolhe a ação **e** vira o alvo de treino; "
+            "com τ = 0,25 as visitas são elevadas à quarta potência | entropia do alvo de "
+            "0,66 para **0,015** nas contagens de visita reais — da metade do treino em "
+            "diante a rede aprende rótulo duro, que é o oposto de destilar a distribuição "
+            "de visitas |\n\n"
+            "Mais dois botões menores que entraram junto: o orçamento de gradiente "
+            "(~4.900 atualizações contra as ~38.300 do PPO) e o decaimento de `lr` — este "
+            "era o único agente do repositório sem, e a execução antiga oscilava entre 9,6 "
+            "e 12,5 nos últimos 2 M, com o `best` 2,4 pontos acima do `last`.\n\n"
+            "### Os braços\n\n"
+            "Três deles removem um **mecanismo inteiro** e respondem a pergunta em três "
+            "execuções em vez de onze — é por onde começar:\n\n"
+            "* `sem_conserto_da_busca` — desliga `fpu` e `q_normalizado` (§2.27)\n"
+            "* `sem_conserto_do_tronco` — desliga `valor_symlog` e volta `vf_coef=1` (§2.28)\n"
+            "* `sem_conserto_do_alvo` — desliga `temp_alvo` e `temp_passos` (§2.29)\n"
+            "* `sem_correcoes` — desliga tudo; é o agente de 10,62\n\n"
+            "Os outros isolam botão a botão dentro de cada mecanismo. E há dois que a "
+            "literatura sugere e que **não** entraram no padrão: `busca64` (dobra o tempo "
+            "de parede e a medição diz que compra ~1,3 plies de profundidade, não "
+            "horizonte) e `gamma_995` (alinhamento com o resto do repositório, não "
+            "conserto).\n\n"
+            "Tudo em [`docs/BUSCA_DEGENERADA.md`]"
+            "(https://github.com/voaneves/snake-arena/blob/main/docs/BUSCA_DEGENERADA.md), "
+            "com os scripts que regeneram as tabelas (`tools/diag_busca.py`, "
+            "`tools/diag_balanco_perdas.py`).",
     },
     {
         "arquivo": "94_rainbow_nstep3.ipynb",
@@ -846,6 +949,11 @@ if melhor is not None:
 
 fig, _ = plot_run(registro.record)
 plt.show()""", "Veredito"),
+        #: Células que entram DEPOIS do veredito — hoje só a coluna com busca, dos agentes
+        #: que buscam na hora de agir. Ela lê `resultado` e `registro`, então tem que vir
+        #: depois do veredito e antes do zip.
+        *[c for extra in spec.get("celulas_pos_veredito", [])
+          for c in (_md(extra["md"]), _code(extra["codigo"], extra.get("titulo")))],
         _md("""## O agente jogando
 
 Um GIF vale mais que a curva para entender *como* o agente perde. Morrer preso no próprio
