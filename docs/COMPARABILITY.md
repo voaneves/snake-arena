@@ -151,6 +151,34 @@ casada pela forma do tensor do Keras, e desempate pelo valor quando duas saídas
 forma. Um relatório de exportação anterior a essa correção não sustenta a linha
 `acoes_iguais` — os arquivos continuam válidos, a afirmação sobre eles não.
 
+## O que cada agente tem além da rede pura, e como isso é reportado
+
+A curva oficial mede **a política pura, greedy, sem nenhuma ajuda externa**. É o que torna
+as curvas comparáveis. Mas os treze algoritmos não são iguais no que carregam na hora de
+decidir, e fingir que são seria a mesma desonestidade em outra direção. O levantamento,
+feito lendo o código e não a intuição:
+
+| categoria | quem | como aparece |
+|---|---|---|
+| **busca na hora de agir** | `06_alphazero` (MCTS sobre o `VecSnake`), `07_muzero` (MCTS sobre a rede `g`) | **coluna separada.** `avaliar_com_busca` roda o protocolo oficial — 1.000 episódios, greedy sobre as contagens de visita, semente 123 — e o resultado vai para `meta["com_busca"]` do registro. Nunca entra na curva |
+| **memória interna** | `09_dreamerv3` (`h`,`z` do RSSM), `11_soap` (crença de opção) | **já é a curva.** O latente *é* a política, não um acessório: não existe "rede pura" para separar, e medir sem ele seria medir um agente que não existe. O `evaluate()` sustenta isso pelo contrato `apos_passo` — ver a seção sobre políticas com memória |
+| **filtro de flood-fill** | **todos** | terceira linha do `verdict()`, para o benchmark inteiro. É computação extra na hora de jogar, disponível a qualquer agente, e por isso já nasceu em coluna própria |
+| nada além da rede | PPO, A2C, ACER, ACKTR, ACEKTR, DQN, Rainbow, LBC | a curva e ponto. O LBC parece exceção e não é: ele avalia **uma** política da população, que é rede pura |
+
+O critério que separa a primeira linha da segunda é uma pergunta só: **o agente consegue
+jogar sem aquilo?** O AlphaZero e o MuZero conseguem — a rede sozinha é um agente completo,
+e a busca é computação empilhada por cima, com um botão (`num_simulations`) que troca tempo
+por qualidade. Comparar esse botão ligado contra a política crua dos outros seria repetir,
+com roupa nova, o erro que este repositório existe para consertar. O Dreamer e o SOAP não
+conseguem, e aí não há coluna a separar.
+
+Uma honestidade que fica registrada: isto **não** iguala FLOPs por decisão. O Dreamer gasta
+~3 chamadas de rede por jogada (encoder → RSSM → ator) contra 1 do PPO, e o AlphaZero com
+busca gasta 33. O contrato é sobre passos de ambiente e protocolo de avaliação, não sobre
+computação de inferência — e a saída honesta, quando isso importar, é uma coluna
+"avaliações de rede por jogada" na tabela de resultados, para todo mundo, em vez de mudar o
+contrato.
+
 ## A capacidade **não** está igualada
 
 O contrato iguala o orçamento de passos de ambiente. Ele não iguala o tamanho da rede — e

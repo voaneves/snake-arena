@@ -155,7 +155,7 @@ teste que prova que a implementação faz o que o paper diz — está em
 | **A2C** — actor-critic síncrono, o controle experimental do PPO | [📎](https://arxiv.org/abs/1602.01783) | `04_a2c.ipynb` | prometido no `colab-rl`, nunca escrito | ✅ implementado, com o `t_max=5` canônico do A3C |
 | **ACER** — Retrace(λ), IS truncado com correção de viés, região de confiança | [📎](https://arxiv.org/abs/1611.01224) | `05_acer.ipynb` | 2 notebooks quebrados | ✅ reescrito e **convergindo** (16,8 em 151k passos) |
 | **AlphaZero** — MCTS sobre o simulador real | [📎](https://arxiv.org/abs/1712.01815) | `06_alphazero.ipynb` | novo | ✅ implementado, e **reconstruído** depois que a primeira execução de 5 M revelou três defeitos somados (§2.27–§2.29): a busca que só confirmava a rede, o alvo de valor que dominava o tronco, e a temperatura que virava rótulo duro. Os onze consertos são o padrão; a versão anterior virou o braço `sem_correcoes` do `93`. Ver [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) |
-| **MuZero** — a mesma busca, sobre um modelo aprendido | [📎](https://arxiv.org/abs/1911.08265) | `07_muzero.ipynb` | novo | ✅ implementado |
+| **MuZero** — a mesma busca, sobre um modelo aprendido | [📎](https://arxiv.org/abs/1911.08265) | `07_muzero.ipynb` | novo | ✅ implementado; herdou os consertos do §2.27–§2.29 (o `MCTS` é o mesmo objeto, os defeitos eram os mesmos) e ganhou a coluna **com busca** |
 | **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | [📎](https://arxiv.org/abs/1708.05144) | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC em Keras 3, região **calibrada** por padrão, 19 testes de curvatura |
 | **ACEKTR** — ACKTR com EK-FAC: a base do K-FAC, os autovalores **medidos** | [📎](https://arxiv.org/abs/1806.03884) | `12_acektr.ipynb` | novo | ✅ implementado, 21 testes; com a medição desligada é **bit a bit** o ACKTR |
 | **DreamerV3** — modelo do mundo, ator treinado no sonho | [📎](https://arxiv.org/abs/2301.04104) | `09_dreamerv3.ipynb` | novo | ✅ RSSM categórico, symlog, two-hot, 28 testes |
@@ -422,7 +422,7 @@ declara qual é qual.
 | [`docs/SOAP.md`](docs/SOAP.md) | o SOAP: por que opções num jogo que parece markoviano, o controle de uma opção, e como detectar colapso |
 | [`docs/EKFAC.md`](docs/EKFAC.md) | o EK-FAC: o que exatamente ele corrige no K-FAC, o controle bit a bit, e a previsão sobre a região de confiança do ACKTR |
 | [`docs/PROCEDENCIA.md`](docs/PROCEDENCIA.md) | qual código produziu cada execução, e como auditar isso em dois comandos |
-| [`docs/COMPARABILITY.md`](docs/COMPARABILITY.md) | o contrato: o que uma curva precisa cumprir para competir |
+| [`docs/COMPARABILITY.md`](docs/COMPARABILITY.md) | o contrato: o que uma curva precisa cumprir para competir, e o que cada agente tem além da rede pura |
 | [`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) | o que já dá para escrever e o que ainda falta medir |
 | [`docs/REVISAO_ALGORITMOS.md`](docs/REVISAO_ALGORITMOS.md) | a revisão linha a linha das implementações, com os bugs encontrados |
 

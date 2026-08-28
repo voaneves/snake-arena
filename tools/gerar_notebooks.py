@@ -425,13 +425,30 @@ NOTEBOOKS = [
     },
     {
         "arquivo": "07_muzero.ipynb",
+        "celulas_pos_veredito": [{"md": BUSCA_MD, "codigo": BUSCA_CODE,
+                                  "titulo": "Veredito com busca"}],
         "titulo": "MuZero — a mesma busca, sobre um modelo aprendido",
         "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
                     "snakeai/nets/muzero.py", "snakeai/agents/muzero.py"],
         "agente": "MuZero",
         "config": "MuZeroConfig",
         "resumo": "Deve perder para o AlphaZero — o simulador aqui é exato e gratuito. "
-                  "O que se mede é quanto custa não tê-lo.",
+                  "O que se mede é quanto custa não tê-lo, e a comparação é limpa porque o "
+                  "algoritmo de busca é **o mesmo objeto**: muda só o que a árvore "
+                  "percorre.\n\n"
+                  "E é exatamente por ser o mesmo objeto que os três defeitos achados na "
+                  "primeira execução do AlphaZero (§2.27–§2.29) estavam aqui também: o "
+                  "PUCT dando `Q = 0` a filho não visitado — com o valor positivo que este "
+                  "jogo produz, a busca só confirmava a rede em vez de discordar dela —, o "
+                  "alvo de valor não normalizado dominando o tronco, e a temperatura "
+                  "transformando o alvo de política em rótulo duro. Os consertos já são o "
+                  "padrão aqui: ao contrário do AlphaZero, o MuZero nunca rodou sob o "
+                  "contrato, então não havia execução de controle a preservar. Ver "
+                  "[`docs/BUSCA_DEGENERADA.md`]"
+                  "(https://github.com/voaneves/snake-arena/blob/main/docs/BUSCA_DEGENERADA.md).\n\n"
+                  "**Duas colunas.** A curva oficial mede a política pura de `h`+`f`, sem "
+                  "busca. A célula *Veredito com busca* mede o agente como ele de fato "
+                  "joga, no mesmo protocolo, e grava em `meta[\"com_busca\"]`.",
     },
     {
         "arquivo": "08_acktr.ipynb",

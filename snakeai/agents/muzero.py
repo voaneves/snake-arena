@@ -24,6 +24,26 @@ dos `K+1` passos há três perdas:
 
 A perda de recompensa é a única âncora que liga o estado oculto ao mundo. Sem ela o modelo
 pode inventar qualquer dinâmica internamente consistente e a busca vira ficção.
+
+Os consertos que vieram do AlphaZero
+------------------------------------
+Como o `MCTS` é **o mesmo objeto**, os três defeitos que a primeira execução de 5 M passos
+do AlphaZero revelou estavam aqui também, palavra por palavra (§2.27–§2.29 da revisão):
+
+* o PUCT dava `Q = 0` a um filho ainda não visitado. É a convenção do AlphaZero, correta
+  onde o valor é uma `tanh` em `[-1, 1]`; aqui a cabeça é linear e o valor aprendido é
+  positivo, então o bônus `c_puct·P·√N` só cobre a diferença onde o prior já é alto — a
+  busca passa a **confirmar** a rede em vez de discordar dela, que é o oposto de ser um
+  operador de melhoria de política. Conserto: `fpu` e `q_normalizado` — este último é,
+  ironicamente, a normalização min-max do próprio paper do MuZero (Apêndice B);
+* o alvo de valor não é normalizado e domina o tronco compartilhado. Conserto:
+  `valor_symlog`, com a busca continuando a ler a escala real;
+* a mesma distribuição temperada escolhia a ação **e** virava o alvo de treino. Conserto:
+  `temp_alvo` e `temp_passos`.
+
+Mais o orçamento de gradiente, o decaimento de `lr` e o bootstrap do fim da janela. Ao
+contrário do AlphaZero, aqui não havia execução de controle a preservar — o MuZero nunca
+rodou sob o contrato — então tudo já nasce ligado. Ver `docs/BUSCA_DEGENERADA.md`.
 """
 
 from __future__ import annotations
@@ -55,8 +75,40 @@ class MuZeroConfig(BaseConfig):
 
     num_simulations: int = 24
     c_puct: float = 1.5
-    dirichlet_alpha: float = 0.5
+    #: α ∝ 1/(ações legais); a heurística do paper calibra em ~10/n, que daria 3,3 para
+    #: **3** ações. Com 0,5 o ruído punha mais de 90% da massa numa única ação em 15% dos
+    #: lances. Ver `docs/BUSCA_DEGENERADA.md`.
+    dirichlet_alpha: float = 1.0
     dirichlet_frac: float = 0.25
+
+    # ------------------------------------------------------------------------------
+    # Os três consertos do §2.27–§2.29, herdados do AlphaZero. **O `MCTS` é o mesmo
+    # objeto**, então os defeitos eram os mesmos — e o MuZero nunca rodou sob o contrato,
+    # então aqui eles já nascem ligados, sem execução de controle para preservar.
+    # ------------------------------------------------------------------------------
+
+    #: §2.27 — o Q de um filho ainda não visitado. `"zero"` é a convenção do AlphaZero e
+    #: está certa onde o valor é uma `tanh` em `[-1, 1]`; aqui a cabeça é linear e o valor
+    #: aprendido é positivo, então o bônus `c_puct·P·√N` só cobre a diferença onde o prior
+    #: já é alto — a busca passa a confirmar a rede em vez de discordar dela.
+    fpu: str = "pai"
+    #: §2.27 — normalização min-max do Q dentro da árvore (MuZero, Apêndice B). Devolve
+    #: `c_puct` à escala em que foi calibrado. Irônico que faltasse justamente aqui.
+    q_normalizado: bool = True
+    #: Empate exato no PUCT: `"ordem"` fica sempre com o primeiro filho do dicionário.
+    desempate: str = "aleatorio"
+
+    #: §2.28 — treinar o valor em symlog em vez da escala crua. O alvo é um retorno
+    #: descontado não normalizado que cresce com o agente; a busca continua recebendo o
+    #: valor na escala **real**, porque o backup soma `recompensa + γ·valor`.
+    valor_symlog: bool = True
+
+    #: §2.29 — temperatura por lance do episódio (o agendamento do paper) e alvo de
+    #: política sem temperar. Ver as notas homônimas em `alphazero.py`.
+    temp_passos: int = 30
+    temp_alvo: float = 1.0
+    #: Fecha o último passo da janela de coleta, que hoje teria alvo sem bootstrap.
+    bootstrap_fim_janela: bool = True
 
     gamma: float = 0.997
     n_step: int = 10
@@ -65,10 +117,16 @@ class MuZeroConfig(BaseConfig):
     unroll: int = 5
 
     lr: float = 3e-4
+    #: Decaimento linear do `lr` até o fim do orçamento, como no PPO e no ACKTR. `0`
+    #: mantém constante.
+    lr_final: float = 5e-5
     max_grad_norm: float = 5.0
     batch_size: int = 256
     memory_size: int = 50_000
-    epochs_por_iter: int = 1
+    #: Com 1, os 5 M passos compravam ~4.900 atualizações contra as ~38.300 do PPO. O
+    #: passo de gradiente aqui é caro (o desenrolar de `unroll` passos), então 8 sai ~30%
+    #: mais lento por iteração — bem mais que os ~5% do AlphaZero. Ver §2.1.
+    epochs_por_iter: int = 8
 
     temp_inicio: float = 1.0
     temp_fim: float = 0.25
@@ -105,6 +163,8 @@ class MuZero(AgentBase):
                          gamma=cfg.gamma, num_simulations=cfg.num_simulations,
                          c_puct=cfg.c_puct, dirichlet_alpha=cfg.dirichlet_alpha,
                          dirichlet_frac=cfg.dirichlet_frac,
+                         fpu=cfg.fpu, q_normalizado=cfg.q_normalizado,
+                         desempate=cfg.desempate,
                          dinamica=DinamicaAprendida(self._passo_dinamica),
                          rng=np.random.default_rng(cfg.seed + 2))
 
@@ -146,17 +206,35 @@ class MuZero(AgentBase):
             self._mp = keras.Model(inp, [logits, valor], name="muzero_politica")
         return getattr(self, "_mp", None)
 
+    #: Teto do valor antes do `symexp`, igual ao do AlphaZero: uma cabeça que divergiu
+    #: vira número grande e finito em vez de envenenar a árvore inteira.
+    LIMITE_SYMLOG = 6.0
+
+    @staticmethod
+    def _symlog(x):
+        return tf.sign(x) * tf.math.log1p(tf.abs(x))
+
+    @staticmethod
+    def _symexp(x):
+        x = tf.clip_by_value(x, -MuZero.LIMITE_SYMLOG, MuZero.LIMITE_SYMLOG)
+        return tf.sign(x) * tf.math.expm1(tf.abs(x))
+
+    def _valor_real(self, valor):
+        """A escala que o MCTS precisa: ele soma `recompensa + γ·valor`, e a recompensa
+        é a que a rede `g` prevê, na escala do mundo."""
+        return self._symexp(valor) if self.cfg.valor_symlog else valor
+
     @tf.function(reduce_retracing=True)
     def _repr_predicao(self, obs, mask):
         s = self.h(obs, training=False)
         logits, valor = self.f(s, training=False)
         logits = tf.where(mask, logits, tf.fill(tf.shape(logits), MASK_NEG))
-        return s, tf.nn.softmax(logits), tf.squeeze(valor, -1)
+        return s, tf.nn.softmax(logits), self._valor_real(tf.squeeze(valor, -1))
 
     @tf.function(reduce_retracing=True)
     def _predicao(self, s):
         logits, valor = self.f(s, training=False)
-        return tf.nn.softmax(logits), tf.squeeze(valor, -1)
+        return tf.nn.softmax(logits), self._valor_real(tf.squeeze(valor, -1))
 
     @tf.function(reduce_retracing=True)
     def _dinamica_tf(self, s, planos):
@@ -196,21 +274,82 @@ class MuZero(AgentBase):
             return np.where(mask, np.asarray(logits), MASK_NEG).astype(np.float32)
         return fn
 
-    def _busca(self, obs, mask, ruido=False):
+    def _busca(self, obs, mask, ruido=False, busca=None):
         """Roda o MCTS a partir da observação: `h` uma vez, depois só a dinâmica."""
         s, priors, valores = self._repr_predicao(tf.convert_to_tensor(obs),
                                                  tf.convert_to_tensor(mask))
-        return self.mcts.run(s.numpy(), mask, s.numpy(), adicionar_ruido=ruido)
+        arvore = busca if busca is not None else self.mcts
+        return arvore.run(s.numpy(), mask, s.numpy(), adicionar_ruido=ruido)
+
+    def avaliar_com_busca(self, episodes=1000, num_simulations=None, seed=123):
+        """O protocolo oficial, mas escolhendo com MCTS — a **coluna separada** da tabela.
+
+        A curva do contrato mede a política pura, e é isso que torna as curvas comparáveis:
+        a busca gasta `num_simulations` avaliações de rede por jogada contra 1 do PPO.
+        Reportar, porém, é obrigação — um algoritmo que existe para buscar, medido só sem
+        buscar, é meia medição. Mesmo desenho do `AlphaZero.avaliar_com_busca`, com uma
+        diferença que é justamente o ponto do MuZero: a árvore percorre `g`, não o
+        `VecSnake`. O ambiente aqui só avança o jogo de verdade entre as jogadas.
+
+        Não passa por `snakeai.eval` porque a interface de política recebe só observação e
+        máscara, e a busca precisa devolver contagens de visita. O protocolo — episódios,
+        semente, greedy — é o mesmo.
+        """
+        cfg = self.cfg
+        n = min(cfg.eval_envs, 64)
+        env = VecSnake(n, cfg.board_size, rng=np.random.default_rng(seed))
+        busca = MCTS(self._avaliar_oculto, board_size=cfg.board_size, gamma=cfg.gamma,
+                     num_simulations=num_simulations or cfg.sims_avaliacao,
+                     c_puct=cfg.c_puct, fpu=cfg.fpu, q_normalizado=cfg.q_normalizado,
+                     desempate=cfg.desempate,
+                     dinamica=DinamicaAprendida(self._passo_dinamica),
+                     rng=np.random.default_rng(seed))
+        obs, mask = env.reset()
+        por_env = int(np.ceil(episodes / n))
+        coletados = [[] for _ in range(n)]
+        faltam, vitorias = n, 0
+
+        while faltam > 0:
+            visitas, _ = self._busca(obs, mask, busca=busca)
+            a = visitas.argmax(1).astype(np.int32)
+            antes = env.score.copy()
+            obs, mask, r, done, info = env.step(a)
+            vitorias += info["wins"]
+            for i in np.nonzero(done)[0]:
+                if len(coletados[i]) < por_env:
+                    coletados[i].append(int(antes[i]))
+                    if len(coletados[i]) == por_env:
+                        faltam -= 1
+
+        scores = np.array([s for l in coletados for s in l][:episodes])
+        return {
+            "episodes": int(scores.size),
+            "score_mean": float(scores.mean()),
+            "score_median": float(np.median(scores)),
+            "score_max": int(scores.max()),
+            "score_p95": float(np.percentile(scores, 95)),
+            "win_rate": vitorias / max(1, scores.size),
+            "num_simulations": busca.num_simulations,
+            "completo": True,
+        }
 
     # -------------------------------------------------------------------- coleta
     def temperatura(self):
-        f = min(1.0, self.frac() / max(self.cfg.temp_frac, 1e-9))
-        return self.cfg.temp_inicio + f * (self.cfg.temp_fim - self.cfg.temp_inicio)
+        """Escalar (fração do treino) ou `(N,)` (por lance do episódio, o do paper).
+
+        Ver a nota homônima em `alphazero.py`: com o agendamento por fração do treino,
+        metade do orçamento inteiro é jogada com τ = 1, inclusive nas posições apertadas.
+        """
+        cfg = self.cfg
+        if cfg.temp_passos > 0:
+            return np.where(self.env.steps < cfg.temp_passos,
+                            cfg.temp_inicio, cfg.temp_fim).astype(np.float64)
+        f = min(1.0, self.frac() / max(cfg.temp_frac, 1e-9))
+        return cfg.temp_inicio + f * (cfg.temp_fim - cfg.temp_inicio)
 
     def collect(self):
         cfg = self.cfg
         T, N, K = cfg.rollout, cfg.num_envs, cfg.unroll
-        temp = self.temperatura()
 
         obs_b = np.empty((T, N, cfg.board_size, cfg.board_size, N_CHANNELS), np.float32)
         mask_b = np.empty((T, N, N_ACTIONS), bool)
@@ -220,12 +359,20 @@ class MuZero(AgentBase):
         rew_b = np.empty((T, N), np.float32)
         done_b = np.empty((T, N), np.float32)
 
-        scores, vitorias = [], 0
+        scores, vitorias, temps = [], 0, []
         for t in range(T):
             obs_b[t], mask_b[t] = self.obs, self.mask
+            # com `temp_passos` a temperatura depende do lance de cada ambiente, e os N
+            # ambientes estão em lances diferentes: tem que ser lida a cada passo
+            temp = self.temperatura()
+            temps.append(float(np.mean(temp)))
             visitas, valores = self._busca(self.obs, self.mask, ruido=True)
             pi = MCTS.politica_das_visitas(visitas, temp)
-            pi_b[t], v_b[t] = pi, valores
+            # o alvo de treino não precisa ser a distribuição que escolheu a ação: no
+            # AlphaZero/MuZero ele é a contagem de visitas crua
+            pi_b[t] = (pi if cfg.temp_alvo <= 0
+                       else MCTS.politica_das_visitas(visitas, cfg.temp_alvo))
+            v_b[t] = valores
             a = (pi.cumsum(1) > self.rng.random((N, 1))).argmax(1).astype(np.int32)
             act_b[t] = a
             self.obs, self.mask, r, d, info = self.env.step(a)
@@ -248,18 +395,30 @@ class MuZero(AgentBase):
         # Encurtar o horizonte e fazer bootstrap no último estado disponível troca um
         # pouco de viés de horizonte por um alvo que não é puxado para zero.
         # Ver `docs/REVISAO_ALGORITMOS.md` §2.5.
+        # `bootstrap_fim_janela` acrescenta uma linha `T`: o valor da REDE no estado em que
+        # a coleta parou. Menos preciso que o resto do vetor, que é valor de busca — e
+        # ainda assim melhor que tratar o fim da janela como fim de episódio.
+        if cfg.bootstrap_fim_janela:
+            _, _, v_fim = self._repr_predicao(tf.convert_to_tensor(self.obs),
+                                              tf.convert_to_tensor(self.mask))
+            v_boot = np.concatenate([v_b, v_fim.numpy().astype(np.float32)[None]], axis=0)
+            limite = T                  # o passo T-1 passa a ter para onde olhar
+        else:
+            v_boot = v_b
+            limite = T - 1              # o padrão do §2.5: um passo sem bootstrap, e só ele
+
         z = np.zeros((T, N), np.float32)
         for t in range(T):
             g = np.zeros(N, np.float32)
             desc = np.ones(N, np.float32)
             vivo = np.ones(N, bool)
-            n = min(cfg.n_step, T - 1 - t)      # 0 só no último passo da janela
+            n = min(cfg.n_step, limite - t)     # 0 só no último passo, e só sem bootstrap
             for k in range(n):
                 g += desc * rew_b[t + k] * vivo
                 vivo &= done_b[t + k] < 0.5
                 desc *= cfg.gamma
             if n > 0:
-                g += desc * v_b[t + n] * vivo
+                g += desc * v_boot[t + n] * vivo
             else:                               # t = T-1: não há estado seguinte aqui
                 g += rew_b[t]
             z[t] = g
@@ -284,7 +443,7 @@ class MuZero(AgentBase):
             "train_score_mean": float(np.mean(scores)) if scores else None,
             "n_episodes": len(scores),
             "wins": vitorias,
-            "temperatura": temp,
+            "temperatura": float(np.mean(temps)),
             "valor_busca": float(v_b.mean()),
             "memoria": self._cheio,
         }
@@ -311,8 +470,9 @@ class MuZero(AgentBase):
             logits = tf.where(mask, logits, tf.fill(tf.shape(logits), MASK_NEG))
             logp = tf.nn.log_softmax(logits)
 
+            alvo_v = self._symlog(z) if self.cfg.valor_symlog else z
             perda_pi = -tf.reduce_mean(tf.reduce_sum(pi_alvo[:, 0] * logp, -1))
-            perda_v = tf.reduce_mean(tf.square(tf.squeeze(valor, -1) - z[:, 0]))
+            perda_v = tf.reduce_mean(tf.square(tf.squeeze(valor, -1) - alvo_v[:, 0]))
             perda_r = tf.constant(0.0)
 
             for k in range(self.cfg.unroll):
@@ -329,7 +489,7 @@ class MuZero(AgentBase):
                 perda_pi += -tf.reduce_mean(
                     tf.reduce_sum(pi_alvo[:, k + 1] * logp_k, -1))
                 perda_v += tf.reduce_mean(
-                    tf.square(tf.squeeze(valor_k, -1) - z[:, k + 1]))
+                    tf.square(tf.squeeze(valor_k, -1) - alvo_v[:, k + 1]))
                 # a âncora do modelo no mundo real: sem ela a dinâmica pode inventar
                 # qualquer física internamente consistente
                 perda_r += tf.reduce_mean(
@@ -347,6 +507,10 @@ class MuZero(AgentBase):
         cfg = self.cfg
         if self._cheio < cfg.batch_size:
             return None
+        lr = cfg.lr
+        if cfg.lr_final > 0:
+            lr = self.linear(cfg.lr, cfg.lr_final)
+            self.optimizer.learning_rate.assign(lr)
         saidas = []
         for _ in range(cfg.epochs_por_iter):
             i = self.rng.integers(0, self._cheio, size=cfg.batch_size)
@@ -361,7 +525,8 @@ class MuZero(AgentBase):
             )
             saidas.append((float(p), float(v), float(r)))
         p, v, r = (float(np.mean(x)) for x in zip(*saidas))
-        return {"perda_pi": p, "perda_v": v, "perda_r": r}
+        return {"perda_pi": p, "perda_v": v, "perda_r": r, "lr": float(lr),
+                "atualizacoes": cfg.epochs_por_iter}
 
     def iterate(self):
         stats = self.collect()

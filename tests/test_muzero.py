@@ -193,10 +193,28 @@ def test_search_runs_over_hidden_states():
 
 
 def test_temperature_decays():
-    ag = MuZero(cfg_min(total_steps=1000, temp_inicio=1.0, temp_fim=0.25, temp_frac=0.5))
+    """O agendamento por fração do **treino** — hoje só com `temp_passos=0`.
+
+    O padrão passou a ser o do paper: τ alto nos primeiros lances de cada **episódio**,
+    frio no resto (`test_per_move_temperature_replaces_the_training_schedule` cobre esse).
+    Os dois não se somam: `temp_passos > 0` substitui este por completo.
+    """
+    ag = MuZero(cfg_min(total_steps=1000, temp_inicio=1.0, temp_fim=0.25, temp_frac=0.5,
+                        temp_passos=0))
     assert ag.temperatura() == pytest.approx(1.0)
     ag.global_step = 500
     assert ag.temperatura() == pytest.approx(0.25)
+
+
+def test_per_move_temperature_replaces_the_training_schedule():
+    ag = MuZero(cfg_min(temp_passos=5, temp_inicio=1.0, temp_fim=0.05))
+    ag.env.steps[:] = 0
+    assert np.allclose(ag.temperatura(), 1.0)
+    ag.env.steps[:] = 99
+    assert np.allclose(ag.temperatura(), 0.05)
+    ag.env.steps[: ag.cfg.num_envs // 2] = 0
+    t = ag.temperatura()
+    assert t.shape == (ag.cfg.num_envs,) and set(np.unique(t)) == {1.0, 0.05}
 
 
 def test_checkpoint_saves_all_three_networks(tmp_path):
@@ -213,3 +231,82 @@ def test_checkpoint_saves_all_three_networks(tmp_path):
     assert np.allclose(np.asarray(ag.h(x, training=False)),
                        np.asarray(outro.h(x, training=False)), atol=1e-5)
     outro.iterate()
+
+
+# --------------------------------------- os consertos herdados do AlphaZero (§2.27-§2.29)
+def test_the_alphazero_fixes_are_the_default_here_too():
+    """O `MCTS` é o mesmo objeto, então os defeitos eram os mesmos.
+
+    E aqui não havia execução de controle a preservar — o MuZero nunca rodou sob o
+    contrato —, então os consertos já nascem ligados. Cada um continua desligável, senão
+    não haveria como medir quanto valeram.
+    """
+    c = MuZeroConfig()
+    assert (c.fpu, c.q_normalizado, c.desempate) == ("pai", True, "aleatorio")
+    assert c.valor_symlog is True and c.bootstrap_fim_janela is True
+    assert (c.temp_alvo, c.temp_passos) == (1.0, 30)
+    assert (c.epochs_por_iter, c.lr_final, c.dirichlet_alpha) == (8, 5e-5, 1.0)
+
+    velho = MuZeroConfig(fpu="zero", q_normalizado=False, valor_symlog=False,
+                         temp_alvo=0.0, temp_passos=0, bootstrap_fim_janela=False,
+                         desempate="ordem")
+    assert velho.fpu == "zero" and velho.valor_symlog is False
+
+
+def test_the_search_config_reaches_the_tree():
+    """As flags não podem ficar no config sem chegar no `MCTS` — seria melhoria de mentira."""
+    ag = MuZero(cfg_min())
+    assert ag.mcts.fpu == "pai" and ag.mcts.q_normalizado is True
+    assert ag.mcts.desempate == "aleatorio"
+    outro = MuZero(cfg_min(fpu="zero", q_normalizado=False, desempate="ordem"))
+    assert outro.mcts.fpu == "zero" and outro.mcts.q_normalizado is False
+
+
+def test_symlog_keeps_the_tree_on_the_real_value_scale():
+    """O backup do MCTS soma `recompensa + γ·valor`, e a recompensa é a que `g` prevê, na
+    escala do mundo. Se a leitura devolvesse o valor comprimido, a árvore compararia
+    recompensas com logaritmos."""
+    ag = MuZero(cfg_min(valor_symlog=True))
+    cru = MuZero(cfg_min(valor_symlog=False))
+    for a, b in ((cru.h, ag.h), (cru.f, ag.f), (cru.g, ag.g)):
+        a.set_weights(b.get_weights())
+    obs, mask = ag.env.reset()
+    _, _, v_sym = ag._repr_predicao(tf.convert_to_tensor(obs), tf.convert_to_tensor(mask))
+    _, _, v_cru = cru._repr_predicao(tf.convert_to_tensor(obs), tf.convert_to_tensor(mask))
+    esperado = np.sign(v_cru.numpy()) * np.expm1(np.abs(v_cru.numpy()))
+    assert np.allclose(v_sym.numpy(), esperado, atol=1e-4)
+
+    teto = float(np.expm1(MuZero.LIMITE_SYMLOG))
+    for x in (0.0, 4.6, 40.0, -40.0):
+        assert abs(float(MuZero._symexp(np.float32(x)).numpy())) <= teto + 1e-3
+
+
+def test_search_evaluation_follows_the_same_protocol():
+    """A coluna separada do contrato: mesmo protocolo, escolhendo com a busca.
+
+    O MuZero existe para buscar sobre um modelo aprendido; publicá-lo medido só sem buscar
+    seria meia medição. Ver `docs/BUSCA_DEGENERADA.md`.
+    """
+    ag = MuZero(cfg_min())
+    st = ag.avaliar_com_busca(episodes=32, num_simulations=3)
+    assert st["episodes"] == 32 and st["num_simulations"] == 3
+    assert 0.0 <= st["score_mean"] <= 97
+    assert set(st) >= {"score_mean", "score_median", "score_max", "win_rate", "completo"}
+
+
+def test_the_policy_target_is_the_raw_visit_count_by_default():
+    ag = MuZero(cfg_min(temp_inicio=0.05, temp_fim=0.05))
+    ag.collect()
+    n = ag._cheio
+    pi = ag._buf_pi[:n].reshape(-1, ag._buf_pi.shape[-1])
+    assert np.allclose(pi.sum(1), 1.0, atol=1e-5)
+    assert pi.max(1).mean() < 0.99      # τ=0,05 no alvo teria dado quase-argmax
+
+
+def test_the_learning_rate_decays(): 
+    ag = MuZero(cfg_min(total_steps=1000, lr=3e-4, lr_final=5e-5))
+    cedo = ag.iterate()
+    ag.global_step = 1000
+    tarde = ag.iterate()
+    assert tarde["lr"] < cedo["lr"] and tarde["lr"] == pytest.approx(5e-5, rel=1e-3)
+    assert tarde["atualizacoes"] == ag.cfg.epochs_por_iter

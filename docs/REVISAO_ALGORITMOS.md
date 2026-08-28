@@ -14,7 +14,7 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
 | §2.29 a temperatura do AlphaZero transforma o alvo de política em rótulo duro | **corrigido e é o padrão** — `temp_alvo=1,0` separa o alvo da exploração e `temp_passos=30` traz o agendamento do paper; braço `sem_conserto_do_alvo` |
-| §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **corrigido e é o padrão** — `valor_symlog` + `vf_coef=0,5` levam `‖∇v‖/‖∇π‖` de 71× para 7× no `|z|` real; braço `sem_conserto_do_tronco`. **Não tocado no MuZero** |
+| §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **corrigido e é o padrão** — `valor_symlog` + `vf_coef=0,5` levam `‖∇v‖/‖∇π‖` de 71× para 7× no `|z|` real; braço `sem_conserto_do_tronco`. **Aplicado também no MuZero** |
 | §2.27 PUCT com `Q = 0` para filho não visitado, num jogo de valor positivo | **corrigido e é o padrão** — `fpu="pai"` + `q_normalizado`; o braço `sem_conserto_da_busca` do `93` mede quanto valeu |
 | §2.25 janela de n passos do Rainbow | **medido e corrigido** — o padrão passou a 20 |
 | §2.26 paridade `.keras` × TFLite | **corrigido** — quebrava no C51 e publicava número de acaso no LBC e no ACER |
@@ -734,8 +734,8 @@ agendamento canônico do paper (τ alto nos primeiros lances de cada episódio) 
 não existia aqui.
 
 **Estado:** `temp_alvo` separa os dois papéis, `temp_passos` traz o agendamento do paper.
-Os dois desligados por padrão; braços `alvo_cru` e `temp_por_lance`, ambos dentro do
-`consertos`.
+Os dois são o padrão no AlphaZero e no MuZero; braços `sem_alvo_cru` e
+`sem_temp_por_lance` no `93_alphazero_ablacoes`.
 
 ### 2.28 ? O alvo de valor não normalizado domina o tronco compartilhado (AlphaZero e MuZero)
 `alphazero.py:_passo` · `ppo.py:303` · `nets/registry.py:127`
@@ -773,8 +773,9 @@ invariante à escala do valor, e por usar `vf_coef = 0,5`. O A2C e o ACKTR herda
 normalização. AlphaZero e MuZero não normalizam nada — e o MuZero tem o mesmo `_passo` com
 o mesmo problema.
 
-**Estado:** `valor_symlog` entra como flag desligada; `vf_coef` já existia. Braços `vf_025`
-e `valor_symlog` no `93_alphazero_ablacoes`. Não tocado no MuZero.
+**Estado:** `valor_symlog` e `vf_coef=0,5` são o padrão do AlphaZero; braços `sem_symlog`
+e `vf_1` no `93_alphazero_ablacoes`. O MuZero recebeu o `symlog` também — o `coef_valor`
+dele já era 0,25 e ficou como estava, porque não há medição do MuZero para justificar mexer.
 
 ### 2.27 ? A busca do AlphaZero degenera assim que o valor aprendido fica positivo
 `mcts.py:_selecionar` · `nets/registry.py:127` · `agents/alphazero.py:76`
@@ -809,9 +810,9 @@ Por que passou: a heurística com que a busca foi medida — no docstring do `mc
 caracterização) e `test_search_is_invariant_to_a_constant_shift_in_the_value` (o conserto,
 parametrizado nos dois).
 
-**Estado:** os dois consertos entram como flag **desligada por padrão** — `06_alphazero`
-precisa continuar sendo o braço de controle. O que decide é o `93_alphazero_ablacoes`
-contra `06` na mesma semente. Vale para o MuZero também: é o mesmo `_selecionar`.
+**Estado:** os dois são o padrão desde que a medição os validou, no AlphaZero e no
+MuZero — é o mesmo `_selecionar`. O braço `sem_conserto_da_busca` do `93_alphazero_ablacoes`
+mede quanto valeram, contra `06` na mesma semente.
 
 ### 2.26 ✔ A conferência de paridade do TFLite comparava eixos diferentes — **corrigido**
 `export.py:conferir_paridade`

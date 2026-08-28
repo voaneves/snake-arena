@@ -105,7 +105,7 @@ rede alvo em atualizações de gradiente em vez de passos de ambiente.
 | 6 | AlphaZero | `06_alphazero` | pendente | desconhecido — busca em árvore |
 | 7 | MuZero | `07_muzero` | pendente | desconhecido |
 
-**Pendência de código, não de GPU:** o MuZero busca na hora de agir e **não tem** `avaliar_com_busca`. O AlphaZero ganhou a coluna com busca no protocolo oficial (1.000 episódios, greedy, semente 123) e o MuZero ainda não — sem ela, o único algoritmo que existe para buscar sobre um modelo aprendido seria publicado medido só sem buscar, que é meia medição. O `MCTS` é o mesmo objeto; muda a dinâmica que a árvore percorre. Os consertos do §2.27–§2.29 também não foram aplicados lá: o `_selecionar` e o `_passo` do MuZero têm exatamente os mesmos defeitos.
+**Resolvido.** O MuZero ganhou `avaliar_com_busca` no protocolo oficial e os consertos do §2.27–§2.29 — o `MCTS` é o mesmo objeto, então os defeitos eram os mesmos. Como ele nunca rodou sob o contrato, não havia execução de controle a preservar e tudo já nasce ligado. O levantamento de quem tem o quê além da rede pura está em `docs/COMPARABILITY.md`. O que falta aqui é GPU.
 | 8 | LBC | `10_lbc` | pendente | desconhecido — ~4 épocas sobre o rollout, como o PPO |
 | 9 | SOAP | `11_soap` | pendente | desconhecido — PPO com 4 cabeças e uma crença em NumPy |
 | 10 | ACEKTR | `12_acektr` | pendente | ~2,1× o `kfac_ms` do ACKTR, medido em lote pequeno |
