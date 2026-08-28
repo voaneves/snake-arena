@@ -37,3 +37,20 @@ sobreviveram estão normalizadas em [`../results/legacy/`](../results/legacy/).
 - **`set_image_dim_ordering`** virou `tests/test_nets.py::test_channels_last_everywhere`.
 - **As células órfãs com `NameError`** viraram o gerador de notebooks: hoje nenhuma célula
   é escrita à mão, então não há como colar uma de outro lugar.
+
+---
+
+## Aposentados — notebooks deste repositório que foram absorvidos
+
+Categoria diferente da de cima: estes **rodam**, e rodaram. Saíram de `notebooks/` porque a
+configuração que eles mediam virou o padrão de outro notebook, e manter os dois significaria
+duas execuções idênticas com nomes diferentes na arena.
+
+Eles não são gerados pelo `tools/gerar_notebooks.py` — ficaram congelados na assinatura de
+código do dia em que saíram, e é assim que devem ficar. O teste
+`test_the_notebooks_folder_has_exactly_what_the_generator_declares` existe justamente para
+que um notebook nessa situação não apodreça em `notebooks/` sem ninguém notar.
+
+| notebook | o que media | por que saiu |
+|---|---|---|
+| [`aposentados/98_acktr_kl_max_corrigido.ipynb`](aposentados/98_acktr_kl_max_corrigido.ipynb) | ACKTR estimando o fator sistemático entre a Fisher aproximada e a KL real, para que a KL **entregue** convirja para `kl_max` (assinatura `2101ebf1aad4f39b`) | a calibração **venceu a medição e virou o padrão** do `08_acktr` (`kl_calibrado=True`). Rodá-lo hoje produziria uma segunda curva idêntica à do `08`. O braço de controle — sem calibrar — continua vivo como [`98_acktr_kl_nominal.ipynb`](../notebooks/98_acktr_kl_nominal.ipynb) |

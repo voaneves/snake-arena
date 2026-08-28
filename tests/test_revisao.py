@@ -298,7 +298,16 @@ def _camadas(modelo):
 @pytest.mark.parametrize("agente", ["alphazero", "muzero"])
 def test_the_value_target_bootstraps_everywhere_but_the_last_step(agente):
     """Com `rollout=16` e `n_step=10`, dez dos dezesseis passos ficavam sem bootstrap: o
-    fim da janela de coleta virava fim de episódio para 62% das amostras."""
+    fim da janela de coleta virava fim de episódio para 62% das amostras.
+
+    O AlphaZero ganhou depois `bootstrap_fim_janela` (§2.27–§2.29), que fecha também o
+    último passo — o horizonte passou de `T - 1 - t` a `limite - t`, com `limite = T - 1`
+    no padrão e `T` com a flag. A garantia do §2.5 continua sendo a mesma: **um** passo sem
+    bootstrap, e só ele. Quem confere o comportamento das duas configurações é
+    `tests/test_search.py::test_the_last_step_of_the_window_has_no_bootstrap_by_default`;
+    aqui a conferência é da forma do laço, para que a regressão apareça mesmo se alguém
+    reescrever a aritmética.
+    """
     T, n_step = 16, 10
     sem_bootstrap = [t for t in range(T) if min(n_step, T - 1 - t) == 0]
     assert sem_bootstrap == [T - 1]
@@ -306,9 +315,19 @@ def test_the_value_target_bootstraps_everywhere_but_the_last_step(agente):
     import inspect
 
     from snakeai.agents import alphazero as az, muzero as mz
-    fonte = inspect.getsource((az.AlphaZero if agente == "alphazero" else mz.MuZero).collect)
-    assert "min(cfg.n_step, T - 1 - t)" in fonte
+    if agente == "muzero":
+        fonte = inspect.getsource(mz.MuZero.collect)
+        assert "min(cfg.n_step, T - 1 - t)" in fonte
+        assert "t + k + 1 < T" not in fonte
+        return
+
+    fonte = inspect.getsource(az.AlphaZero.collect)
+    assert "min(cfg.n_step, limite - t)" in fonte
+    assert "limite = T - 1" in fonte and "limite = T " in fonte
     assert "t + k + 1 < T" not in fonte
+    # e o padrão continua sendo o de §2.5, sem a flag ligada por acidente
+    from snakeai.agents import AlphaZeroConfig
+    assert AlphaZeroConfig().bootstrap_fim_janela is False
 
 
 # ================================================================== §1.9 / arena

@@ -1,0 +1,234 @@
+{
+ "dirichlet": [
+  {
+   "alpha": 0.15,
+   "max_medio": 0.853,
+   "p_max_maior_08": 0.684,
+   "p_max_maior_09": 0.543,
+   "entropia_norm": 0.311
+  },
+  {
+   "alpha": 0.2,
+   "max_medio": 0.82,
+   "p_max_maior_08": 0.606,
+   "p_max_maior_09": 0.447,
+   "entropia_norm": 0.378
+  },
+  {
+   "alpha": 0.25,
+   "max_medio": 0.793,
+   "p_max_maior_08": 0.541,
+   "p_max_maior_09": 0.371,
+   "entropia_norm": 0.432
+  },
+  {
+   "alpha": 0.3,
+   "max_medio": 0.769,
+   "p_max_maior_08": 0.485,
+   "p_max_maior_09": 0.311,
+   "entropia_norm": 0.478
+  },
+  {
+   "alpha": 0.5,
+   "max_medio": 0.701,
+   "p_max_maior_08": 0.317,
+   "p_max_maior_09": 0.153,
+   "entropia_norm": 0.607
+  },
+  {
+   "alpha": 1.0,
+   "max_medio": 0.611,
+   "p_max_maior_08": 0.12,
+   "p_max_maior_09": 0.03,
+   "entropia_norm": 0.758
+  },
+  {
+   "alpha": 2.0,
+   "max_medio": 0.535,
+   "p_max_maior_08": 0.02,
+   "p_max_maior_09": 0.001,
+   "entropia_norm": 0.865
+  },
+  {
+   "alpha": 3.333,
+   "max_medio": 0.491,
+   "p_max_maior_08": 0.002,
+   "p_max_maior_09": 0.0,
+   "entropia_norm": 0.915
+  }
+ ],
+ "horizonte": [
+  {
+   "gamma": 0.98,
+   "horizonte": 50.0,
+   "valor_no_ponto_fixo": 4.6,
+   "teto_do_bonus_puct_32_sims": 2.87
+  },
+  {
+   "gamma": 0.985,
+   "horizonte": 66.7,
+   "valor_no_ponto_fixo": 6.0,
+   "teto_do_bonus_puct_32_sims": 2.87
+  },
+  {
+   "gamma": 0.99,
+   "horizonte": 100.0,
+   "valor_no_ponto_fixo": 8.8,
+   "teto_do_bonus_puct_32_sims": 2.87
+  },
+  {
+   "gamma": 0.995,
+   "horizonte": 200.0,
+   "valor_no_ponto_fixo": 17.1,
+   "teto_do_bonus_puct_32_sims": 2.87
+  },
+  {
+   "gamma": 0.997,
+   "horizonte": 333.3,
+   "valor_no_ponto_fixo": 28.2,
+   "teto_do_bonus_puct_32_sims": 2.87
+  }
+ ],
+ "profundidade": [
+  {
+   "sims": 8,
+   "episodios": 11,
+   "score": 25.0,
+   "prof_arvore": 3.84,
+   "prof_pv": 3.81,
+   "prof_pv_p95": 5.0,
+   "entropia_visitas": 0.622,
+   "comprimento_medio": 16.9
+  },
+  {
+   "sims": 16,
+   "episodios": 9,
+   "score": 26.67,
+   "prof_arvore": 5.06,
+   "prof_pv": 4.96,
+   "prof_pv_p95": 7.0,
+   "entropia_visitas": 0.616,
+   "comprimento_medio": 18.2
+  },
+  {
+   "sims": 32,
+   "episodios": 1,
+   "score": 25.0,
+   "prof_arvore": 6.33,
+   "prof_pv": 6.1,
+   "prof_pv_p95": 8.0,
+   "entropia_visitas": 0.626,
+   "comprimento_medio": 15.5
+  },
+  {
+   "sims": 64,
+   "episodios": 0,
+   "score": null,
+   "prof_arvore": 7.73,
+   "prof_pv": 7.43,
+   "prof_pv_p95": 10.0,
+   "entropia_visitas": 0.602,
+   "comprimento_medio": 10.6
+  },
+  {
+   "sims": 128,
+   "episodios": 0,
+   "score": null,
+   "prof_arvore": 9.15,
+   "prof_pv": 8.77,
+   "prof_pv_p95": 12.0,
+   "entropia_visitas": 0.567,
+   "comprimento_medio": 6.5
+  }
+ ],
+ "deslocamento": [
+  {
+   "valor": "negativo",
+   "fpu": "zero",
+   "q_normalizado": false,
+   "score": 21.7,
+   "causas": {
+    "colisao": 10,
+    "fome": 0,
+    "vitoria": 0
+   }
+  },
+  {
+   "valor": "negativo",
+   "fpu": "pai",
+   "q_normalizado": false,
+   "score": 21.7,
+   "causas": {
+    "colisao": 10,
+    "fome": 0,
+    "vitoria": 0
+   }
+  },
+  {
+   "valor": "negativo",
+   "fpu": "zero",
+   "q_normalizado": true,
+   "score": 24.12,
+   "causas": {
+    "colisao": 8,
+    "fome": 0,
+    "vitoria": 0
+   }
+  },
+  {
+   "valor": "negativo",
+   "fpu": "pai",
+   "q_normalizado": true,
+   "score": 22.75,
+   "causas": {
+    "colisao": 8,
+    "fome": 0,
+    "vitoria": 0
+   }
+  },
+  {
+   "valor": "positivo",
+   "fpu": "zero",
+   "q_normalizado": false,
+   "score": 0.0,
+   "causas": {
+    "colisao": 0,
+    "fome": 32,
+    "vitoria": 0
+   }
+  },
+  {
+   "valor": "positivo",
+   "fpu": "pai",
+   "q_normalizado": false,
+   "score": 22.12,
+   "causas": {
+    "colisao": 8,
+    "fome": 0,
+    "vitoria": 0
+   }
+  },
+  {
+   "valor": "positivo",
+   "fpu": "zero",
+   "q_normalizado": true,
+   "score": 19.71,
+   "causas": {
+    "colisao": 7,
+    "fome": 0,
+    "vitoria": 0
+   }
+  },
+  {
+   "valor": "positivo",
+   "fpu": "pai",
+   "q_normalizado": true,
+   "score": 23.0,
+   "causas": {
+    "colisao": 7,
+    "fome": 0,
+    "vitoria": 0
+   }
+  }
+ ]
+}

@@ -166,6 +166,7 @@ teste que prova que a implementação faz o que o paper diz — está em
 | ↳ **PPO com o orçamento antigo** — ~2.400 atualizações em vez de ~38.300 | — | `96_ppo_orcamento_esparso.ipynb` | — | ✅ braço de controle da ablação de orçamento |
 | ↳ **A2C com o rollout antigo** — ~610 atualizações em vez de ~1.953 | — | `95_a2c_orcamento_esparso.ipynb` | — | ✅ a mesma ablação com **um** botão só, fora da família PPO |
 | ↳ **PPO com o sexto canal** — a observação passa a ver o relógio da fome | — | `97_ppo_canal_de_fome.ipynb` | — | ⚠️ `comparable=False`: muda a entrada da rede, não divide eixo com as curvas de 5 canais |
+| ↳ **AlphaZero — os consertos, e os braços que os isolam** | — | `93_alphazero_ablacoes.ipynb` | — | 🔬 três mecanismos medidos — o PUCT colapsa com valor positivo, o alvo de valor não normalizado domina o tronco, e τ = 0,25 transforma o alvo de política em rótulo duro. Braço `consertos` = o pacote; 14 braços isolados para atribuir causa. Ver [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) |
 | ↳ **eixo de otimizadores** (primeira ordem) | — | `99_ablacoes.ipynb` | — | ✅ Adam, AdamW, RMSprop, Lion e SGD como ablação medida |
 
 <details>
@@ -416,6 +417,7 @@ declara qual é qual.
 | [`docs/REFERENCIAS.md`](docs/REFERENCIAS.md) | a bibliografia inteira: cada paper, o arquivo que o implementa e o teste que o prova |
 | [`docs/ORCAMENTO_DE_GRADIENTE.md`](docs/ORCAMENTO_DE_GRADIENTE.md) | a ablação de orçamento nas duas famílias, a previsão pré-registrada que falhou, saturação × limitação por orçamento |
 | [`docs/CANAL_DE_FOME.md`](docs/CANAL_DE_FOME.md) | o sexto canal de observação, e por que ele sai da arena |
+| [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | por que o PUCT do AlphaZero colapsa quando o valor aprendido é positivo, e os dois consertos |
 | [`docs/LBC.md`](docs/LBC.md) | o LBC: as três peças, os cinco desvios declarados em relação ao paper, e o que olhar no log |
 | [`docs/SOAP.md`](docs/SOAP.md) | o SOAP: por que opções num jogo que parece markoviano, o controle de uma opção, e como detectar colapso |
 | [`docs/EKFAC.md`](docs/EKFAC.md) | o EK-FAC: o que exatamente ele corrige no K-FAC, o controle bit a bit, e a previsão sobre a região de confiança do ACKTR |
@@ -562,6 +564,7 @@ sozinha.
 | PPO — orçamento de gradiente antigo | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/96_ppo_orcamento_esparso.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/96_ppo_orcamento_esparso.ipynb) |
 | A2C — orçamento de gradiente antigo | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/95_a2c_orcamento_esparso.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/95_a2c_orcamento_esparso.ipynb) |
 | PPO — sexto canal (fome) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/97_ppo_canal_de_fome.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/97_ppo_canal_de_fome.ipynb) |
+| AlphaZero — as ablações | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/93_alphazero_ablacoes.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/93_alphazero_ablacoes.ipynb) |
 | Ablações — rede e otimizador | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/99_ablacoes.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/99_ablacoes.ipynb) |
 
 O que todo notebook garante, por construção:
@@ -713,7 +716,7 @@ O passo 14 é o que falta para a arena ficar completa. Ele não cabe numa CPU: o
 oficial de 5 M passos leva ~3,7 h por semente só no PPO. É para isso que os notebooks
 existem.
 
-Quatro perguntas estão **pré-registradas** e esperando só a GPU. Estão escritas antes da
+Seis perguntas estão **pré-registradas** e esperando só a GPU. Estão escritas antes da
 medição de propósito, para que o resultado não possa ser reinterpretado depois:
 
 | pergunta | onde está escrita | o que decide |
@@ -722,6 +725,8 @@ medição de propósito, para que o resultado não possa ser reinterpretado depo
 | a parte *learnable* do LBC vale alguma coisa, ou o mérito é do espaço de comportamento? | [`docs/LBC.md`](docs/LBC.md) §3 | `10_lbc` × `10_lbc+selecao_aleatoria` |
 | memória discreta resolve a fome melhor que o sexto canal resolveu? | [`docs/SOAP.md`](docs/SOAP.md) §4 | `11_soap` × `01_ppo`, contra `97` × `01_ppo` |
 | o desvio sistemático da região de confiança do ACKTR vem da Fisher aproximada? | [`docs/EKFAC.md`](docs/EKFAC.md) §5 | `kl_fator` de `12_acektr` × `08_acktr` |
+| o PUCT do AlphaZero colapsa porque o valor aprendido é positivo e o `Q` do filho virgem é 0? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | `93_alphazero_ablacoes` braços `fpu_pai` e `q_normalizado` × `06_alphazero`, mesma semente |
+| a destilação do AlphaZero está parada por três mecanismos somados, ou por um só? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | `93` braço `consertos` × `06_alphazero`; se ganhar, os braços isolados atribuem |
 
 O plano detalhado, com o diagnóstico completo dos treze notebooks e a lista de bugs encontrados,
 está em [`docs/PLANO.md`](docs/PLANO.md).

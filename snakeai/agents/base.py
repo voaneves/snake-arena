@@ -143,6 +143,15 @@ class AgentBase:
         #: a "média móvel" viraria **média acumulada**, arrastada para baixo pelos
         #: episódios ruins do começo para sempre.
         self._janela = deque()
+        #: Totais acumulados desde o início e no instante do log anterior. A janela móvel
+        #: descarta pela esquerda, então a diferença entre dois logs **não** dá para ser
+        #: reconstruída dela — e é essa diferença que responde "o que aconteceu nos
+        #: últimos N episódios", que a média móvel de 500 esconde por construção. Numa
+        #: iteração que produz ~80 episódios por log, a móvel arrasta 6 logs de história:
+        #: uma degradação em curso aparece nela achatada e com atraso.
+        self._acumulado = {"n": 0.0, **{c: 0.0 for c in self.CAMPOS_JANELA}}
+        self._acumulado_no_log = dict(self._acumulado)
+        self._legenda_impressa = False
         self._registrou_causas = False
         os.makedirs(cfg.ckpt_dir, exist_ok=True)
 
@@ -164,6 +173,9 @@ class AgentBase:
         bloco.update({c: float(somas.get(c, 0.0)) for c in self.CAMPOS_JANELA
                       if c != "score"})
         self._janela.append(bloco)
+        self._acumulado["n"] += n
+        for c in self.CAMPOS_JANELA:
+            self._acumulado[c] += bloco[c]
         total = sum(b["n"] for b in self._janela)
         while len(self._janela) > 1 and total - self._janela[0]["n"] >= self.JANELA_EPISODIOS:
             total -= self._janela.popleft()["n"]
@@ -226,6 +238,35 @@ class AgentBase:
                 "passos_por_episodio": soma["passos"] / n,
             })
         return r
+
+    def resumo_bloco(self):
+        """As mesmas médias de `resumo_janela`, mas só sobre os episódios **novos**.
+
+        "Novos" = terminados desde o log anterior. É o número que mostra a direção: a
+        média móvel de 500 episódios responde "onde o agente está", o bloco responde "para
+        onde está indo", e num treino que degrada as duas discordam por muito tempo antes
+        de a móvel virar. Prefixadas com `bloco_` no registro para não colidirem com as
+        chaves da janela, que são as que a arena e as curvas leem.
+
+        `{}` quando nenhum episódio terminou desde o log anterior.
+        """
+        n = self._acumulado["n"] - self._acumulado_no_log["n"]
+        if n <= 0:
+            return {}
+        d = {c: self._acumulado[c] - self._acumulado_no_log[c] for c in self.CAMPOS_JANELA}
+        r = {"bloco_episodios": int(n), "bloco_train_score_mean": d["score"] / n}
+        if self._registrou_causas:
+            r.update({
+                "bloco_win_rate": d["vitorias"] / n,
+                "bloco_frac_fome": d["fome"] / n,
+                "bloco_frac_colisao": d["colisao"] / n,
+                "bloco_passos_por_episodio": d["passos"] / n,
+            })
+        return r
+
+    def _marcar_bloco(self):
+        """Fecha o bloco atual. Chamado depois de cada log, e só de lá."""
+        self._acumulado_no_log = dict(self._acumulado)
 
     def frac(self):
         """Fração do orçamento já gasta, em [0, 1]. Base de todo agendamento linear."""
@@ -467,15 +508,17 @@ class AgentBase:
                 # a curva registra a **média móvel**, não a iteração isolada: é o número
                 # que responde "o treino está andando?" sem depender de quantos episódios
                 # acabaram no exato momento do log
+                bloco = self.resumo_bloco()
                 ponto = {"episodes": self.episodes,
                          "train_score_mean": self.media_movel(),
                          "train_score_iter": stats.get("train_score_mean"),
                          **{k: v for k, v in stats.items() if k != "train_score_mean"},
-                         **self.resumo_janela()}
+                         **self.resumo_janela(), **bloco}
                 self.history.append({"global_step": self.global_step, **ponto})
                 rec.log(self.global_step, **ponto)
                 if verbose:
-                    self._imprimir(stats)
+                    self._imprimir(stats, bloco)
+                self._marcar_bloco()
 
             if self.global_step >= self._proximo_eval:
                 self._proximo_eval = proximo_multiplo(self.global_step,
@@ -677,24 +720,58 @@ class AgentBase:
         rec.save(skip_validation=True)
         return saida
 
-    def _imprimir(self, stats):
-        """Uma linha por log, sobre a janela de episódios — ver `self._janela`.
+    #: Legenda impressa uma vez, antes da primeira linha de log.
+    LEGENDA = ("[log] cada métrica sai como  janela | bloco  — a média móvel dos últimos "
+               "~{janela} episódios\n"
+               "      à esquerda, e só os episódios encerrados desde o log anterior à "
+               "direita.\n"
+               "      Elas discordam por muitos logs antes de a móvel virar: a da "
+               "esquerda diz onde o\n"
+               "      agente está, a da direita diz para onde ele está indo.")
+
+    @staticmethod
+    def _par(janela, bloco, fmt, largura):
+        """`janela | bloco` no mesmo formato, com `—` quando o bloco está vazio."""
+        esq = f"{janela:{fmt}}" if janela is not None else "—"
+        dir_ = f"{bloco:{fmt}}" if bloco is not None else "—"
+        return f"{esq:>{largura}}|{dir_:<{largura}}"
+
+    def _imprimir(self, stats, bloco=None):
+        """Uma linha por log: a janela móvel e o bloco novo, lado a lado.
 
         O score sozinho é ambíguo: 1,2 pontos pode ser "bate em tudo" ou "anda em círculo
         até morrer de fome", e a curva fica igual nos dois casos. Por isso a linha traz a
         **repartição das causas de fim**, que separa os dois de imediato, mais o
         comprimento médio do episódio, que é o sinal mais precoce de todos — uma cobra que
         aprende a sobreviver alonga os episódios antes de o score subir.
+
+        E cada uma dessas medidas aparece **duas vezes**: sobre a janela de
+        `JANELA_EPISODIOS` e sobre os episódios encerrados desde o log anterior. A média
+        móvel existe para o número não pular com uma amostra de 3 episódios, mas o preço é
+        atraso — com ~80 episódios por log ela carrega seis logs de passado. Numa
+        degradação em curso as duas colunas discordam bem antes de a curva virar, e é
+        exatamente essa discordância que se quer ver.
         """
+        if not self._legenda_impressa:
+            print(self.LEGENDA.format(janela=self.JANELA_EPISODIOS))
+            self._legenda_impressa = True
         r = self.resumo_janela()
-        m = self.media_movel()
-        partes = [f"passo {self.global_step:>10,}",
-                  f"ep {self.episodes:>8,}",
-                  f"treino {(f'{m:.2f}' if m is not None else '—'):>6}"]
+        b = bloco if bloco is not None else self.resumo_bloco()
+        n_bloco = b.get("bloco_episodios", 0)
+        partes = [
+            f"passo {self.global_step:>10,}",
+            f"ep {self.episodes:>7,} +{n_bloco:<4}",
+            "score " + self._par(self.media_movel(), b.get("bloco_train_score_mean"),
+                                 ".2f", 6),
+        ]
         if "win_rate" in r:
-            partes.append(f"vit {r['win_rate']:6.1%}")
-            partes.append(f"fome {r['frac_fome']:5.1%}")
-            partes.append(f"colisão {r['frac_colisao']:5.1%}")
-            partes.append(f"{r['passos_por_episodio']:5.0f} passos/ep")
-        partes.append(f"(janela de {self.episodios_na_janela()} episódios)")
+            partes += [
+                "fome " + self._par(r["frac_fome"], b.get("bloco_frac_fome"), ".1%", 6),
+                "colisão " + self._par(r["frac_colisao"], b.get("bloco_frac_colisao"),
+                                       ".1%", 6),
+                "vit " + self._par(r["win_rate"], b.get("bloco_win_rate"), ".1%", 6),
+                self._par(r["passos_por_episodio"], b.get("bloco_passos_por_episodio"),
+                          ".0f", 4) + " passos/ep",
+            ]
+        partes.append(f"janela {self.episodios_na_janela()}")
         print(" · ".join(partes))

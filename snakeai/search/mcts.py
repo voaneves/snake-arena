@@ -30,7 +30,7 @@ import numpy as np
 from ..env.vec_snake import N_ACTIONS
 from .dinamica import DinamicaReal
 
-__all__ = ["No", "MCTS"]
+__all__ = ["No", "MCTS", "MinMax"]
 
 
 class No:
@@ -55,6 +55,45 @@ class No:
         return self.soma_valor / self.visitas if self.visitas else 0.0
 
 
+class MinMax:
+    """Faixa `[min, max]` dos Q vistos numa árvore, para normalizar o PUCT.
+
+    Por que existe (e por que o AlphaZero original não precisa dela): em Xadrez e Go o
+    valor é uma probabilidade de vitória em `[-1, 1]`, e `c_puct` foi calibrado nessa
+    escala. Aqui a recompensa é `+1` por maçã e a cabeça de valor é linear, então o valor
+    aprendido é positivo e cresce com o agente — a execução de 5 M passos mede `valor_raiz`
+    indo de 0,26 a **3,5**.
+
+    Nessa escala o termo de exploração (`c_puct · P · √N`, ou `8,6 · P` na raiz com 32
+    simulações) só vence quando o prior é alto: um filho **não visitado**, cujo Q vale 0
+    por convenção, ganha na raiz com `P = 0,7` (bônus 6,0 contra 3,5) e perde com
+    `P = 0,15` (bônus 1,3). Descendo, `√N` encolhe e ele perde sempre. O resultado não é
+    uma busca parada — é uma busca que só confirma o que a rede já achava, e portanto
+    deixa de ser operador de melhoria de política.
+
+    A normalização é a do MuZero (Schrittwieser et al., 2020, Apêndice B): cada Q é
+    mapeado para `[0, 1]` pela faixa observada **naquela árvore**, o que devolve `c_puct`
+    à escala em que ele foi calibrado. Ver `docs/BUSCA_DEGENERADA.md`.
+    """
+
+    __slots__ = ("minimo", "maximo")
+
+    def __init__(self):
+        self.minimo, self.maximo = np.inf, -np.inf
+
+    def atualiza(self, valor):
+        v = float(valor)
+        if v < self.minimo:
+            self.minimo = v
+        if v > self.maximo:
+            self.maximo = v
+
+    def normaliza(self, valor):
+        if self.maximo > self.minimo:
+            return (float(valor) - self.minimo) / (self.maximo - self.minimo)
+        return float(valor)
+
+
 class MCTS:
     """Busca em árvore com PUCT, em lote sobre N árvores.
 
@@ -75,7 +114,8 @@ class MCTS:
 
     def __init__(self, avaliar, board_size=10, gamma=0.997, num_simulations=32,
                  c_puct=1.5, dirichlet_alpha=0.5, dirichlet_frac=0.25, rng=None,
-                 starve_base=None, dinamica=None):
+                 starve_base=None, dinamica=None, fpu="zero", q_normalizado=False,
+                 desempate="ordem"):
         self.avaliar = avaliar
         self.board_size = int(board_size)
         #: O ambiente de busca TEM que ser configurado igual ao de treino. Se o
@@ -92,6 +132,26 @@ class MCTS:
         self.dirichlet_alpha = float(dirichlet_alpha)
         self.dirichlet_frac = float(dirichlet_frac)
         self.rng = rng if rng is not None else np.random.default_rng(0)
+        #: O que vale o Q de um filho **ainda não visitado** — o *first play urgency*.
+        #: `"zero"` é a convenção do AlphaZero e o padrão histórico deste arquivo;
+        #: `"pai"` usa o valor do próprio nó, que é o palpite honesto quando não se
+        #: mediu nada ainda. Num jogo de valor estritamente positivo a diferença não é
+        #: cosmética: com `"zero"` o filho novo nasce ~V abaixo dos irmãos e a busca
+        #: nunca o toca. Ver `docs/BUSCA_DEGENERADA.md`.
+        if fpu not in ("zero", "pai"):
+            raise ValueError(f"fpu desconhecido: {fpu!r} (use 'zero' ou 'pai')")
+        self.fpu = fpu
+        #: Normalização min-max do Q dentro da árvore (MuZero, Apêndice B). Ver `MinMax`.
+        self.q_normalizado = bool(q_normalizado)
+        #: Como resolver empate exato de pontuação no PUCT. `"ordem"` fica com o primeiro
+        #: filho do dicionário, que é a primeira ação **liberada pela máscara** —
+        #: `np.nonzero` crescente, ou seja, *virar à esquerda*. Não é raro: na primeira
+        #: descida de cada nó todos os filhos têm o mesmo Q (nenhum foi visitado) e, com
+        #: prior uniforme, o mesmo `u`. O viés é sistemático e sempre para o mesmo lado.
+        #: `"aleatorio"` sorteia entre os empatados, o que troca um viés por ruído.
+        if desempate not in ("ordem", "aleatorio"):
+            raise ValueError(f"desempate desconhecido: {desempate!r}")
+        self.desempate = desempate
         self._sim = None      # ambiente de busca, criado sob demanda no tamanho certo
         self._ultimas_raizes = []
 
@@ -109,7 +169,31 @@ class MCTS:
             for a in permitidas:
                 no.filhos[int(a)] = No(prior=float(p[a]))
 
-    def _selecionar(self, no):
+    def _q_virgem(self, no, mm):
+        """O Q atribuído a um filho que ainda não foi visitado — o *first play urgency*.
+
+        `"zero"` é a convenção do AlphaZero. Sob normalização ele **não** é normalizado de
+        novo: `0` já é, por construção, o piso da faixa, que é exatamente o que o MuZero
+        faz. Normalizá-lo o jogaria muito abaixo do pior filho medido — a patologia que a
+        normalização existe para remover.
+
+        `"pai"` usa o valor do próprio nó. Sob normalização há uma sutileza que custou uma
+        revisão para aparecer: o `MinMax` é alimentado com **Q** (`r + γ·V`) e `no.valor` é
+        um **V** — mais o valor do nó continua se movendo depois de a faixa registrar o
+        dele. Quando a faixa ainda é estreita, uma diferença absoluta minúscula vira um
+        número normalizado grande: medido, 9,1% dos FPU saíam acima de 1 e chegavam a
+        **+5,15**, o que faz o filho virgem ganhar de todos os irmãos incondicionalmente e
+        a busca abrir filhos novos em vez de aprofundar. Prender em `[0, 1]` devolve o
+        significado honesto: um filho não medido vale, no máximo, o melhor irmão medido, e
+        no mínimo o pior.
+        """
+        if self.fpu != "pai":
+            return 0.0
+        if mm is None:
+            return no.valor
+        return min(1.0, max(0.0, mm.normaliza(no.valor)))
+
+    def _selecionar(self, no, mm=None):
         """PUCT: `Q(s,a) + c · P · √N / (1 + n)`, com `Q(s,a) = r + γ·V(filho)`.
 
         A recompensa de **chegar** ao filho tem que entrar no Q — e é fácil esquecer,
@@ -117,17 +201,44 @@ class MCTS:
         filho alcançado morrendo tem valor 0 (episódio acabou, sem futuro) e parece tão
         atraente quanto um filho seguro: a busca escolhe a morte e fica **pior que
         aleatória**. Foi exatamente o que aconteceu na primeira versão deste arquivo.
+
+        A segunda armadilha mora na outra ponta da mesma linha: o `Q` de um filho **ainda
+        não visitado**. `0` é a convenção do AlphaZero e está certa onde o valor é uma
+        `tanh` em `[-1, 1]` centrada em zero. Neste jogo o valor aprendido é positivo
+        (medido: 3,5 ao fim de 5 M passos) e o bônus de exploração é `c_puct · P · √N`,
+        que só cobre essa diferença quando o prior já é alto. Uma ação de que a rede não
+        gosta nunca é experimentada fundo o bastante para a busca discordar dela. `fpu` e
+        `q_normalizado` existem para isso; ambos nascem desligados. Ver
+        `docs/BUSCA_DEGENERADA.md`.
         """
         if not no.filhos:
             return None
         raiz_n = np.sqrt(max(no.visitas, 1))
         melhor, melhor_pont = None, -np.inf
+        virgem = self._q_virgem(no, mm)
+        empatados = []
         for a, filho in no.filhos.items():
             u = self.c_puct * filho.prior * raiz_n / (1 + filho.visitas)
-            q = (filho.recompensa + self.gamma * filho.valor) if filho.visitas else 0.0
+            if filho.visitas:
+                q = filho.recompensa + self.gamma * filho.valor
+                if mm is not None:
+                    q = mm.normaliza(q)
+            else:
+                q = virgem
             pont = q + u
+            # `>` estrito e igualdade exata: assim o caminho de `desempate="ordem"` fica
+            # bit a bit igual ao de antes desta flag existir. Uma banda de tolerância
+            # mudaria a escolha em empates *quase* exatos, e a execução de controle está
+            # rodando com o comportamento antigo.
             if pont > melhor_pont:
-                melhor, melhor_pont = a, pont
+                melhor, melhor_pont, empatados = a, pont, [a]
+            elif pont == melhor_pont:
+                empatados.append(a)
+        if self.desempate == "aleatorio" and len(empatados) > 1:
+            # `integers` em vez de `choice`: este é o laço mais quente da busca (chamado
+            # ~`num_simulations × N × profundidade` vezes por jogada) e `choice` valida e
+            # converte a lista a cada chamada
+            return empatados[int(self.rng.integers(len(empatados)))]
         return melhor
 
     # -------------------------------------------------------------------- busca
@@ -141,6 +252,7 @@ class MCTS:
         din = self.dinamica
 
         raizes = [No() for _ in range(n)]
+        estatisticas = [MinMax() if self.q_normalizado else None for _ in range(n)]
         for i, r in enumerate(raizes):
             r.estado = din.fatiar(estado_raiz, i)
             r.mask = mask_raiz[i]
@@ -160,12 +272,13 @@ class MCTS:
             caminhos = []          # (lista de nós, ação escolhida) por árvore
             pais, acoes = [], []
             for i, raiz in enumerate(raizes):
+                mm = estatisticas[i]
                 no, caminho = raiz, [raiz]
-                a = self._selecionar(no)
+                a = self._selecionar(no, mm)
                 while a is not None and no.filhos[a].expandido and not no.filhos[a].terminal:
                     no = no.filhos[a]
                     caminho.append(no)
-                    a = self._selecionar(no)
+                    a = self._selecionar(no, mm)
                 caminhos.append((caminho, a))
                 pais.append(no)
                 acoes.append(a if a is not None else 1)
@@ -211,11 +324,13 @@ class MCTS:
             for i, (caminho, a) in enumerate(caminhos):
                 if a is None:
                     continue
-                folha = folhas[i]
+                folha, mm = folhas[i], estatisticas[i]
                 v = 0.0 if folha.terminal else float(valores_folha[i])
                 for no in reversed([*caminho, folha]):
                     no.visitas += 1
                     no.soma_valor += v
+                    if mm is not None:
+                        mm.atualiza(no.recompensa + self.gamma * no.valor)
                     v = no.recompensa + self.gamma * v
 
         #: guardado para inspeção em teste — a árvore some ao fim do `run`
@@ -234,10 +349,18 @@ class MCTS:
 
         `temperatura → 0` vira argmax (jogo forte); `1` mantém a proporção das visitas
         (bom para explorar e para o alvo de treino).
+
+        `temperatura` pode ser escalar ou um vetor `(N,)` — uma por árvore. O vetor é o que
+        o agendamento canônico do AlphaZero exige: τ alto nos primeiros lances **de cada
+        episódio** e frio no resto, e os N ambientes de um lote estão em lances diferentes.
         """
-        if temperatura <= 1e-6:
-            p = (visitas == visitas.max(axis=1, keepdims=True)).astype(np.float64)
-        else:
-            p = np.power(np.maximum(visitas, 0), 1.0 / temperatura)
+        visitas = np.asarray(visitas, dtype=np.float64)
+        t = np.asarray(temperatura, dtype=np.float64)
+        t = np.full((visitas.shape[0], 1), float(t)) if t.ndim == 0 else t.reshape(-1, 1)
+        # `1/t` com t≈0 estoura antes de o `where` escolher o ramo, então o expoente é
+        # calculado com um t seguro e o ramo frio entra depois.
+        frio = t <= 1e-6
+        p = np.power(np.maximum(visitas, 0.0), 1.0 / np.where(frio, 1.0, t))
+        p = np.where(frio, (visitas == visitas.max(axis=1, keepdims=True)).astype(np.float64), p)
         soma = p.sum(axis=1, keepdims=True)
         return np.where(soma > 0, p / np.maximum(soma, 1e-12), 1.0 / visitas.shape[1])

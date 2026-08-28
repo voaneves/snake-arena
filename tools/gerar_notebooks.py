@@ -53,6 +53,195 @@ NUCLEO = [
     "snakeai/agents/base.py",
 ]
 
+#: Os braços da ablação do AlphaZero (`93`). Ficam aqui, e não no notebook, porque a
+#: lista de nomes precisa virar o `@param` e o dicionário precisa virar código — as duas
+#: coisas saem da mesma fonte para não divergirem.
+ENSAIO_MD = """## Ensaio — 2 minutos antes de queimar 8 horas
+
+Um treino de 5 M passos com busca custa ~8 h de T4. Descobrir na hora 6 que a cabeça de
+valor divergiu, ou que o alvo saiu `NaN`, é o pior jeito possível de gastar esse tempo.
+
+Esta célula roda **40 iterações** do braço escolhido e imprime o que precisa estar são
+antes de valer a pena continuar. O que olhar:
+
+| sinal | saudável | o que significa se sair errado |
+|---|---|---|
+| `perda_pi`, `perda_v`, `valor_raiz` | finitos, `perda_pi` abaixo de `ln 3 = 1,099` e caindo | `NaN`/`inf` = pare; `perda_pi` colada em 1,099 = o alvo não está ensinando nada |
+| `entropia_alvo` | **acima de 0,3** | perto de zero é rótulo duro: a destilação joga fora a distribuição de visitas, que é justamente o que ela deveria aprender (ver o braço `alvo_cru`) |
+| `visitas_no_argmax` | entre ~0,4 e ~0,9 | colado em 1,00 é a busca degenerada — todos os rollouts no mesmo filho (ver `docs/BUSCA_DEGENERADA.md`) |
+| `‖∇v‖/‖∇π‖` no tronco | idealmente abaixo de ~10× | dezenas ou centenas = o tronco está sendo otimizado para o valor e a política não anda |
+| `fome` | não colado em 100% | 100% de fome com score 0 é a cobra andando em círculo |
+
+Ela **não** valida a configuração. São 40 iterações — ~20 mil passos de ambiente, 0,4% do
+orçamento — num `resnet_tiny` com 32 ambientes, para caber em dois minutos. Herda do `cfg`
+tudo que define o braço (`fpu`, `q_normalizado`, `valor_symlog`, `vf_coef`, temperatura,
+`epochs_por_iter`, `num_simulations`) e troca só o tamanho. Serve para pegar o que é
+catastrófico e independente de arquitetura: `NaN`, valor explodindo, busca degenerada, alvo
+duro. Nada aqui é gravado em `runs/`, e o agente do ensaio é descartado antes do treino
+começar.
+"""
+
+ENSAIO_CODE = '''import numpy as np, tensorflow as tf
+
+_cfg_ensaio = {**asdict(cfg)}
+for _k in ("ckpt_dir", "runs_dir"):
+    _cfg_ensaio.pop(_k, None)
+_cfg_ensaio.update(net="resnet_tiny", num_envs=32, rollout=16, batch_size=256,
+                   memory_size=20_000, total_steps=10**9, eval_every_steps=10**9,
+                   log_every_steps=10**9, salvar_gif=False, salvar_grafico=False,
+                   ckpt_dir="/tmp/ensaio_az", runs_dir="/tmp/ensaio_az")
+_ens = AlphaZero(AlphaZeroConfig(**_cfg_ensaio))
+
+print(f"{'iter':>5} {'busca':>7} {'perda_pi':>9} {'perda_v':>9} {'v_raiz':>8} "
+      f"{'ent_alvo':>9} {'argmax':>7} {'fome':>6}")
+for _i in range(1, 41):
+    _st = _ens.iterate()
+    if _i % 10:
+        continue
+    _n = _ens._cheio
+    _pi = _ens._buf_pi[:_n]
+    _ent = float(np.mean(-(_pi * np.log(np.maximum(_pi, 1e-12))).sum(1) / np.log(3)))
+    _r = _ens.resumo_janela()
+    print(f"{_i:>5} {(_st.get('train_score_mean') or 0):>7.2f} "
+          f"{_st.get('perda_pi', float('nan')):>9.4f} {_st.get('perda_v', float('nan')):>9.4f} "
+          f"{_st.get('valor_raiz', float('nan')):>8.3f} {_ent:>9.3f} "
+          f"{float(_pi.max(1).mean()):>7.3f} {_r.get('frac_fome', float('nan')):>6.1%}")
+
+# a razão entre os gradientes NO TRONCO — ver docs/BUSCA_DEGENERADA.md e
+# tools/diag_balanco_perdas.py
+_tronco = [v for v in _ens.model.trainable_variables
+           if not v.path.startswith(("logits", "value", "pi_", "v_"))]
+_idx = np.arange(min(256, _ens._cheio))
+_obs = tf.convert_to_tensor(_ens._buf_obs[_idx]); _mk = tf.convert_to_tensor(_ens._buf_mask[_idx])
+_pa = tf.convert_to_tensor(_ens._buf_pi[_idx]); _z = tf.convert_to_tensor(_ens._buf_z[_idx])
+with tf.GradientTape(persistent=True) as _fita:
+    _lg, _v = _ens.model(_obs, training=True)
+    _v = tf.squeeze(_v, -1)
+    _lg = tf.where(_mk, _lg, tf.fill(tf.shape(_lg), MASK_NEG))
+    _lpi = -tf.reduce_mean(tf.reduce_sum(_pa * tf.nn.log_softmax(_lg), -1))
+    # com o `vf_coef` embutido: é a perda que o otimizador de fato aplica, e sem ele a
+    # razão sai 4x maior num braço que usa vf_coef=0,25 — acusando justamente o problema
+    # que a configuração já corrigiu
+    _lv = cfg.vf_coef * tf.reduce_mean(
+        tf.square(_v - (_ens._symlog(_z) if cfg.valor_symlog else _z)))
+_gp = float(tf.linalg.global_norm([g for g in _fita.gradient(_lpi, _tronco) if g is not None]))
+_gv = float(tf.linalg.global_norm([g for g in _fita.gradient(_lv, _tronco) if g is not None]))
+del _fita
+
+_razao = _gv / max(_gp, 1e-9)
+_pi_fim = _ens._buf_pi[:_ens._cheio]
+_ent_fim = float(np.mean(-(_pi_fim * np.log(np.maximum(_pi_fim, 1e-12))).sum(1) / np.log(3)))
+_argmax_fim = float(_pi_fim.max(1).mean())
+
+print()
+print(f"|grad_v|/|grad_pi| no tronco: {_razao:.1f}x   "
+      f"(ja com vf_coef={cfg.vf_coef}; |z| medio "
+      f"{float(np.abs(_ens._buf_z[:_ens._cheio]).mean()):.2f})")
+
+# --- avisos: sinais fracos, que dependem do braço. Não interrompem.
+for _cond, _aviso in (
+    (_razao > 40, f"o tronco está {_razao:.0f}x mais otimizado para o valor que para a "
+                  "política — esperado no `controle`, suspeito com `valor_symlog`"),
+    (_ent_fim < 0.3, f"entropia do alvo em {_ent_fim:.3f}: a destilação está aprendendo "
+                     "rótulo duro em vez da distribuição de visitas (ver `alvo_cru`)"),
+    (_argmax_fim > 0.97, f"{_argmax_fim:.3f} das visitas no argmax: busca degenerada, "
+                         "todos os rollouts no mesmo filho (ver docs/BUSCA_DEGENERADA.md)"),
+    (_ent_fim > 0.95, f"entropia do alvo em {_ent_fim:.3f}: a busca está quase uniforme e "
+                      "o alvo também não ensina nada — a degeneração pelo outro lado"),
+    (_argmax_fim < 0.40, f"{_argmax_fim:.3f} das visitas no argmax (acaso = 0,333): a "
+                         "busca não está concentrando em lugar nenhum"),
+):
+    if _cond:
+        print("  AVISO:", _aviso)
+
+# --- parada dura: com `Run all`, isto é o que impede 8 horas de treino em cima de um NaN.
+_ruins = [_k for _k in ("perda_pi", "perda_v", "valor_raiz")
+          if not np.isfinite(_st.get(_k, np.nan))]
+if _ruins or not np.isfinite(_ens._buf_z[:_ens._cheio]).all():
+    raise RuntimeError(
+        f"ensaio reprovado: {_ruins or 'alvo de valor'} não é finito. O treino NÃO vai "
+        "começar. Rode o braço `controle` para saber se o problema é da configuração ou "
+        "do ambiente, e veja docs/BUSCA_DEGENERADA.md.")
+
+print("ensaio aprovado — perdas, valor e alvo finitos. Pode seguir para o treino.")
+del _ens'''
+
+
+BRACOS_ABLACAO = [
+    "consertos", "controle",
+    "fpu_pai", "q_normalizado", "valor_symlog", "vf_05", "gradiente_8x", "lr_decai",
+    "alvo_cru", "temp_por_lance", "desempate", "bootstrap_janela",
+    "busca64", "dirichlet_1", "gamma_995", "tudo",
+]
+
+#: O braço que o `@param` oferece pré-selecionado. **Não** é o controle: o controle é o
+#: `06_alphazero`, que roda separado. Quem abre este notebook quer medir alguma coisa.
+BRACO_PADRAO = "consertos"
+
+_PRE_CFG_ABLACAO = """BRACOS = {
+    # ---------------------------------------------------------------- o pacote curado
+    # Os consertos com mecanismo medido, mais os que não têm como piorar. Fica de fora
+    # tudo que só tem argumento de literatura (`busca64`, `dirichlet_1`, `gamma_995`) e
+    # tudo que dobra o tempo de parede. Não isola causa — isola *risco*.
+    "consertos": {"fpu": "pai", "q_normalizado": True,          # BUSCA_DEGENERADA §PUCT
+                  "valor_symlog": True, "vf_coef": 0.5,         # BUSCA_DEGENERADA §tronco
+                  "epochs_por_iter": 8,                         # ORCAMENTO_DE_GRADIENTE
+                  "lr_final": 5e-5,                             # como o PPO e o ACKTR
+                  "temp_alvo": 1.0, "temp_passos": 30,          # o agendamento do paper
+                  "dirichlet_alpha": 1.0,                       # 0,5 é sharp para 3 ações
+                  "desempate": "aleatorio",
+                  "bootstrap_fim_janela": True},
+
+    # o `06_alphazero` sem tocar em nada, para quando não houver uma execução de `06` na
+    # mesma semente com que comparar
+    "controle": {},
+
+    # ------------------------------- a escala do valor dentro do PUCT (REVISAO §2.27)
+    "fpu_pai":        {"fpu": "pai"},
+    "q_normalizado":  {"q_normalizado": True},
+
+    # ------------------------- o balanço das perdas no tronco compartilhado (§2.28)
+    "valor_symlog":   {"valor_symlog": True},
+    "vf_05":          {"vf_coef": 0.5},
+    "lr_decai":       {"lr_final": 5e-5},
+
+    # ------------------------------------- o orçamento de gradiente (o eixo do 95/96)
+    "gradiente_8x":   {"epochs_por_iter": 8},
+
+    # ------------------------------------------------ a destilação e a temperatura
+    # `alvo_cru` sozinho é o mais barato dos consertos: com tau=0,25 a partir de metade
+    # do treino, o alvo de politica vira rotulo duro (entropia 0,66 -> 0,015 nas
+    # contagens de visita medidas). `temp_por_lance` mexe so em QUANDO a temperatura cai.
+    "alvo_cru":       {"temp_alvo": 1.0},
+    "temp_por_lance": {"temp_passos": 30},
+
+    # ------------------------------------------------------- dois vieses pequenos
+    "desempate":       {"desempate": "aleatorio"},
+    "bootstrap_janela": {"bootstrap_fim_janela": True},
+
+    # --------------------------------- o que a literatura sugere, e que eu nao endosso
+    # `busca64` DOBRA o tempo de parede (~16 h em vez de ~8 h por semente).
+    "busca64":        {"num_simulations": 64, "sims_avaliacao": 64},
+    "dirichlet_1":    {"dirichlet_alpha": 1.0},
+    "gamma_995":      {"gamma": 0.995},
+
+    # ------------------------------------------------------------------- tudo junto
+    "tudo": {"fpu": "pai", "q_normalizado": True, "valor_symlog": True, "vf_coef": 0.5,
+             "epochs_por_iter": 8, "lr_final": 5e-5,
+             "temp_alvo": 1.0, "temp_passos": 30,
+             "desempate": "aleatorio", "bootstrap_fim_janela": True,
+             "num_simulations": 64, "sims_avaliacao": 64, "dirichlet_alpha": 1.0,
+             "gamma": 0.995},
+}
+print(f"braço: {BRACO}")
+for _k, _v in sorted(BRACOS[BRACO].items()):
+    print(f"   {_k} = {_v!r}")
+if not BRACOS[BRACO]:
+    print("   (nada — é o 06_alphazero)")
+
+"""
+
+
 NOTEBOOKS = [
     {
         "arquivo": "99_ablacoes.ipynb",
@@ -174,6 +363,85 @@ NOTEBOOKS = [
                   "Grudado em zero significa que não há o que corrigir neste problema — o "
                   "que é um resultado, e distingue \"não ajudou\" de \"não fez nada\". "
                   "Ver `docs/EKFAC.md`.",
+    },
+    {
+        "arquivo": "93_alphazero_ablacoes.ipynb",
+        "titulo": "AlphaZero — as ablações, e o pacote de consertos",
+        "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
+                    "snakeai/agents/alphazero.py"],
+        "agente": "AlphaZero",
+        "config": "AlphaZeroConfig",
+        "param_braco": True,
+        "celulas_extra": [{"md": ENSAIO_MD, "codigo": ENSAIO_CODE, "titulo": "Ensaio"}],
+        "resumo":
+            "**Como rodar.** Escolha o `BRACO` no `@param`, rode a célula de ensaio (2 min, "
+            "pega o que é catastrófico antes de você gastar 8 h) e depois o treino. O "
+            "`sufixo_variante` mantém cada braço separado na arena. O braço vem "
+            "pré-selecionado em `consertos`, **não** em `controle`: o controle é o "
+            "`06_alphazero` da mesma semente, que roda em outro notebook.\n\n"
+            "**O que comparar.** A curva oficial é o `[eval]`, que mede a rede pura, greedy, "
+            "sem busca — não o `score` do log de treino, que é o da busca. O piso aleatório "
+            "é 1,21. A execução de referência do `06` está em 2,45 em 1 M de passos com a "
+            "busca fazendo 17,8: busca boa, destilação parada.\n\n"
+            "---\n\n"
+            "### O braço `consertos` — o que está dentro e por quê\n\n"
+            "Não isola causa. Isola **risco**: entra o que tem mecanismo medido ou não tem "
+            "como piorar, e fica de fora tudo que só tem argumento de literatura ou que "
+            "dobra o tempo de parede.\n\n"
+            "| chave | o que conserta | evidência |\n"
+            "|---|---|---|\n"
+            "| `fpu=\"pai\"` + `q_normalizado` | o PUCT dá `Q = 0` a filho não visitado; com "
+            "`V ≈ 3,5` (medido) o bônus `c_puct·P·√N` só cobre isso onde o prior já é alto, "
+            "e a busca passa a confirmar a rede em vez de corrigi-la | medido: somar uma "
+            "constante ao valor da folha, sem mudar o ranking de estado nenhum, leva o "
+            "score de 21,70 (100% colisão) a **0,00** (100% fome) |\n"
+            "| `valor_symlog` + `vf_coef=0.5` | o alvo de valor não é normalizado e domina "
+            "o tronco compartilhado | medido **na execução real**: `perda_v/perda_pi` = "
+            "**57,6×** depois de 4 M. No `|z|` dessa execução, symlog leva o gradiente de "
+            "71× para 14×, e `vf_coef=0,5` para **7,0×** — a faixa saudável. `0,25` daria "
+            "3,5× e passaria do ponto: a `perda_v` **não** convergiu (subiu de 0,34 para "
+            "1,0), então enfraquecer o valor mais que isso piora a busca, que depende dele |\n"
+            "| `epochs_por_iter=8` | ~4.900 atualizações contra as ~38.300 do PPO no mesmo "
+            "orçamento de ambiente | **atenção**: na execução real a `perda_pi` já chega a "
+            "0,016, então mais gradiente **não** ajuda a política — ajuda o valor, que "
+            "ficou em 1,0 sem convergir. Custa ~5% de tempo |\n"
+            "| `lr_final=5e-5` | o `lr` era constante, e este é o único agente do "
+            "repositório sem decaimento | na execução real o score oscila entre 9,6 e 12,5 "
+            "depois de 3 M sem tendência, e o `best` (13,03) fica 2,4 pontos acima do "
+            "`last` (10,62), que é o número oficial |\n"
+            "| `temp_alvo=1.0` | a mesma π temperada escolhe a ação **e** vira o alvo; com "
+            "τ = 0,25 o alvo vira rótulo duro | medido: entropia do alvo de 0,66 a "
+            "**0,015** nas contagens de visita reais |\n"
+            "| `temp_passos=30` | `temp_frac` é fração do **treino**, não do episódio: a "
+            "cobra joga solta quando o tabuleiro aperta | é o agendamento canônico do paper |\n"
+            "| `dirichlet_alpha=1.0` | com 3 ações, α = 0,5 põe mais de 90% da massa numa "
+            "única ação em 15% dos lances | a heurística do paper é α ≈ 10/n, que dá 3,3 "
+            "para 3 ações. **Julgamento, não medição** — é o item mais fraco da lista |\n"
+            "| `desempate=\"aleatorio\"` | empate exato no PUCT fica sempre com a primeira "
+            "ação da máscara, que é *virar à esquerda* | viés sistemático, sempre para o "
+            "mesmo lado |\n"
+            "| `bootstrap_fim_janela` | o último passo de cada janela tem alvo sem "
+            "bootstrap — 1/16 das amostras aprendendo \"aqui não há futuro\" | |\n\n"
+            "### O que a execução de controle já mediu\n\n"
+            "`runs/alphazero/…` (5 M passos, 7,54 h, seed 0): política pura **10,62** "
+            "(pico 13,03 em 3,0 M), `score_median` 5, **86,9% de fim por fome**, 0% de "
+            "tabuleiro cheio. Os três GIFs do fim terminam por fome. Para comparar: PPO "
+            "62–81, ACKTR ~84. Este notebook existe para descobrir se os 11 pontos são o "
+            "algoritmo ou os três mecanismos acima.\n\n"
+            "**Fora do pacote, de propósito:** `busca64` dobra o tempo de parede (~16 h em "
+            "vez de ~8 h) e a medição diz que compra ~1,3 plies, não horizonte; "
+            "`gamma_995` é alinhamento com o resto do repositório, não conserto, e com "
+            "symlog o argumento de escala do valor já está resolvido.\n\n"
+            "### Os braços isolados\n\n"
+            "Cada um muda **uma** coisa em relação ao `06_alphazero`, para atribuir causa "
+            "depois que o `consertos` disser se há o que atribuir. Um cuidado: "
+            "`temp_por_lance` sozinho mantém `temp_fim = 0,25`, então ele muda *quando* a "
+            "temperatura cai, não o quanto — a dureza do alvo continua sendo assunto do "
+            "`alvo_cru`.\n\n"
+            "Tudo isto está escrito em [`docs/BUSCA_DEGENERADA.md`]"
+            "(https://github.com/voaneves/snake-arena/blob/main/docs/BUSCA_DEGENERADA.md) e "
+            "nas §2.27 e §2.28 da revisão, com os scripts que regeneram as tabelas "
+            "(`tools/diag_busca.py`, `tools/diag_balanco_perdas.py`).",
     },
     {
         "arquivo": "94_rainbow_nstep3.ipynb",
@@ -408,6 +676,30 @@ def monta_notebook(spec, usuario="voaneves", repo="snake-arena"):
     extra = spec.get("extra_cfg", "")
     if extra and not extra.endswith("\n"):
         extra += "\n"
+    #: Código inserido **antes** do `cfg = ...`, na célula de parâmetros. Existe para o
+    #: notebook de ablações, onde um `@param` escolhe o braço e o dicionário do braço
+    #: precisa existir antes de ser desempacotado dentro do config.
+    pre = spec.get("pre_cfg", "")
+    if pre and not pre.endswith("\n"):
+        pre += "\n"
+    if spec.get("param_braco"):
+        # A lista do @param e o dicionário do notebook são duas escritas da mesma coisa e
+        # moram em constantes diferentes; sem esta conferência, acrescentar um braço só
+        # num dos lados produz um dropdown com uma opção que estoura em `BRACOS[BRACO]`
+        # — e só na hora de rodar, no Colab, depois de a célula do núcleo carregar.
+        _ns = {}
+        exec(_PRE_CFG_ABLACAO.split("print(")[0], _ns)          # noqa: S102
+        if set(_ns["BRACOS"]) != set(BRACOS_ABLACAO):
+            raise ValueError(
+                "BRACOS_ABLACAO e o dicionário de _PRE_CFG_ABLACAO divergiram: "
+                f"só na lista {sorted(set(BRACOS_ABLACAO) - set(_ns['BRACOS']))}, "
+                f"só no dicionário {sorted(set(_ns['BRACOS']) - set(BRACOS_ABLACAO))}")
+        braco_param = ('\n' + f'BRACO = "{BRACO_PADRAO}"  # @param ['
+                       + ", ".join(f'"{k}"' for k in BRACOS_ABLACAO) + "]")
+        pre = _PRE_CFG_ABLACAO
+        extra = "    **BRACOS[BRACO],\n    sufixo_variante=f\"_{BRACO}\",\n"
+    else:
+        braco_param = ""
     modulos = NUCLEO + [m for m in spec["modulos"] if m not in NUCLEO]
     fonte = fonte_combinada(modulos)
     marca = _hash(fonte)
@@ -475,7 +767,7 @@ qualquer outra coisa e diz o motivo.
 """),
         _code(f"""SEMENTE = 0        # @param {{type:"integer"}}
 PASSOS = 5000000   # @param {{type:"integer"}}
-REDE = "resnet_small"  # @param ["resnet_tiny", "resnet_small", "resnet_base", "cnn_rainbow", "cnn_alphazero", "cnn_vgg", "cnn_vgg_dropout", "cnn_vgg_sem_pool"]
+REDE = "resnet_small"  # @param ["resnet_tiny", "resnet_small", "resnet_base", "cnn_rainbow", "cnn_alphazero", "cnn_vgg", "cnn_vgg_dropout", "cnn_vgg_sem_pool"]{braco_param}
 
 # Armazenamento: nada para configurar. Detecta Colab, Kaggle ou máquina local e escolhe a
 # pasta que **persiste** em cada um — Drive, /kaggle/working ou o diretório atual. Se a
@@ -487,7 +779,7 @@ PASTA = pasta_de_trabalho()
 # um checkpoint desta sessão, senão o treino andaria para trás.
 semear_checkpoints(os.path.join(PASTA, "checkpoints"))
 
-cfg = {config}(
+{pre}cfg = {config}(
     seed=SEMENTE,
     net=REDE,
     total_steps=PASSOS,
@@ -495,6 +787,11 @@ cfg = {config}(
     runs_dir=os.path.join(PASTA, "runs"),
 )
 print(json.dumps(asdict(cfg), indent=2, ensure_ascii=False))""", "Parâmetros"),
+        #: Células específicas de um notebook, inseridas entre a configuração e o treino.
+        #: Hoje só o `93` usa: a célula de ensaio, que é o que separa "descobri um NaN em
+        #: dois minutos" de "descobri um NaN na sexta hora".
+        *[c for extra in spec.get("celulas_extra", [])
+          for c in (_md(extra["md"]), _code(extra["codigo"], extra.get("titulo")))],
         _md("""## Treino
 
 **Retomável, e é requisito, não conveniência.** Um treino de 5 M passos não cabe numa

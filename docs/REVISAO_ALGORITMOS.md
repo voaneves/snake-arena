@@ -13,6 +13,9 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
+| §2.29 a temperatura do AlphaZero transforma o alvo de política em rótulo duro | **medido** — entropia do alvo de 0,66 a 0,015 da metade do treino em diante; braço `alvo_cru` |
+| §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **medido** — `‖∇v‖/‖∇π‖` de 4,8× a 255× conforme o agente melhora; braços `vf_025` e `valor_symlog` |
+| §2.27 PUCT com `Q = 0` para filho não visitado, num jogo de valor positivo | **medido e instrumentado** — dois consertos atrás de flag, ablações no `93_alphazero_ablacoes`; ver `docs/BUSCA_DEGENERADA.md` |
 | §2.25 janela de n passos do Rainbow | **medido e corrigido** — o padrão passou a 20 |
 | §2.26 paridade `.keras` × TFLite | **corrigido** — quebrava no C51 e publicava número de acaso no LBC e no ACER |
 | §2.23 razão de reaproveitamento e rede alvo | levantado, **não** tocado — é a próxima ablação |
@@ -711,6 +714,104 @@ Marcar por `eps_start > 0` sozinho seria pior que não marcar — sob `noisy=Tru
 execução não teve. Aquela execução foi renomeada para
 `completo+n3+sem_noisy+eps_greedy`, com o motivo gravado em `meta["variante_corrigida"]`;
 o teste é `test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not`.
+
+### 2.29 ✔ A temperatura serve a dois papéis, e estraga o segundo
+`alphazero.py:temperatura,collect` · `mcts.py:politica_das_visitas`
+
+`pi_b[t] = pi`: a mesma distribuição temperada que amostra a ação vira o alvo de treino. No
+AlphaZero os dois papéis são separados — a temperatura é exploração na coleta, o alvo é a
+contagem de visitas crua.
+
+Com `temp_fim = 0,25` as contagens são elevadas à quarta potência. Nas contagens medidas
+com 32 simulações (`[24, 5, 3]`, entropia normalizada 0,662) o alvo vira
+`[0,998 · 0,002 · 0,0002]`, entropia **0,015**. Da metade do treino em diante — `temp_frac
+= 0,5` — a rede é treinada para confiança máxima no argmax de uma busca de 32 simulações, e
+`ent_coef = 0,0` não segura nada.
+
+Dois detalhes que só aparecem lendo o código: `temperatura()` usa `self.frac()`, que é
+fração do **treino**, não do episódio — não existe "metade do episódio estocástica"; e o
+agendamento canônico do paper (τ alto nos primeiros lances de cada episódio) simplesmente
+não existia aqui.
+
+**Estado:** `temp_alvo` separa os dois papéis, `temp_passos` traz o agendamento do paper.
+Os dois desligados por padrão; braços `alvo_cru` e `temp_por_lance`, ambos dentro do
+`consertos`.
+
+### 2.28 ? O alvo de valor não normalizado domina o tronco compartilhado (AlphaZero e MuZero)
+`alphazero.py:_passo` · `ppo.py:303` · `nets/registry.py:127`
+
+`perda = perda_pi + vf_coef * perda_v` com `vf_coef = 1,0`, `perda_v` em MSE sobre um
+retorno descontado **não normalizado** e `perda_pi` em entropia cruzada sobre 3 ações. O
+AlphaZero original treina o valor contra o resultado da partida em `[-1, 1]`, onde os dois
+termos nascem comparáveis; aqui o alvo vale ~9 em 1 M de passos e cresce com o agente.
+
+Medido em `tools/diag_balanco_perdas.py`, a razão entre as normas dos gradientes **no
+tronco** cresce **linearmente com a escala do valor**, que por sua vez cresce quando o
+agente melhora. Com `valor_symlog` ela cresce só logaritmicamente.
+
+E agora há o dado da execução de 5 M passos, que é melhor que qualquer proxy:
+`perda_v/perda_pi` = **57,6×** depois de 4 M — porque `perda_pi` desabou para 0,016
+(a rede reproduz o alvo quase perfeitamente) enquanto `perda_v` **subiu** de 0,34 para 1,0
+e nunca convergiu, sobre um `valor_raiz` de 3,2. No `|z|` dessa execução:
+
+| `valor_symlog` | `vf_coef` | `perda_v/perda_pi` | `‖∇v‖/‖∇π‖` no tronco |
+|---|---:|---:|---:|
+| não *(a execução de 5 M)* | 1,0 | 20,4× | **71,4×** |
+| não | 0,5 | 10,2× | 35,7× |
+| sim | 1,0 | 1,5× | 14,1× |
+| **sim** | **0,5** | 0,8× | **7,0×** |
+| sim | 0,25 | 0,4× | 3,5× |
+
+Referência de saudável: 4,8× num agente que quase não come, onde nada está quebrado. O
+`symlog` faz o grosso do reequilíbrio e `vf_coef = 0,5` — o valor do PPO — chega na faixa.
+**`0,25` passaria do ponto:** a `perda_v` não convergiu, e enfraquecer mais o valor piora a
+busca, que depende dele para avaliar folhas. Foi por isso que o braço curado mudou de 0,25
+para 0,5 depois que a execução de controle terminou.
+
+O PPO escapa por normalizar a vantagem por minilote, o que torna o gradiente de política
+invariante à escala do valor, e por usar `vf_coef = 0,5`. O A2C e o ACKTR herdam a mesma
+normalização. AlphaZero e MuZero não normalizam nada — e o MuZero tem o mesmo `_passo` com
+o mesmo problema.
+
+**Estado:** `valor_symlog` entra como flag desligada; `vf_coef` já existia. Braços `vf_025`
+e `valor_symlog` no `93_alphazero_ablacoes`. Não tocado no MuZero.
+
+### 2.27 ? A busca do AlphaZero degenera assim que o valor aprendido fica positivo
+`mcts.py:_selecionar` · `nets/registry.py:127` · `agents/alphazero.py:76`
+
+`q = (filho.recompensa + gamma * filho.valor) if filho.visitas else 0.0`. O `0.0` é a
+convenção do AlphaZero e está certa onde o valor é uma `tanh` em `[-1, 1]` centrada em
+zero. Aqui a cabeça de valor é `Dense(1)` **linear**, a recompensa é `+1` por maçã e o
+agente come a cada ~12 passos: com `γ = 0,997` o ponto fixo do valor é `1/(1 − γ¹²) ≈ 28`.
+O bônus de exploração vale no máximo `c_puct · P · √N ≈ 2,8` com 32 simulações — o filho
+virgem nunca é escolhido, a busca colapsa no primeiro filho que tocou, e como esse é a
+primeira ação da máscara (`np.nonzero` crescente = virar à esquerda), o agente gira até
+morrer de fome.
+
+Medido em `tools/diag_busca.py`: a mesma heurística de folha, somada de uma constante que
+não muda o ranking de estado nenhum, leva o score de 21,70 (100% colisão) a **0,00** (100%
+fome). Com `q_normalizado=True` (min-max do MuZero, Apêndice B) volta a 19,71; com
+`fpu="pai"`, a 22,12. Tabelas completas em `docs/BUSCA_DEGENERADA.md`.
+
+**Tamanho do efeito, corrigido pela execução de 5 M.** A primeira versão desta seção
+estimava `V ≈ 28` supondo uma maçã a cada 12 passos; o `valor_raiz` medido vai de 0,26 a
+3,50 (o agente come a cada ~40 passos). Com `V ≈ 3,5` a busca não colapsa — ela fica
+**incapaz de discordar da rede**: o bônus `c_puct·P·√N` cobre a diferença na raiz quando
+`P = 0,7` (6,03 contra 3,5) e não cobre quando `P = 0,15` (1,29), nem em nenhum nó interno.
+Uma busca que só confirma o prior não é operador de melhoria de política. O resultado da
+execução — política pura 10,62, **86,9% de fim por fome**, `perda_pi` 0,016 — é consistente
+com isso.
+
+Por que passou: a heurística com que a busca foi medida — no docstring do `mcts.py` e em
+`test_search_beats_random_with_an_informative_value` — é **negativa**, e nessa escala o
+`0` é otimista. `tests/test_search.py` ganhou
+`test_search_collapses_when_the_value_is_positive_and_q_is_unnormalized` (a
+caracterização) e `test_search_is_invariant_to_a_constant_shift_in_the_value` (o conserto,
+parametrizado nos dois).
+
+**Estado:** os dois consertos entram como flag **desligada por padrão** — `06_alphazero`
+precisa continuar sendo o braço de controle. O que decide é o `93_alphazero_ablacoes`
+contra `06` na mesma semente. Vale para o MuZero também: é o mesmo `_selecionar`.
 
 ### 2.26 ✔ A conferência de paridade do TFLite comparava eixos diferentes — **corrigido**
 `export.py:conferir_paridade`
