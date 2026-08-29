@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
+from ..env.vec_snake import VecSnake
 from ..eval import evaluate, keras_policy, random_baseline
 from ..plataforma import resumo_plataforma
 from ..record import CONTRATO, Recorder, validate
@@ -365,6 +366,106 @@ class AgentBase:
             canal_fome=getattr(self.env, "canal_fome", False),
         )
         return stats
+
+    def rodar_protocolo(self, escolher, episodes=1000, seed=123, num_envs=None,
+                        max_segundos=None, verbose=False):
+        """O protocolo oficial com uma regra de escolha que precisa de mais que `(obs, mask)`.
+
+        `snakeai.eval.evaluate` recebe uma política `(obs, mask) → logits`. Uma **busca**
+        não cabe nessa interface: o AlphaZero precisa do estado do ambiente para restaurar
+        nós da árvore, o MuZero precisa do latente da representação. Este laço é a mesma
+        contabilidade do `evaluate` — episódios, semente, greedy, causas de fim — com a
+        escolha delegada a `escolher(env, obs, mask) → ações`.
+
+        Existe para que a coluna "com busca" não seja uma segunda implementação do
+        protocolo. As duas armadilhas abaixo estavam nas cópias manuais que este método
+        substitui, e as duas produzem um número silenciosamente **baixo justamente nas
+        vitórias** — que é o regime em que um agente bom passa a maior parte do tempo:
+
+        * **o score sai de `info["scores"]`, não de `env.score` lido antes do passo.** O
+          episódio que termina comendo — toda vitória por tabuleiro cheio é assim — perde
+          exatamente um ponto na segunda forma. Ver
+          `test_eval.py::test_a_winning_episode_scores_the_last_apple`;
+        * **`win_rate` sai da amostra coletada**, `(scores == perfeito).mean()`, e não de um
+          contador do laço. O laço continua rodando os ambientes que já cumpriram a cota, e
+          somar as vitórias deles daria uma taxa que não corresponde aos episódios medidos.
+
+        `max_segundos` existe porque este laço **não tem um custo previsível**: ele roda até
+        cada ambiente fechar a cota, e um agente bom faz episódios longos — a coleta de
+        1.000 episódios com busca chega a horas. Sem uma trava, a única saída é cancelar a
+        célula e perder tudo. Com ela, o que deu tempo de medir volta com
+        `completo=False`, que é o campo que o `validate()` já usa para recusar uma
+        avaliação parcial: o número existe para você olhar, e não entra na arena por
+        engano. `verbose` imprime o progresso, porque uma espera de uma hora sem uma linha
+        na tela é indistinguível de um travamento.
+        """
+        import time as _time
+        cfg = self.cfg
+        n = num_envs or min(cfg.eval_envs, 64)
+        env = VecSnake(n, cfg.board_size, rng=np.random.default_rng(seed),
+                       canal_fome=getattr(self.env, "canal_fome", False))
+        obs, mask = env.reset()
+        por_env = int(np.ceil(episodes / n))
+        coletados = [[] for _ in range(n)]
+        motivos = {"fome": 0, "colisao": 0, "tabuleiro_cheio": 0}
+        perfeito = cfg.board_size * cfg.board_size - 3
+        faltam, passos = n, 0
+        t0 = _time.time()
+        proximo_aviso = 30.0
+        esgotou = False
+
+        while faltam > 0:
+            obs, mask, _, done, info = env.step(escolher(env, obs, mask))
+            passos += n
+            gasto = _time.time() - t0
+            if verbose and gasto >= proximo_aviso:
+                proximo_aviso = gasto + 30.0
+                feitos = sum(len(c) for c in coletados)
+                alvo = n * por_env
+                falta = (gasto / max(feitos, 1)) * (alvo - feitos)
+                print(f"    ... {feitos}/{alvo} episódios · {gasto / 60:.1f} min "
+                      f"· faltam ~{falta / 60:.0f} min", flush=True)
+            if max_segundos is not None and gasto > max_segundos:
+                esgotou = True
+                break
+            truncados = set(info["trunc_idx"].tolist())
+            for j, i in enumerate(np.nonzero(done)[0]):
+                if len(coletados[i]) >= por_env:
+                    continue
+                s_final = int(info["scores"][j])
+                coletados[i].append(s_final)
+                if i in truncados:
+                    motivos["fome"] += 1
+                elif s_final == perfeito:
+                    motivos["tabuleiro_cheio"] += 1
+                else:
+                    motivos["colisao"] += 1
+                if len(coletados[i]) == por_env:
+                    faltam -= 1
+
+        scores = np.array([s for l in coletados for s in l][:episodes], dtype=np.int32)
+        if scores.size == 0:
+            raise RuntimeError(
+                "nenhum episódio terminou dentro do tempo — aumente `max_segundos` ou "
+                "reduza `num_simulations`")
+        total = max(1, sum(motivos.values()))
+        return {
+            "episodes": int(scores.size),
+            "score_mean": float(scores.mean()),
+            "score_median": float(np.median(scores)),
+            "score_std": float(scores.std()),
+            "score_max": int(scores.max()),
+            "score_p95": float(np.percentile(scores, 95)),
+            "win_rate": float((scores == perfeito).mean()),
+            "perfect_possible": perfeito,
+            "env_steps_used": int(passos),
+            "segundos": round(_time.time() - t0, 1),
+            #: `False` quando o tempo acabou antes da cota. O `validate()` recusa uma
+            #: avaliação parcial, e é isso que se quer: o número serve para olhar, não
+            #: para entrar na arena por engano.
+            "completo": not esgotou,
+            **{f"fim_{k}": v / total for k, v in motivos.items()},
+        }
 
     def piso(self):
         if self.baseline is None:

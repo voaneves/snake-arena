@@ -137,7 +137,9 @@ def test_collect_stores_the_unroll_targets_aligned():
     ag = MuZero(cfg)
     ag.collect()
     n = ag._cheio
-    assert n == (cfg.rollout - cfg.unroll) * cfg.num_envs
+    # todas as `T` linhas viram amostra: o que não tem futuro dentro da janela é
+    # **mascarado**, não descartado (ver `test_every_collected_step_becomes_a_sample`)
+    assert n == cfg.rollout * cfg.num_envs
     assert ag._buf_pi[:n].shape[1] == cfg.unroll + 1
     assert ag._buf_act[:n].shape[1] == cfg.unroll
     assert ag._buf_r[:n].shape[1] == cfg.unroll
@@ -310,3 +312,71 @@ def test_the_learning_rate_decays():
     tarde = ag.iterate()
     assert tarde["lr"] < cedo["lr"] and tarde["lr"] == pytest.approx(5e-5, rel=1e-3)
     assert tarde["atualizacoes"] == ag.cfg.epochs_por_iter
+
+
+def test_the_unroll_never_crosses_an_episode_boundary():
+    """O `VecSnake` reseta sozinho: sem máscara, o desenrolar treinava `g` a prever a
+    recompensa de uma partida **nova**, sorteada, que o estado oculto não tem como
+    conhecer — e a perda de recompensa é a única âncora do latente no mundo.
+
+    Força mortes cedo pondo a fome a um passo do limite: aí toda janela atravessa pelo
+    menos uma fronteira, e a máscara tem que zerar tudo depois dela.
+    """
+    cfg = cfg_min(rollout=6, unroll=2)
+    ag = MuZero(cfg)
+    # fome a um passo do limite: todos os ambientes terminam em t=0, e o episódio que a
+    # linha 0 enxerga a partir de t=1 é outro jogo
+    ag.env.hunger[:] = ag.env.starve_base + 2 * ag.env.length - 1
+    ag.collect()
+    vivo = ag._buf_vivo[: ag._cheio].reshape(cfg.rollout, cfg.num_envs, cfg.unroll + 1)
+
+    assert (vivo[..., 0] == 1.0).all(), "o passo 0 é sempre real"
+    assert vivo[0, :, 1:].sum() == 0.0, \
+        "a linha que atravessa a morte deixou passo do desenrolar marcado como real"
+    # a máscara é monotônica: uma vez fora, não volta
+    assert (np.diff(vivo, axis=-1) <= 0).all()
+
+
+def test_every_collected_step_becomes_a_sample():
+    """Antes, `validos = T - K` descartava as `K` últimas linhas da janela — 31% dos passos
+    coletados nunca viravam amostra, e continuavam contados no orçamento de 5 M."""
+    cfg = cfg_min(rollout=6, unroll=2)
+    ag = MuZero(cfg)
+    ag.collect()
+    assert ag._cheio == cfg.rollout * cfg.num_envs
+    # os passos que cairiam fora da janela estão mascarados, não descartados
+    vivo = ag._buf_vivo[: ag._cheio].reshape(cfg.rollout, cfg.num_envs, cfg.unroll + 1)
+    assert vivo[cfg.rollout - 1, :, 1:].sum() == 0.0, "a última linha não tem futuro"
+
+
+def test_masked_unroll_does_not_shrink_the_loss():
+    """A média é sobre os passos reais, não sobre o lote inteiro — senão a perda cairia só
+    porque a janela atravessou uma morte, e o gradiente encolheria junto."""
+    x = tf.constant([[1.0, 1.0, 1.0, 1.0]])
+    cheia = MuZero._media_mascarada(x, tf.ones_like(x))
+    metade = MuZero._media_mascarada(x, tf.constant([[1.0, 1.0, 0.0, 0.0]]))
+    assert float(cheia) == pytest.approx(1.0)
+    assert float(metade) == pytest.approx(1.0)
+    nenhuma = MuZero._media_mascarada(x, tf.zeros_like(x))
+    assert float(nenhuma) == pytest.approx(0.0)      # e não NaN
+
+
+def test_search_column_scores_the_last_apple_and_counts_wins_from_the_sample():
+    """As duas armadilhas que `snakeai/eval.py` documenta, agora compartilhadas.
+
+    Ler `env.score` antes do passo perde um ponto em todo episódio que termina comendo —
+    isto é, em **toda vitória por tabuleiro cheio** —, e contar vitórias num contador do
+    laço soma os ambientes que já cumpriram a cota. As duas subestimam ou inflam justamente
+    o regime em que um agente bom vive.
+    """
+    ag = MuZero(cfg_min())
+    st = ag.avaliar_com_busca(episodes=32, num_simulations=3)
+    assert st["episodes"] == 32 and st["num_simulations"] == 3
+    # o mesmo conjunto de chaves que a linha da política pura, para as duas caberem na
+    # mesma tabela do `format_verdict`
+    for chave in ("score_mean", "score_median", "score_std", "score_max", "score_p95",
+                  "win_rate", "perfect_possible", "fim_fome", "fim_colisao",
+                  "fim_tabuleiro_cheio"):
+        assert chave in st, chave
+    assert 0.0 <= st["win_rate"] <= 1.0
+    assert abs(sum(st[f"fim_{k}"] for k in ("fome", "colisao", "tabuleiro_cheio")) - 1.0) < 1e-6

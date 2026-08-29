@@ -176,6 +176,8 @@ class MuZero(AgentBase):
         self._buf_pi = np.zeros((M, K + 1, N_ACTIONS), dtype=np.float32)
         self._buf_z = np.zeros((M, K + 1), dtype=np.float32)
         self._buf_r = np.zeros((M, K), dtype=np.float32)
+        #: Quais passos do desenrolar são reais. Ver a nota em `collect`.
+        self._buf_vivo = np.zeros((M, K + 1), dtype=np.float32)
         self._pos, self._cheio = 0, 0
 
     def _variaveis(self):
@@ -274,64 +276,50 @@ class MuZero(AgentBase):
             return np.where(mask, np.asarray(logits), MASK_NEG).astype(np.float32)
         return fn
 
-    def _busca(self, obs, mask, ruido=False, busca=None):
-        """Roda o MCTS a partir da observação: `h` uma vez, depois só a dinâmica."""
-        s, priors, valores = self._repr_predicao(tf.convert_to_tensor(obs),
-                                                 tf.convert_to_tensor(mask))
-        arvore = busca if busca is not None else self.mcts
-        return arvore.run(s.numpy(), mask, s.numpy(), adicionar_ruido=ruido)
+    @tf.function(reduce_retracing=True)
+    def _representacao(self, obs):
+        return self.h(obs, training=False)
 
-    def avaliar_com_busca(self, episodes=1000, num_simulations=None, seed=123):
+    def _busca(self, obs, mask, ruido=False, busca=None):
+        """Roda o MCTS a partir da observação: `h` uma vez, depois só a dinâmica.
+
+        Usa `_representacao` e **não** `_repr_predicao`: o `MCTS.run` avalia a raiz por
+        conta própria, então pedir priors e valor aqui seria uma segunda passagem da cabeça
+        de predição por jogada, jogada fora. Custo, não correção — mas custo justamente no
+        lugar onde ele é o argumento da coluna separada.
+        """
+        s = self._representacao(tf.convert_to_tensor(obs)).numpy()
+        arvore = busca if busca is not None else self.mcts
+        return arvore.run(s, mask, s, adicionar_ruido=ruido)
+
+    def avaliar_com_busca(self, episodes=1000, num_simulations=None, seed=123,
+                          num_envs=None, max_segundos=None, verbose=False):
         """O protocolo oficial, mas escolhendo com MCTS — a **coluna separada** da tabela.
 
-        A curva do contrato mede a política pura, e é isso que torna as curvas comparáveis:
-        a busca gasta `num_simulations` avaliações de rede por jogada contra 1 do PPO.
-        Reportar, porém, é obrigação — um algoritmo que existe para buscar, medido só sem
-        buscar, é meia medição. Mesmo desenho do `AlphaZero.avaliar_com_busca`, com uma
-        diferença que é justamente o ponto do MuZero: a árvore percorre `g`, não o
-        `VecSnake`. O ambiente aqui só avança o jogo de verdade entre as jogadas.
+        Mesmo desenho do `AlphaZero.avaliar_com_busca`, com a diferença que é justamente o
+        ponto do MuZero: a árvore percorre `g`, não o `VecSnake`. O ambiente aqui só avança
+        o jogo de verdade entre as jogadas — a busca nunca o consulta.
 
-        Não passa por `snakeai.eval` porque a interface de política recebe só observação e
-        máscara, e a busca precisa devolver contagens de visita. O protocolo — episódios,
-        semente, greedy — é o mesmo.
+        A contabilidade é a de `AgentBase.rodar_protocolo`, compartilhada com o AlphaZero
+        para que as duas colunas não possam divergir.
         """
         cfg = self.cfg
-        n = min(cfg.eval_envs, 64)
-        env = VecSnake(n, cfg.board_size, rng=np.random.default_rng(seed))
         busca = MCTS(self._avaliar_oculto, board_size=cfg.board_size, gamma=cfg.gamma,
                      num_simulations=num_simulations or cfg.sims_avaliacao,
                      c_puct=cfg.c_puct, fpu=cfg.fpu, q_normalizado=cfg.q_normalizado,
                      desempate=cfg.desempate,
                      dinamica=DinamicaAprendida(self._passo_dinamica),
                      rng=np.random.default_rng(seed))
-        obs, mask = env.reset()
-        por_env = int(np.ceil(episodes / n))
-        coletados = [[] for _ in range(n)]
-        faltam, vitorias = n, 0
 
-        while faltam > 0:
+        def escolher(env, obs, mask):
             visitas, _ = self._busca(obs, mask, busca=busca)
-            a = visitas.argmax(1).astype(np.int32)
-            antes = env.score.copy()
-            obs, mask, r, done, info = env.step(a)
-            vitorias += info["wins"]
-            for i in np.nonzero(done)[0]:
-                if len(coletados[i]) < por_env:
-                    coletados[i].append(int(antes[i]))
-                    if len(coletados[i]) == por_env:
-                        faltam -= 1
+            return visitas.argmax(1).astype(np.int32)
 
-        scores = np.array([s for l in coletados for s in l][:episodes])
-        return {
-            "episodes": int(scores.size),
-            "score_mean": float(scores.mean()),
-            "score_median": float(np.median(scores)),
-            "score_max": int(scores.max()),
-            "score_p95": float(np.percentile(scores, 95)),
-            "win_rate": vitorias / max(1, scores.size),
-            "num_simulations": busca.num_simulations,
-            "completo": True,
-        }
+        st = self.rodar_protocolo(escolher, episodes=episodes, seed=seed,
+                                  num_envs=num_envs, max_segundos=max_segundos,
+                                  verbose=verbose)
+        st["num_simulations"] = busca.num_simulations
+        return st
 
     # -------------------------------------------------------------------- coleta
     def temperatura(self):
@@ -423,19 +411,45 @@ class MuZero(AgentBase):
                 g += rew_b[t]
             z[t] = g
 
-        # cada amostra guarda o desenrolar de K passos que vem depois dela
-        validos = max(0, T - K)
-        if validos:
-            idx = np.arange(validos)
-            self._guardar(
-                obs_b[idx].reshape(-1, *obs_b.shape[2:]),
-                mask_b[idx].reshape(-1, N_ACTIONS),
-                np.stack([act_b[idx + k] for k in range(K)], axis=-1).reshape(-1, K),
-                np.stack([pi_b[idx + k] for k in range(K + 1)], axis=1)
-                  .transpose(0, 2, 1, 3).reshape(-1, K + 1, N_ACTIONS),
-                np.stack([z[idx + k] for k in range(K + 1)], axis=-1).reshape(-1, K + 1),
-                np.stack([rew_b[idx + k] for k in range(K)], axis=-1).reshape(-1, K),
-            )
+        # Cada amostra guarda o desenrolar de K passos que vem depois dela — e **nem todo
+        # passo é real**. O `VecSnake` reseta sozinho ao terminar, então uma janela que
+        # atravessa a morte da cobra continua em índices que pertencem a uma partida NOVA,
+        # sorteada, com a cobra em outro lugar. Sem máscara, `g` é treinada a prever a
+        # recompensa desse outro jogo — e a perda de recompensa é, segundo o docstring
+        # deste módulo, "a única âncora que liga o estado oculto ao mundo". Medido no
+        # cenário do contrato (`T=16`, `K=5`), **25% das amostras atravessam pelo menos uma
+        # morte**.
+        #
+        # A mesma máscara resolve o outro buraco: antes, as `K` últimas linhas da janela
+        # eram simplesmente descartadas (`validos = T - K`), o que jogava fora **31% dos
+        # passos coletados** — que continuavam contados no orçamento de 5 M. Agora os
+        # passos que cairiam fora da janela são mascarados em vez de a linha inteira ser
+        # jogada fora, e as `T` linhas viram amostra.
+        vivo_k = np.ones((T, N, K + 1), np.float32)
+        for t in range(T):
+            for j in range(1, K + 1):
+                dentro = 1.0 if t + j <= T - 1 else 0.0
+                anterior = min(t + j - 1, T - 1)
+                vivo_k[t, :, j] = (vivo_k[t, :, j - 1]
+                                   * (done_b[anterior] < 0.5).astype(np.float32)
+                                   * dentro)
+
+        idx = np.arange(T)
+        # o índice é grampeado para a leitura não estourar; o que ele lê a mais está
+        # zerado pela máscara
+        def _janela(fonte, k):
+            return fonte[np.minimum(idx + k, T - 1)]
+
+        self._guardar(
+            obs_b[idx].reshape(-1, *obs_b.shape[2:]),
+            mask_b[idx].reshape(-1, N_ACTIONS),
+            np.stack([_janela(act_b, k) for k in range(K)], axis=-1).reshape(-1, K),
+            np.stack([_janela(pi_b, k) for k in range(K + 1)], axis=1)
+              .transpose(0, 2, 1, 3).reshape(-1, K + 1, N_ACTIONS),
+            np.stack([_janela(z, k) for k in range(K + 1)], axis=-1).reshape(-1, K + 1),
+            np.stack([_janela(rew_b, k) for k in range(K)], axis=-1).reshape(-1, K),
+            vivo_k.reshape(-1, K + 1),
+        )
 
         self.global_step += T * N
         self.episodes += len(scores)
@@ -448,7 +462,7 @@ class MuZero(AgentBase):
             "memoria": self._cheio,
         }
 
-    def _guardar(self, obs, mask, act, pi, z, r):
+    def _guardar(self, obs, mask, act, pi, z, r, vivo):
         k = len(obs)
         idx = (self._pos + np.arange(k)) % self.cfg.memory_size
         self._buf_obs[idx] = obs
@@ -457,12 +471,19 @@ class MuZero(AgentBase):
         self._buf_pi[idx] = pi
         self._buf_z[idx] = z
         self._buf_r[idx] = r
+        self._buf_vivo[idx] = vivo
         self._pos = int((self._pos + k) % self.cfg.memory_size)
         self._cheio = min(self._cheio + k, self.cfg.memory_size)
 
     # -------------------------------------------------------------------- treino
+    @staticmethod
+    def _media_mascarada(x, m):
+        """Média só sobre os passos reais. Denominador é a contagem, não o lote inteiro —
+        senão a perda encolheria só porque a janela atravessou uma morte."""
+        return tf.reduce_sum(x * m) / tf.maximum(tf.reduce_sum(m), 1.0)
+
     @tf.function(reduce_retracing=True)
-    def _passo(self, obs, mask, act, pi_alvo, z, r_alvo, coef_v, coef_r):
+    def _passo(self, obs, mask, act, pi_alvo, z, r_alvo, vivo, coef_v, coef_r):
         K = tf.shape(act)[1]
         with tf.GradientTape() as tape:
             s = self.h(obs, training=True)
@@ -486,14 +507,19 @@ class MuZero(AgentBase):
 
                 logits_k, valor_k = self.f(s, training=True)
                 logp_k = tf.nn.log_softmax(logits_k)
-                perda_pi += -tf.reduce_mean(
-                    tf.reduce_sum(pi_alvo[:, k + 1] * logp_k, -1))
-                perda_v += tf.reduce_mean(
-                    tf.square(tf.squeeze(valor_k, -1) - alvo_v[:, k + 1]))
+                # `vivo[:, j]` zera o que pertence a uma partida seguinte ou está fora
+                # da janela. O passo `k` consome a ação e a recompensa do instante `t+k`
+                # (precisa estar vivo lá, `vivo[:, k]`) e produz alvos do instante
+                # `t+k+1` (`vivo[:, k + 1]`).
+                perda_pi += self._media_mascarada(
+                    -tf.reduce_sum(pi_alvo[:, k + 1] * logp_k, -1), vivo[:, k + 1])
+                perda_v += self._media_mascarada(
+                    tf.square(tf.squeeze(valor_k, -1) - alvo_v[:, k + 1]), vivo[:, k + 1])
                 # a âncora do modelo no mundo real: sem ela a dinâmica pode inventar
-                # qualquer física internamente consistente
-                perda_r += tf.reduce_mean(
-                    tf.square(tf.squeeze(rec, -1) - r_alvo[:, k]))
+                # qualquer física internamente consistente — e treiná-la contra a
+                # recompensa de outra partida é pior que não treinar
+                perda_r += self._media_mascarada(
+                    tf.square(tf.squeeze(rec, -1) - r_alvo[:, k]), vivo[:, k])
 
             perda = perda_pi + coef_v * perda_v + coef_r * perda_r
 
@@ -521,6 +547,7 @@ class MuZero(AgentBase):
                 tf.convert_to_tensor(self._buf_pi[i]),
                 tf.convert_to_tensor(self._buf_z[i]),
                 tf.convert_to_tensor(self._buf_r[i]),
+                tf.convert_to_tensor(self._buf_vivo[i]),
                 cfg.coef_valor, cfg.coef_recompensa,
             )
             saidas.append((float(p), float(v), float(r)))

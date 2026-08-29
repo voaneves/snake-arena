@@ -185,17 +185,33 @@ O protocolo é o mesmo do contrato — 1.000 episódios, greedy (argmax das visi
 `desempate`, `c_puct`, `gamma`). Dois orçamentos, para mostrar a curva computação ×
 qualidade: quanto do resultado vem da rede e quanto vem do lookahead.
 
-**Custo:** com episódios longos e 33 avaliações de rede por jogada, os 32 sims em 1.000
-episódios levam dezenas de minutos numa T4. Baixe `EPISODIOS` para um número rápido — perde
-a comparabilidade com o contrato, mas dá a ordem de grandeza.
+**Custo, e por que ele te pega de surpresa.** O laço roda até cada ambiente fechar a cota,
+e **um agente bom faz episódios longos** — no AlphaZero de 5 M eles passam de 900 passos.
+Com 64 ambientes são ~16 episódios cada, ou seja ~15 mil passos de ambiente, cada um
+custando `num_simulations + 1` avaliações de rede. No MuZero é o dobro disso, porque cada
+simulação chama `g` **e** `f`, e a árvore nunca poda nós terminais (o modelo aprendido não
+prevê fim de episódio). Uma medição de 1.000 episódios com 32 simulações passa de uma hora,
+e é exatamente esse o motivo de a primeira tentativa nesta célula ter sido cancelada.
+
+Por isso ela vem com `MINUTOS_MAX`. Ao estourar, o que deu tempo de medir volta marcado
+`completo=False` — o mesmo campo que o `validate()` usa para recusar avaliação parcial, de
+modo que o número serve para você olhar e **não entra na arena por engano**. O progresso é
+impresso a cada 30 s, com estimativa do que falta.
+
+**Comece pequeno.** `EPISODIOS = 200` e **um** orçamento dão a ordem de grandeza em poucos
+minutos. Só depois vale gastar o número do contrato. Subir `EPISODIOS` é o lever que
+importa; `AMBIENTES` mais alto melhora o aproveitamento da GPU mas encarece o laço de árvore
+em Python na mesma proporção, então costuma ser quase neutro.
 """
 
 BUSCA_CODE = '''import time
 
 import numpy as np
 
-EPISODIOS = 1000              # @param {type:"integer"}
-ORCAMENTOS = [8, 32]          # @param
+EPISODIOS = 200               # @param {type:"integer"}
+MINUTOS_MAX = 20              # @param {type:"integer"}
+ORCAMENTOS = [cfg.sims_avaliacao]   # @param
+AMBIENTES = 64                # @param {type:"integer"}
 AVALIAR_MELHOR = False        # @param {type:"boolean"}
 
 if not hasattr(agente, "avaliar_com_busca"):
@@ -211,18 +227,26 @@ _pura = _tabela["linhas"][1]["score_mean"]
 _medidas = {}
 
 
-def _mede_com_busca(modelo_nome):
+def _mede_com_busca(_ag, modelo_nome):
     for _i, _sims in enumerate(ORCAMENTOS):
         _t0 = time.time()
-        _st = agente.avaliar_com_busca(episodes=EPISODIOS, num_simulations=_sims)
+        print(f"  {modelo_nome} · {_sims} sims ({EPISODIOS} episódios, teto "
+              f"{MINUTOS_MAX} min)...", flush=True)
+        _st = _ag.avaliar_com_busca(episodes=EPISODIOS, num_simulations=_sims,
+                                    num_envs=AMBIENTES, max_segundos=MINUTOS_MAX * 60,
+                                    verbose=True)
         _dt = time.time() - _t0
-        _st["segundos"] = round(_dt, 1)
         _medidas[f"{modelo_nome}_sims{_sims}"] = _st
-        _tabela["linhas"].append(
-            {"regime": f"agente + busca ({_sims} sims)"
-                       + ("" if modelo_nome == "last" else f" · {modelo_nome}"), **_st})
-        print(f"  {modelo_nome} · {_sims} sims: score {_st['score_mean']:.2f} · "
-              f"cheio {_st['win_rate']:.1%} · {_dt / 60:.1f} min", flush=True)
+        _rotulo = f"agente + busca ({_sims} sims)"
+        if modelo_nome != "last":
+            _rotulo += f" · {modelo_nome}"
+        if not _st["completo"]:
+            _rotulo += " ⚠ parcial"
+        _tabela["linhas"].append({"regime": _rotulo, **_st})
+        print(f"    score {_st['score_mean']:.2f} · cheio {_st['win_rate']:.1%} · "
+              f"{_st['episodes']} episódios · {_dt / 60:.1f} min"
+              + ("" if _st["completo"] else "  ⚠ TEMPO ESGOTADO: amostra parcial, "
+                                            "`completo=False`, fora da arena"), flush=True)
         if _i == 0 and len(ORCAMENTOS) > 1:
             _resto = sum(ORCAMENTOS[1:]) / max(ORCAMENTOS[0], 1) * _dt
             print(f"     (os orçamentos restantes devem levar ~{_resto / 60:.0f} min)",
@@ -231,18 +255,21 @@ def _mede_com_busca(modelo_nome):
 
 print(f"rede pura (a curva oficial): {_pura:.2f}   ·   piso {_tabela['piso']:.2f}")
 print(f"medindo com busca, {EPISODIOS} episódios por orçamento...", flush=True)
-_mede_com_busca("last")
+_mede_com_busca(agente, "last")
 
 if AVALIAR_MELHOR:
-    _melhor = agente.modelo_melhor()
-    if _melhor is not None:
-        _guardado, agente.model = agente.model, _melhor
-        try:
-            agente.on_model_reloaded()   # a busca lê `self._avaliar`; religa no modelo novo
-            _mede_com_busca("best")
-        finally:
-            agente.model = _guardado
-            agente.on_model_reloaded()
+    # **Não** troque `agente.model` para medir o `best`, que é o que a célula do veredito
+    # faz. Ali funciona porque `politica()` lê o atributo a cada chamada, em eager. Aqui a
+    # busca passa por uma `tf.function` cujo traço **já capturou as variáveis** do modelo
+    # atual: a troca seria silenciosamente ignorada e você mediria o `last` outra vez. No
+    # MuZero é ainda mais silencioso — `model` é uma property com setter vazio. Um agente
+    # novo tem o cache de traço vazio, e é a única forma honesta de medir o outro
+    # checkpoint com busca.
+    _ag_best = type(agente)(cfg)
+    if _ag_best.retomar("best"):
+        _mede_com_busca(_ag_best, "best")
+    else:
+        print("  sem checkpoint `best` — pulando")
 
 print()
 print(format_verdict(_tabela))
@@ -252,10 +279,12 @@ for _nome, _st in _medidas.items():
     _linha = f"{_nome:>16}: busca {_s:>6.2f}  ·  rede pura {_pura:>6.2f}"
     # as razões só significam alguma coisa longe do zero; cedo no treino ambas são ~0 e
     # dividir uma pela outra imprime um número de sete dígitos que não quer dizer nada
-    if _pura > 0.5 and _s > 0.5:
+    if _pura <= 0.5 or _s <= 0.5:
+        _linha += "  ·  (razões omitidas: alguma das duas ainda está perto de zero)"
+    elif _s > _pura:
         _linha += f"  ·  {_s / _pura:.2f}x  ·  a rede captura {_pura / _s:.0%} da busca"
     else:
-        _linha += "  ·  (razões omitidas: alguma das duas ainda está perto de zero)"
+        _linha += f"  ·  {_s / _pura:.2f}x  ·  a rede está À FRENTE da busca aqui"
     print(_linha)
 
 # o número precisa sobreviver ao fim da sessão, senão vira print no console

@@ -13,6 +13,7 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
+| §2.30 o desenrolar de K passos do MuZero atravessava a morte da cobra | **corrigido** — 25% das amostras treinavam a dinâmica contra a recompensa de outra partida; a máscara também recuperou os 31% de passos que eram descartados |
 | §2.29 a temperatura do AlphaZero transforma o alvo de política em rótulo duro | **corrigido e é o padrão** — `temp_alvo=1,0` separa o alvo da exploração e `temp_passos=30` traz o agendamento do paper; braço `sem_conserto_do_alvo` |
 | §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **corrigido e é o padrão** — `valor_symlog` + `vf_coef=0,5` levam `‖∇v‖/‖∇π‖` de 71× para 7× no `|z|` real; braço `sem_conserto_do_tronco`. **Aplicado também no MuZero** |
 | §2.27 PUCT com `Q = 0` para filho não visitado, num jogo de valor positivo | **corrigido e é o padrão** — `fpu="pai"` + `q_normalizado`; o braço `sem_conserto_da_busca` do `93` mede quanto valeu |
@@ -715,6 +716,30 @@ execução não teve. Aquela execução foi renomeada para
 `completo+n3+sem_noisy+eps_greedy`, com o motivo gravado em `meta["variante_corrigida"]`;
 o teste é `test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not`.
 
+### 2.30 ✔ O desenrolar do MuZero atravessava a fronteira do episódio
+`muzero.py:collect,_passo`
+
+O `VecSnake` reseta sozinho ao terminar. `_guardar` empilhava `act_b[t..t+K-1]`,
+`rew_b[t..t+K-1]`, `pi_b[t..t+K]` e `z[t..t+K]` **sem consultar `done_b`** — então uma
+janela que atravessa a morte continua em índices que pertencem a uma partida nova,
+sorteada, com a cobra em outro lugar. Simulado no cenário do contrato (`T=16`, `K=5`),
+**25% das amostras guardadas atravessam pelo menos uma morte**.
+
+O alvo de valor `z` estava protegido (a máscara `vivo` do laço de n passos), o desenrolar
+não. E o dano cai justamente na `perda_r`, que o docstring do módulo chama de "a única
+âncora que liga o estado oculto ao mundo": treiná-la contra a recompensa de um jogo que o
+latente não tem como conhecer é pior do que não treiná-la.
+
+**Conserto:** uma máscara `vivo` de forma `(T, N, K+1)`, guardada junto com a amostra, que
+zera todo passo do desenrolar posterior a uma terminação. A média das perdas passa a ser
+sobre os passos reais (`_media_mascarada`), com o denominador sendo a contagem e não o lote
+— senão a perda encolheria só porque a janela atravessou uma morte, e o gradiente junto.
+
+**De quebra, o §2.1 do MuZero:** com a máscara, as `K` últimas linhas da janela deixam de
+ser descartadas. Antes, `validos = T - K` jogava fora **31% dos passos coletados** — que
+continuavam contados no orçamento de 5 M. Sob "os mesmos 5 M passos", o MuZero treinava
+sobre ~3,4 M.
+
 ### 2.29 ✔ A temperatura serve a dois papéis, e estraga o segundo
 `alphazero.py:temperatura,collect` · `mcts.py:politica_das_visitas`
 
@@ -773,9 +798,28 @@ invariante à escala do valor, e por usar `vf_coef = 0,5`. O A2C e o ACKTR herda
 normalização. AlphaZero e MuZero não normalizam nada — e o MuZero tem o mesmo `_passo` com
 o mesmo problema.
 
-**Estado:** `valor_symlog` e `vf_coef=0,5` são o padrão do AlphaZero; braços `sem_symlog`
-e `vf_1` no `93_alphazero_ablacoes`. O MuZero recebeu o `symlog` também — o `coef_valor`
-dele já era 0,25 e ficou como estava, porque não há medição do MuZero para justificar mexer.
+**No MuZero é pior, e agora está medido.** As três perdas são **somas** sobre o desenrolar,
+e a de política é uma entropia cruzada presa perto de `ln 3` em cada passo. Medindo o
+gradiente que chega na representação `h` — o tronco que as três dividem — no mesmo `|z|`:
+
+| `valor_symlog` | `coef_valor` | `‖∇v‖/‖∇π‖` | `‖∇r‖/‖∇π‖` |
+|---|---:|---:|---:|
+| não *(era o estado do código)* | 0,25 | **84,4×** | 20,7× |
+| sim | **0,25** *(o padrão hoje)* | **28,7×** | 18,9× |
+| sim | 0,5 | 57,5× | 18,9× |
+| sim | 1,0 | 115,0× | 18,9× |
+
+Duas leituras. A primeira: o `symlog` corta a razão por 3, e **subir** o `coef_valor` para
+o 0,5 do AlphaZero pioraria — a intuição de que "0,25 era um freio calibrado para o alvo
+cru e agora subponderaria o valor" está errada na direção. A segunda, que é a que importa:
+mesmo em 0,25 a política recebe cerca de **1/48** do gradiente do tronco (1 : 28,7 : 18,9).
+
+**Estado:** `valor_symlog` e `vf_coef=0,5` são o padrão do AlphaZero (braços `sem_symlog` e
+`vf_1` no `93`). No MuZero o `symlog` entrou e o `coef_valor` **ficou em 0,25**, que é o
+melhor dos três medidos. Escolher um valor menor exigiria dado de resultado, e o MuZero
+ainda não rodou — fica como previsão pré-registrada: se a política pura dele empacar
+enquanto a busca vai bem, o primeiro suspeito é este desbalanço, e o botão é
+`coef_valor`/`coef_recompensa`, não o algoritmo.
 
 ### 2.27 ? A busca do AlphaZero degenera assim que o valor aprendido fica positivo
 `mcts.py:_selecionar` · `nets/registry.py:127` · `agents/alphazero.py:76`

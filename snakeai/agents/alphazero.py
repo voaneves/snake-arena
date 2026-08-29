@@ -269,50 +269,37 @@ class AlphaZero(AgentBase):
             return np.where(mask, np.asarray(logits), MASK_NEG).astype(np.float32)
         return fn
 
-    def avaliar_com_busca(self, episodes=1000, num_simulations=None, seed=123):
-        """Roda o protocolo oficial, mas escolhendo com MCTS.
+    def avaliar_com_busca(self, episodes=1000, num_simulations=None, seed=123,
+                          num_envs=None, max_segundos=None, verbose=False):
+        """O protocolo oficial, mas escolhendo com MCTS — a **coluna separada** da tabela.
 
-        Não passa por `snakeai.eval` porque a busca precisa do **estado** do ambiente, e a
-        interface de política só recebe observação e máscara. O protocolo (episódios,
-        semente, greedy) é o mesmo.
+        A curva do contrato mede a política pura, e é isso que torna as curvas comparáveis:
+        a busca gasta `num_simulations` avaliações de rede por jogada contra 1 do PPO.
+        Reportar, porém, é obrigação — um algoritmo que existe para buscar, medido só sem
+        buscar, é meia medição, e é a busca que se levaria para jogar de verdade.
+
+        A contabilidade fica em `AgentBase.rodar_protocolo`, e não aqui, de propósito: esta
+        função já teve uma cópia manual dela que lia `env.score` **antes** do passo e somava
+        as vitórias num contador do laço. As duas coisas subestimam justamente os episódios
+        que terminam comendo — ou seja, todas as vitórias por tabuleiro cheio.
         """
         cfg = self.cfg
-        n = min(cfg.eval_envs, 64)
-        env = VecSnake(n, cfg.board_size, rng=np.random.default_rng(seed))
         busca = MCTS(self._avaliar, board_size=cfg.board_size, gamma=cfg.gamma,
                      num_simulations=num_simulations or cfg.sims_avaliacao,
-                     c_puct=cfg.c_puct, starve_base=env.starve_base,
+                     c_puct=cfg.c_puct, starve_base=self.env.starve_base,
                      fpu=cfg.fpu, q_normalizado=cfg.q_normalizado,
                      desempate=cfg.desempate,
                      rng=np.random.default_rng(seed))
-        obs, mask = env.reset()
-        por_env = int(np.ceil(episodes / n))
-        coletados = [[] for _ in range(n)]
-        faltam, vitorias = n, 0
 
-        while faltam > 0:
+        def escolher(env, obs, mask):
             visitas, _ = busca.run(env.get_state(), mask, obs)
-            a = visitas.argmax(1).astype(np.int32)
-            antes = env.score.copy()
-            obs, mask, r, done, info = env.step(a)
-            vitorias += info["wins"]
-            for i in np.nonzero(done)[0]:
-                if len(coletados[i]) < por_env:
-                    coletados[i].append(int(antes[i]))
-                    if len(coletados[i]) == por_env:
-                        faltam -= 1
+            return visitas.argmax(1).astype(np.int32)
 
-        scores = np.array([s for l in coletados for s in l][:episodes])
-        return {
-            "episodes": int(scores.size),
-            "score_mean": float(scores.mean()),
-            "score_median": float(np.median(scores)),
-            "score_max": int(scores.max()),
-            "score_p95": float(np.percentile(scores, 95)),
-            "win_rate": vitorias / max(1, scores.size),
-            "num_simulations": busca.num_simulations,
-            "completo": True,
-        }
+        st = self.rodar_protocolo(escolher, episodes=episodes, seed=seed,
+                                  num_envs=num_envs, max_segundos=max_segundos,
+                                  verbose=verbose)
+        st["num_simulations"] = busca.num_simulations
+        return st
 
     # ------------------------------------------------------------------ coleta
     def temperatura(self):

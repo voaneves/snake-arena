@@ -265,6 +265,16 @@ A execução que motivou este documento continua na arena como
 `(algo, variant, seed)` com as novas; o `meta["renomeado_de"]` guarda o motivo e a
 assinatura de código antiga, e o `caveat` diz do que ela é anterior.
 
+**Duas armadilhas na própria coluna.** Quando a coluna com busca foi escrita, ela trouxe
+uma cópia manual da contabilidade do `evaluate` — e a cópia errava exatamente onde o
+`snakeai/eval.py` já tinha um comentário e um teste avisando. O score do episódio saía de
+`env.score` lido **antes** do passo, o que perde um ponto em todo episódio que termina
+comendo — ou seja, em **toda vitória por tabuleiro cheio**; e a `win_rate` saía de um
+contador do laço, que continua somando os ambientes já fora da cota. As duas distorcem
+justamente o regime em que um agente bom vive: com 84% de vitórias, quase toda a amostra.
+A contabilidade agora é uma só, em `AgentBase.rodar_protocolo`, compartilhada pelos dois
+agentes — a coluna com busca não pode mais divergir do protocolo oficial por cópia.
+
 **Uma coluna que faltava.** O AlphaZero existe para buscar, e era avaliado só sem buscar.
 `avaliar_com_busca` estava no agente desde sempre — protocolo oficial, 1.000 episódios,
 greedy, semente 123 — e **nenhuma célula do notebook chamava**. Agora o `06` e o `93` têm a
