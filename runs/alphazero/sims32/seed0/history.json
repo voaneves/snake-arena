@@ -3089,6 +3089,25 @@
   "renomeado_de": {
    "variant": "sims32_consertos",
    "motivo": "o `sufixo_variante=\"_consertos\"` existia enquanto os onze consertos eram um braço do 93. Eles viraram o padrão do AlphaZero, e o nome honesto da execução que os validou é o do padrão. A execução anterior é que carrega o sufixo, em `sims32_sem_correcoes`."
+  },
+  "com_busca": {
+   "last_sims32": {
+    "episodes": 1000,
+    "score_mean": 95.627,
+    "score_median": 97.0,
+    "score_std": 7.864723199197797,
+    "score_max": 97,
+    "score_p95": 97.0,
+    "win_rate": 0.952,
+    "perfect_possible": 97,
+    "env_steps_used": 973696,
+    "segundos": 6560.1,
+    "completo": true,
+    "fim_fome": 0.0126953125,
+    "fim_colisao": 0.03515625,
+    "fim_tabuleiro_cheio": 0.9521484375,
+    "num_simulations": 32
+   }
   }
  },
  "schema_version": 1

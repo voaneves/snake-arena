@@ -422,9 +422,18 @@ class AgentBase:
                 proximo_aviso = gasto + 30.0
                 feitos = sum(len(c) for c in coletados)
                 alvo = n * por_env
-                falta = (gasto / max(feitos, 1)) * (alvo - feitos)
-                print(f"    ... {feitos}/{alvo} episódios · {gasto / 60:.1f} min "
-                      f"· faltam ~{falta / 60:.0f} min", flush=True)
+                # Os `n` ambientes correm em sincronia, então os episódios fecham em
+                # levas. Extrapolar com uma leva incompleta dá um número absurdo — na
+                # primeira rodada o "faltam" chegava a 256 min para um trabalho de 12.
+                # Só estima depois que a primeira leva fechou.
+                if feitos >= n:
+                    falta = (gasto / feitos) * (alvo - feitos)
+                    quanto = f"faltam ~{falta / 60:.0f} min"
+                else:
+                    quanto = (f"primeira leva ainda correndo — a estimativa aparece "
+                              f"quando os {n} ambientes fecharem o 1º episódio")
+                print(f"    ... {feitos}/{alvo} episódios · {gasto / 60:.1f} min · "
+                      f"{quanto}", flush=True)
             if max_segundos is not None and gasto > max_segundos:
                 esgotou = True
                 break

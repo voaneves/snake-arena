@@ -95,7 +95,10 @@ def main(argv=None):
     p.add_argument("--sims", type=int, nargs="+", default=None,
                    help="orçamentos de busca a medir (padrão: o `sims_avaliacao` do config)")
     p.add_argument("--minutos", type=float, default=60.0,
-                   help="teto por orçamento; ao estourar, a amostra volta `completo=False`")
+                   help="teto por orçamento; ao estourar, a amostra volta `completo=False` "
+                        "e fica fora da arena. Use 0 para não ter teto — o certo num "
+                        "terminal, onde Ctrl-C existe; o teto é para notebook, onde um "
+                        "`Run all` sem limite trava a sessão inteira")
     p.add_argument("--ambientes", type=int, default=64)
     p.add_argument("--modelo", default="last", choices=("last", "best"))
     p.add_argument("--checkpoints", default=None,
@@ -145,15 +148,17 @@ def main(argv=None):
           f"{a.modelo}  ·  {rec.get('params', 0):,} params")
     if pura is not None:
         print(f"rede pura registrada (a curva oficial): {pura:.2f}")
-    print(f"medindo com busca — {a.episodios} episódios por orçamento, teto "
-          f"{a.minutos:.0f} min, {a.ambientes} ambientes", flush=True)
+    teto = None if a.minutos <= 0 else a.minutos * 60
+    print(f"medindo com busca — {a.episodios} episódios por orçamento, "
+          + ("sem teto de tempo" if teto is None else f"teto {a.minutos:.0f} min")
+          + f", {a.ambientes} ambientes", flush=True)
 
     medidas = dict(rec.get("meta", {}).get("com_busca", {}))
     for s in sims:
         t0 = time.time()
         st = ag.avaliar_com_busca(episodes=a.episodios, num_simulations=s,
                                   num_envs=a.ambientes,
-                                  max_segundos=a.minutos * 60, verbose=True)
+                                  max_segundos=teto, verbose=True)
         medidas[f"{a.modelo}_sims{s}"] = st
         aviso = "" if st["completo"] else "   ATENCAO: parcial, completo=False, fora da arena"
         print(f"  {s:>3} sims: score {st['score_mean']:6.2f} · cheio {st['win_rate']:5.1%} "
