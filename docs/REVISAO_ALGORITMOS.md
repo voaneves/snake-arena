@@ -13,6 +13,7 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
+| §2.31 a perda do MuZero soma os `K+1` passos do desenrolar **sem peso** | **levantado, com conserto opcional pronto** — o passo 0, o único que a métrica oficial mede, vale 14,5% da perda de política com `unroll=5`; `normaliza_unroll` traz o `scale_gradient(loss, 1/K)` do paper e o põe em ~46%. Padrão **desligado** até a medição; braços no `92_muzero_ablacoes` |
 | §2.30 o desenrolar de K passos do MuZero atravessava a morte da cobra | **corrigido** — 25% das amostras treinavam a dinâmica contra a recompensa de outra partida; a máscara também recuperou os 31% de passos que eram descartados |
 | §2.29 a temperatura do AlphaZero transforma o alvo de política em rótulo duro | **corrigido e é o padrão** — `temp_alvo=1,0` separa o alvo da exploração e `temp_passos=30` traz o agendamento do paper; braço `sem_conserto_do_alvo` |
 | §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **corrigido e é o padrão** — `valor_symlog` + `vf_coef=0,5` levam `‖∇v‖/‖∇π‖` de 71× para 7× no `|z|` real; braço `sem_conserto_do_tronco`. **Aplicado também no MuZero** |
@@ -715,6 +716,87 @@ Marcar por `eps_start > 0` sozinho seria pior que não marcar — sob `noisy=Tru
 execução não teve. Aquela execução foi renomeada para
 `completo+n3+sem_noisy+eps_greedy`, com o motivo gravado em `meta["variante_corrigida"]`;
 o teste é `test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not`.
+
+### 2.31 ✔ A perda do MuZero soma os `K+1` passos do desenrolar sem peso
+`muzero.py:_passo` · `tools/diag_unroll.py` · `runs/muzero/unroll5/seed0`
+
+**O sintoma.** A primeira execução de 5 M passos sob o contrato terminou em **49,26**, com o
+melhor ponto em **66,05** (3,75 M) — 16,8 pontos acima do final. A leitura fácil é "mínimo
+local". A curva desmente:
+
+| | 1,5 M | 2,5 M | 3,0 M | 3,25 M | 3,75 M | 4,0 M | 5,0 M |
+|---|---|---|---|---|---|---|---|
+| **eval** (rede pura, greedy) | 58,12 | 60,44 | 33,25 | 31,74 | **66,05** | 48,05 | 49,26 |
+| **train** (a busca) | 46,79 | 58,30 | 60,34 | 60,16 | 59,79 | 59,34 | 58,02 |
+| `perda_pi` | 2,67 | 2,54 | 2,62 | 2,42 | 2,67 | 2,82 | **3,09** |
+| `perda_v` | 0,19 | 0,18 | 0,18 | 0,19 | 0,16 | 0,12 | 0,19 |
+
+Três coisas de uma vez. **(a)** O professor está estável: o `train_score`, que é o da busca,
+fica em 58–60 de 2,5 M até o fim. Quem oscila é o aluno, e a oscilação é real — 31,7 contra
+66,0 num protocolo de 1000 episódios cujo erro padrão é **0,9**, ou seja ~37σ. **(b)**
+`perda_pi` **sobe** no último terço **enquanto o `lr` desce** pela reta de decaimento. Isso
+descarta passo grande demais: não é o otimizador passando do ponto, é o alvo se afastando.
+**(c)** O modo de falha tem assinatura: `fim_fome` é **25,6%** no checkpoint final contra
+**5,8%** no melhor, enquanto no treino, com busca, `frac_fome` fica em ~0%. A rede pura
+perde o impulso de ir atrás da maçã no fim de jogo e a busca resgata. É falha de
+**destilação**, não de busca.
+
+**A previsão pré-registrada do §2.28 foi falsificada.** Escrevi lá que o alvo de valor não
+normalizado dominaria o tronco compartilhado do MuZero como dominava o do AlphaZero. Com
+`valor_symlog` ligado desde o início, o que se mede é o oposto: `perda_v ≈ 0,19` contra
+`perda_pi ≈ 3,09` — a perda de política é **16×** a de valor, e é ela que não converge. O
+conserto do §2.28 funcionou; o problema que sobrou é outro, e não é o que eu tinha
+apostado.
+
+**A aritmética.** `perda_pi` é uma **soma crua** sobre `K+1` termos:
+
+* o passo 0, que sai de `f(h(o))` — a observação **real**, e o único caminho que
+  `politica()` percorre na avaliação oficial;
+* `K` passos imaginados, que saem de `f(g^k(...))` — um caminho que a métrica do contrato
+  nunca usa.
+
+Nenhum peso separa os dois. Medindo a fatia do passo 0 sobre lotes reais
+(`tools/diag_unroll.py`):
+
+| `unroll` | soma crua | com `normaliza_unroll` | `1/(K+1)` |
+|---|---|---|---|
+| 1 | 45,8% | 45,8% | 50,0% |
+| 2 | 29,7% | 46,0% | 33,3% |
+| 3 | 22,3% | 46,1% | 25,0% |
+| **5** (o padrão) | **14,5%** | 46,0% | 16,7% |
+| **10** | **11,0%** | 55,2% | 9,1% |
+
+Com o padrão, **85% do gradiente de política treina um caminho que a métrica oficial nunca
+percorre**. E a consequência é contraintuitiva o bastante para valer o destaque: **aumentar
+`unroll` sem peso dilui ainda mais o único termo que produz o número do contrato** — a
+reação instintiva a uma curva que oscila vai para o lado errado.
+
+**Desvio do paper, e onde ele entrou.** O pseudocódigo do MuZero aplica
+`scale_gradient(loss, 1/K)` às perdas dos passos do desenrolar, deixando o passo 0 inteiro;
+com isso a fatia do passo 0 fica em ~metade, qualquer que seja `K`. Este repositório tinha
+**a outra** escala de gradiente — o `s = s*0.5 + stop_gradient(s)*0.5` no estado oculto, que
+controla o gradiente que chega em `h` — e não a das perdas. As duas têm nome parecido e
+propósito diferente; ter uma delas é fácil de confundir com ter as duas.
+
+**Conserto:** `normaliza_unroll`, que escala só os `K` termos imaginados por `1/K`. E
+`_passo` passou a devolver `perda_pi_0` separada, com `frac_pi_0` no registro — sem
+instrumentar o passo 0 não dá para distinguir "a destilação falha no estado real" de "a
+destilação falha nos estados imaginados", e a soma esconde os dois casos igualmente bem.
+
+**O padrão continua desligado, de propósito.** Ligar por argumento de paper repetiria o erro
+que o §2.27 documenta na direção contrária: lá a convenção do paper estava errada *para este
+domínio*. Aqui o argumento é bom mas não é medição, e existe uma execução de controle a
+preservar (`unroll5/seed0`, 49,26). O `92_muzero_ablacoes` mede — e leva junto duas previsões
+pré-registradas de que **não** vão ajudar, para o registro ser falsificável nos dois sentidos:
+
+* `unroll10` sozinho fica **igual ou pior** que o controle (leva o passo 0 de 14,5% para 11,0%);
+* `sims32` **não ganha nada**, porque o professor não é o gargalo — melhorar o professor
+  alarga o vão que já não está sendo atravessado.
+
+A hipótese secundária tem braço próprio (`coef_valor_1`): `perda_v ≈ 0,19` em `symlog` vira
+uma banda de `[6,7; 17,5]` na escala real, e é esse valor que a árvore soma no backup. Valor
+ruidoso produz contagem de visitas ruidosa, que é um alvo que o aluno não consegue fixar. O
+AlphaZero deste repositório usa `vf_coef = 0,5`; o MuZero usa 0,25.
 
 ### 2.30 ✔ O desenrolar do MuZero atravessava a fronteira do episódio
 `muzero.py:collect,_passo`

@@ -44,6 +44,23 @@ do AlphaZero revelou estavam aqui também, palavra por palavra (§2.27–§2.29 
 Mais o orçamento de gradiente, o decaimento de `lr` e o bootstrap do fim da janela. Ao
 contrário do AlphaZero, aqui não havia execução de controle a preservar — o MuZero nunca
 rodou sob o contrato — então tudo já nasce ligado. Ver `docs/BUSCA_DEGENERADA.md`.
+
+O que a primeira execução mostrou (§2.31)
+-----------------------------------------
+`unroll5/seed0` terminou em **49,26** com o melhor ponto em **66,05**, oscilando entre 31,7
+e 66,0 enquanto o `train_score` — que é o da **busca** — ficava estável em 58–60. O
+professor está bom; quem oscila é o aluno. E `perda_pi` sobe no último terço do orçamento
+*enquanto o `lr` desce*, o que descarta passo grande demais e aponta para o alvo.
+
+A causa provável é aritmética. `perda_pi` é uma **soma crua** sobre os `K+1` passos: o passo
+0, que sai de `f(h(o))` — a observação real, o único caminho que `politica()` usa na
+avaliação —, e `K` passos imaginados, que saem de `f(g^k(...))`. Sem peso entre eles, o
+passo 0 vale **14,5%** da perda com `unroll=5`, e **11,0%** com `unroll=10`. O pseudocódigo
+do paper escala só os passos imaginados por `1/K` (`normaliza_unroll`), o que põe o passo 0
+em ~46% qualquer que seja `K`. O repositório já tinha *a outra* escala de gradiente — a de
+1/2 no estado oculto, que controla o que chega em `h` — e não esta.
+
+Fica **desligado** por padrão até a medição, com os braços no `92_muzero_ablacoes`.
 """
 
 from __future__ import annotations
@@ -109,6 +126,19 @@ class MuZeroConfig(BaseConfig):
     temp_alvo: float = 1.0
     #: Fecha o último passo da janela de coleta, que hoje teria alvo sem bootstrap.
     bootstrap_fim_janela: bool = True
+
+    #: Escala os `K` passos imaginados por `1/K`, deixando o passo 0 inteiro — é o
+    #: `scale_gradient(loss, 1/K)` do pseudocódigo do paper. **Desligado é a soma crua**,
+    #: e a soma crua tem uma consequência que não é óbvia: as perdas são somas sobre
+    #: `K+1` termos sem peso, então a fatia do passo 0 — o único que a métrica oficial
+    #: mede, porque `politica()` age sobre a observação real — vale **14,5%** da perda de
+    #: política com `unroll=5` e **11,0%** com `unroll=10`. Ligado, ela fica em ~46%
+    #: qualquer que seja `K`. Medido em `tools/diag_unroll.py`.
+    #:
+    #: Ou seja: aumentar o desenrolar sem isto **dilui** justamente o termo que decide o
+    #: número do contrato. O repositório já tinha a escala de 1/2 no estado oculto (que
+    #: controla o gradiente que chega em `h`), mas não a das perdas. Ver §2.31.
+    normaliza_unroll: bool = False
 
     gamma: float = 0.997
     n_step: int = 10
@@ -492,9 +522,14 @@ class MuZero(AgentBase):
             logp = tf.nn.log_softmax(logits)
 
             alvo_v = self._symlog(z) if self.cfg.valor_symlog else z
-            perda_pi = -tf.reduce_mean(tf.reduce_sum(pi_alvo[:, 0] * logp, -1))
+            # o passo 0 fica separado: é o único que a métrica oficial mede, e sem
+            # instrumentá-lo não dá para saber se a destilação falha nele ou nos passos
+            # imaginados — a soma sozinha esconde os dois casos
+            perda_pi_0 = -tf.reduce_mean(tf.reduce_sum(pi_alvo[:, 0] * logp, -1))
             perda_v = tf.reduce_mean(tf.square(tf.squeeze(valor, -1) - alvo_v[:, 0]))
+            perda_pi_k = tf.constant(0.0)
             perda_r = tf.constant(0.0)
+            peso = (1.0 / self.cfg.unroll) if self.cfg.normaliza_unroll else 1.0
 
             for k in range(self.cfg.unroll):
                 planos = tf.one_hot(act[:, k], N_ACTIONS)[:, None, None, :]
@@ -511,23 +546,24 @@ class MuZero(AgentBase):
                 # da janela. O passo `k` consome a ação e a recompensa do instante `t+k`
                 # (precisa estar vivo lá, `vivo[:, k]`) e produz alvos do instante
                 # `t+k+1` (`vivo[:, k + 1]`).
-                perda_pi += self._media_mascarada(
+                perda_pi_k += peso * self._media_mascarada(
                     -tf.reduce_sum(pi_alvo[:, k + 1] * logp_k, -1), vivo[:, k + 1])
-                perda_v += self._media_mascarada(
+                perda_v += peso * self._media_mascarada(
                     tf.square(tf.squeeze(valor_k, -1) - alvo_v[:, k + 1]), vivo[:, k + 1])
                 # a âncora do modelo no mundo real: sem ela a dinâmica pode inventar
                 # qualquer física internamente consistente — e treiná-la contra a
                 # recompensa de outra partida é pior que não treinar
-                perda_r += self._media_mascarada(
+                perda_r += peso * self._media_mascarada(
                     tf.square(tf.squeeze(rec, -1) - r_alvo[:, k]), vivo[:, k])
 
+            perda_pi = perda_pi_0 + perda_pi_k
             perda = perda_pi + coef_v * perda_v + coef_r * perda_r
 
         variaveis = (self.h.trainable_variables + self.g.trainable_variables
                      + self.f.trainable_variables)
         grads = tape.gradient(perda, variaveis)
         self.optimizer.apply_gradients(zip(grads, variaveis))
-        return perda_pi, perda_v, perda_r
+        return perda_pi, perda_v, perda_r, perda_pi_0
 
     def _aprender(self):
         cfg = self.cfg
@@ -540,7 +576,7 @@ class MuZero(AgentBase):
         saidas = []
         for _ in range(cfg.epochs_por_iter):
             i = self.rng.integers(0, self._cheio, size=cfg.batch_size)
-            p, v, r = self._passo(
+            p, v, r, p0 = self._passo(
                 tf.convert_to_tensor(self._buf_obs[i]),
                 tf.convert_to_tensor(self._buf_mask[i]),
                 tf.convert_to_tensor(self._buf_act[i]),
@@ -550,9 +586,12 @@ class MuZero(AgentBase):
                 tf.convert_to_tensor(self._buf_vivo[i]),
                 cfg.coef_valor, cfg.coef_recompensa,
             )
-            saidas.append((float(p), float(v), float(r)))
-        p, v, r = (float(np.mean(x)) for x in zip(*saidas))
+            saidas.append((float(p), float(v), float(r), float(p0)))
+        p, v, r, p0 = (float(np.mean(x)) for x in zip(*saidas))
         return {"perda_pi": p, "perda_v": v, "perda_r": r, "lr": float(lr),
+                # `perda_pi_0` é a que corresponde ao que a curva oficial mede;
+                # `frac_pi_0` diz quanto dela sobrou dentro da soma
+                "perda_pi_0": p0, "frac_pi_0": p0 / max(p, 1e-9),
                 "atualizacoes": cfg.epochs_por_iter}
 
     def iterate(self):

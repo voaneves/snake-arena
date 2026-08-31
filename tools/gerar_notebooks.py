@@ -293,6 +293,71 @@ print()
 print("gravado em meta['com_busca'] de", registro.save(skip_validation=True))'''
 
 
+ENSAIO_MZ_MD = """## Ensaio — 2 minutos antes de queimar 7 horas
+
+Um treino de 5 M passos do MuZero custou **6,8 h** na execução `unroll5/seed0`. Esta célula
+roda **40 iterações** da configuração escolhida, num `resnet_tiny` com 32 ambientes, e
+imprime o que precisa estar são antes de valer a pena continuar.
+
+O que olhar aqui é diferente do ensaio do AlphaZero, porque o modo de falha medido é
+diferente:
+
+| sinal | saudável | o que significa se sair errado |
+|---|---|---|
+| `frac_pi_0` | **~46% com `normaliza_unroll`, ~1/(K+1) sem** | é a fatia da perda de política que pertence ao passo 0 — o único que a métrica oficial mede. É o número que este notebook existe para mexer; se o braço escolhido liga o peso e ele continua em 1/(K+1), a chave não chegou no config |
+| `perda_pi_0` | caindo, abaixo de `ln 3 = 1,099` | colada em 1,099 é o passo 0 não aprendendo nada da busca |
+| `perda_r` | caindo para perto de zero | é a única âncora do estado oculto no mundo; se não cai, a dinâmica está inventando física |
+| `perda_v` | finita e caindo | em `symlog`; o MCTS lê o valor na escala real |
+| `v_busca` | positivo e crescendo devagar | é o que a árvore soma no backup |
+| `fome` | não colado em 100% | 100% de fome com score 0 é a cobra andando em círculo |
+
+Ela **não** valida a configuração — são ~20 mil passos de ambiente, 0,4% do orçamento, numa
+rede menor. Serve para pegar o que é catastrófico e independente de arquitetura: `NaN`,
+perda explodindo, âncora de recompensa morta, e a chave do braço não tendo efeito. Nada
+aqui é gravado em `runs/`, e o agente do ensaio é descartado antes do treino começar.
+"""
+
+ENSAIO_MZ_CODE = '''import numpy as np
+
+_cfg_ensaio = {**asdict(cfg)}
+for _k in ("ckpt_dir", "runs_dir"):
+    _cfg_ensaio.pop(_k, None)
+_cfg_ensaio.update(net="resnet_tiny", num_envs=32, rollout=16, batch_size=256,
+                   memory_size=20_000, total_steps=10**9, eval_every_steps=10**9,
+                   log_every_steps=10**9, salvar_gif=False, salvar_grafico=False,
+                   ckpt_dir="/tmp/ensaio_mz", runs_dir="/tmp/ensaio_mz")
+_ens = MuZero(MuZeroConfig(**_cfg_ensaio))
+
+_alvo = 1.0 / (cfg.unroll + 1)
+print(f"unroll={cfg.unroll}  normaliza_unroll={cfg.normaliza_unroll}  "
+      f"-> frac_pi_0 esperada: {'~46%' if cfg.normaliza_unroll else f'~{_alvo:.1%}'}")
+print(f"{'iter':>5} {'busca':>7} {'perda_pi':>9} {'perda_pi_0':>11} {'frac_pi_0':>10} "
+      f"{'perda_v':>8} {'perda_r':>8} {'v_busca':>8} {'fome':>6}")
+_nan = float("nan")
+for _i in range(1, 41):
+    _st = _ens.iterate()
+    if _i % 10:
+        continue
+    _r = _ens.resumo_janela()
+    print(f"{_i:>5} {(_st.get('train_score_mean') or 0):>7.2f} "
+          f"{_st.get('perda_pi', _nan):>9.4f} {_st.get('perda_pi_0', _nan):>11.4f} "
+          f"{_st.get('frac_pi_0', _nan):>9.1%} {_st.get('perda_v', _nan):>8.4f} "
+          f"{_st.get('perda_r', _nan):>8.4f} {_st.get('valor_busca', _nan):>8.3f} "
+          f"{_r.get('frac_fome', _nan):>6.1%}")
+
+_f = _st.get("frac_pi_0", _nan)
+_esperado = 0.46 if cfg.normaliza_unroll else _alvo
+print()
+if abs(_f - _esperado) > 0.12:
+    print(f"ATENCAO: frac_pi_0={_f:.1%} longe do esperado ({_esperado:.1%}). "
+          "Confira se a chave do braco chegou no cfg.")
+else:
+    print(f"frac_pi_0={_f:.1%} bate com o esperado ({_esperado:.1%}).")
+
+del _ens
+'''
+
+
 BRACOS_ABLACAO = [
     # os três mecanismos, um removido por vez — é a pergunta científica, em 3 execuções
     "sem_conserto_da_busca", "sem_conserto_do_tronco", "sem_conserto_do_alvo",
@@ -359,6 +424,86 @@ for _k, _v in sorted(BRACOS[BRACO].items()):
     print(f"   {_k} = {_v!r}")
 
 """
+
+
+# ---------------------------------------------------------------------------------
+# MuZero — §2.31. Aqui a inversão do `93` não vale: o padrão do `07` **não** é a
+# resposta, é o que produziu a oscilação. Estes braços **acrescentam** coisas.
+# ---------------------------------------------------------------------------------
+BRACOS_MUZERO = [
+    # a hipótese principal e as suas variações
+    "normaliza_unroll", "unroll10_normalizado", "unroll2_normalizado",
+    # a hipótese secundária: o valor que a busca faz o backup
+    "coef_valor_1",
+    # a frescura do alvo
+    "memoria_200k", "memoria_20k",
+    # o que o instinto sugere, e que a aritmética diz ir para o lado errado
+    "unroll10",
+    # o que a literatura sugere quando o resultado oscila
+    "sims32",
+    # controle e soma
+    "controle", "tudo",
+]
+
+BRACO_PADRAO_MUZERO = "normaliza_unroll"
+
+_PRE_CFG_MUZERO = """BRACOS = {
+    # ------------------------------------------------- a hipotese principal (§2.31)
+    # `perda_pi` e uma SOMA CRUA sobre K+1 termos. O passo 0 - o unico que a metrica
+    # oficial mede, porque `politica()` age sobre a observacao real - vale 14,5% dela
+    # com unroll=5. O pseudocodigo do paper escala so os K passos imaginados por 1/K,
+    # o que poe o passo 0 em ~46% qualquer que seja K. Medido em tools/diag_unroll.py.
+    "normaliza_unroll":     {"normaliza_unroll": True},
+
+    # o desenrolar longo SEM diluir o passo 0. E o `unroll10` feito do jeito certo.
+    "unroll10_normalizado": {"unroll": 10, "normaliza_unroll": True},
+    # o contraste: se o peso e o que importa, K curto com peso tambem anda - e custa
+    # metade do tempo de parede por atualizacao
+    "unroll2_normalizado":  {"unroll": 2, "normaliza_unroll": True},
+
+    # -------------------------------------------- a hipotese secundaria: o valor
+    # `perda_v` fica em ~0,19 em symlog, o que da uma banda de [6,7; 17,5] na escala
+    # real - e e esse valor que o MCTS soma no backup. Alvo de politica ruidoso e um
+    # alvo que o aluno nao consegue fixar. O AlphaZero deste repositorio usa 0,5.
+    "coef_valor_1":         {"coef_valor": 1.0},
+
+    # ------------------------------------------------------- a frescura do alvo
+    # 50k transicoes sao ~49 iteracoes de atraso: o alvo de visitas veio de uma rede
+    # `g` que ja nao existe. Nao ha Reanalyse aqui. As duas direcoes entram porque a
+    # teoria nao decide: maior media mais versoes, menor traz alvos mais frescos.
+    "memoria_200k":         {"memory_size": 200000},
+    "memoria_20k":          {"memory_size": 20000},
+
+    # -------------------------------------------- o que vai para o lado errado
+    # PREVISAO PRE-REGISTRADA: fica igual ou pior que o controle. Sozinho, unroll=10
+    # leva a fatia do passo 0 de 14,5% para 11,0%. Esta aqui para ser falsificavel.
+    "unroll10":             {"unroll": 10},
+
+    # PREVISAO PRE-REGISTRADA: nao ganha nada. O professor nao e o gargalo - o
+    # `train_score` (que e o da busca) fica estavel em 58-60 de 2,5 M ate o fim,
+    # enquanto a rede pura oscila entre 33 e 66. Melhorar o professor alarga o vao.
+    "sims32":               {"num_simulations": 32, "sims_avaliacao": 32},
+
+    # ---------------------------------------------------------- controle e soma
+    # reproduz `muzero/unroll5/seed0` (final 49,26 / melhor 66,05) sob o codigo e a
+    # assinatura atuais. So vale rodar se a assinatura do pacote tiver mudado.
+    "controle": {},
+    "tudo": {"normaliza_unroll": True, "unroll": 10, "coef_valor": 1.0,
+             "memory_size": 200000},
+}
+print(f"braco: {BRACO}  (o padrao e o 07_muzero; aqui se ACRESCENTA uma coisa a ele)")
+for _k, _v in sorted(BRACOS[BRACO].items()) or [("(nada)", "controle")]:
+    print(f"   {_k} = {_v!r}")
+
+"""
+
+#: `param_braco` do spec aponta para uma destas entradas. Cada uma e a lista do
+#: `@param`, o braco pre-selecionado e o dicionario que a celula de parametros carrega.
+#: A conferencia em `monta_notebook` garante que a lista e o dicionario nao divirjam.
+ABLACOES = {
+    "alphazero": (BRACOS_ABLACAO, BRACO_PADRAO, _PRE_CFG_ABLACAO),
+    "muzero": (BRACOS_MUZERO, BRACO_PADRAO_MUZERO, _PRE_CFG_MUZERO),
+}
 
 
 NOTEBOOKS = [
@@ -524,13 +669,82 @@ NOTEBOOKS = [
                   "Ver `docs/EKFAC.md`.",
     },
     {
+        "arquivo": "92_muzero_ablacoes.ipynb",
+        "titulo": "MuZero — a oscila\u00e7\u00e3o e o peso do desenrolar",
+        "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
+                    "snakeai/nets/muzero.py", "snakeai/agents/muzero.py"],
+        "agente": "MuZero",
+        "config": "MuZeroConfig",
+        "param_braco": "muzero",
+        "celulas_extra": [{"md": ENSAIO_MZ_MD, "codigo": ENSAIO_MZ_CODE,
+                           "titulo": "Ensaio"}],
+        "celulas_pos_veredito": [{"md": BUSCA_MD, "codigo": BUSCA_CODE,
+                                  "titulo": "Veredito com busca"}],
+        "resumo":
+            "Este notebook **acrescenta** coisas ao padr\u00e3o, uma por vez — ao contr\u00e1rio do "
+            "`93_alphazero_ablacoes`, que remove. A diferen\u00e7a n\u00e3o \u00e9 de estilo: l\u00e1 o padr\u00e3o "
+            "\u00e9 a resposta e a pergunta \u00e9 quanto cada conserto valeu; aqui o padr\u00e3o \u00e9 o que "
+            "produziu o problema.\n\n"
+            "---\n\n"
+            "### O que aconteceu em `muzero/unroll5/seed0`\n\n"
+            "A execu\u00e7\u00e3o terminou em **49,26** com o melhor ponto em **66,05** (3,75 M) — "
+            "16,8 pontos acima do final. \u00c9 tentador chamar isso de m\u00ednimo local. N\u00e3o \u00e9:\n\n"
+            "| | 2,5 M | 3,0 M | 3,25 M | 3,75 M | 4,0 M | 5,0 M |\n"
+            "|---|---|---|---|---|---|---|\n"
+            "| **eval** (rede pura) | 60,44 | 33,25 | 31,74 | **66,05** | 48,05 | 49,26 |\n"
+            "| **train** (a busca) | 58,30 | 60,34 | 60,16 | 59,79 | 59,34 | 58,02 |\n"
+            "| `perda_pi` | 2,54 | 2,62 | 2,42 | 2,67 | 2,82 | **3,09** |\n\n"
+            "O professor est\u00e1 est\u00e1vel. Quem oscila — entre 31,7 e 66,0, num protocolo de "
+            "1000 epis\u00f3dios cujo erro padr\u00e3o \u00e9 de **0,9** — \u00e9 o aluno. E `perda_pi` **sobe** "
+            "no \u00faltimo ter\u00e7o do or\u00e7amento **enquanto o `lr` desce**, o que descarta passo "
+            "grande demais: n\u00e3o \u00e9 o otimizador passando do ponto, \u00e9 o alvo se afastando.\n\n"
+            "O modo de falha dos pontos ruins tem assinatura: `fim_fome` \u00e9 **25,6%** no "
+            "checkpoint final contra **5,8%** no melhor. A rede pura perde o impulso de ir "
+            "atr\u00e1s da ma\u00e7\u00e3 no fim de jogo, e a busca resgata (`frac_fome` fica em ~0% no "
+            "treino). Isso \u00e9 falha de **destila\u00e7\u00e3o**, n\u00e3o de busca.\n\n"
+            "### A hip\u00f3tese principal, e por que `unroll=10` sozinho vai para o lado errado\n\n"
+            "`perda_pi` \u00e9 uma **soma crua** sobre `K+1` termos: o passo 0, que sai de "
+            "`f(h(o))` — a observa\u00e7\u00e3o **real**, o \u00fanico caminho que `politica()` usa na "
+            "avalia\u00e7\u00e3o — e `K` passos imaginados, que saem de `f(g^k(...))`. Nenhum peso "
+            "separa os dois. Medindo (`tools/diag_unroll.py`):\n\n"
+            "| `unroll` | soma crua | com `normaliza_unroll` |\n"
+            "|---|---|---|\n"
+            "| 2 | 29,7% | 46,0% |\n"
+            "| **5** (o padr\u00e3o) | **14,5%** | 46,0% |\n"
+            "| **10** | **11,0%** | 55,2% |\n\n"
+            "Ou seja: 85% do gradiente de pol\u00edtica treina um caminho que a m\u00e9trica oficial "
+            "nunca percorre, e **aumentar o desenrolar dilui ainda mais o \u00fanico termo que "
+            "produz o n\u00famero do contrato**. O pseudoc\u00f3digo do paper n\u00e3o faz isso: ele "
+            "aplica `scale_gradient(loss, 1/K)` aos passos imaginados e deixa o passo 0 "
+            "inteiro. O reposit\u00f3rio j\u00e1 tinha a escala de 1/2 no estado oculto — a que "
+            "controla o gradiente que chega em `h` — mas n\u00e3o a das perdas. Ver §2.31.\n\n"
+            "### Como rodar, em ordem de prioridade\n\n"
+            "Cada bra\u00e7o custa ~7 h. Escolha o `BRACO`, rode o ensaio (2 min — ele confere "
+            "que `frac_pi_0` saiu no valor esperado, que \u00e9 o jeito de pegar uma chave que "
+            "n\u00e3o chegou no `cfg`) e depois o treino. Compare com `07_muzero` **na mesma "
+            "semente**; o `sufixo_variante` mantém os bra\u00e7os separados na arena.\n\n"
+            "1. **`normaliza_unroll`** — a hip\u00f3tese principal, e o que o paper faz. \u00c9 de "
+            "gra\u00e7a: mesmo custo por atualiza\u00e7\u00e3o.\n"
+            "2. **`coef_valor_1`** — a hip\u00f3tese secund\u00e1ria. `perda_v \u2248 0,19` em `symlog` "
+            "vira uma banda de `[6,7; 17,5]` na escala real, e \u00e9 esse valor que a \u00e1rvore "
+            "soma no backup; valor ruidoso produz contagem de visitas ruidosa, que \u00e9 um "
+            "alvo que o aluno n\u00e3o consegue fixar. O AlphaZero daqui usa 0,5.\n"
+            "3. **`unroll10_normalizado`** — o desenrolar longo sem diluir o passo 0.\n\n"
+            "Os bra\u00e7os `unroll10` e `sims32` t\u00eam **previs\u00e3o pr\u00e9-registrada de n\u00e3o "
+            "ajudar** (est\u00e3o no dicion\u00e1rio com a previs\u00e3o escrita ao lado). Rode-os se "
+            "quiser o registro da falsifica\u00e7\u00e3o; n\u00e3o os rode esperando ganho.\n\n"
+            "**A curva oficial mede a rede pura**, greedy, sem busca. Olhe o `[eval]`, n\u00e3o "
+            "o `score` do log de treino, que \u00e9 o da busca — a diferen\u00e7a entre os dois \u00e9 "
+            "exatamente o v\u00e3o que este notebook tenta fechar.",
+    },
+    {
         "arquivo": "93_alphazero_ablacoes.ipynb",
         "titulo": "AlphaZero — quanto cada conserto valeu",
         "modulos": ["snakeai/search/dinamica.py", "snakeai/search/mcts.py",
                     "snakeai/agents/alphazero.py"],
         "agente": "AlphaZero",
         "config": "AlphaZeroConfig",
-        "param_braco": True,
+        "param_braco": "alphazero",
         "celulas_extra": [{"md": ENSAIO_MD, "codigo": ENSAIO_CODE, "titulo": "Ensaio"}],
         "celulas_pos_veredito": [{"md": BUSCA_MD, "codigo": BUSCA_CODE,
                                   "titulo": "Veredito com busca"}],
@@ -836,16 +1050,19 @@ def monta_notebook(spec, usuario="voaneves", repo="snake-arena"):
         # moram em constantes diferentes; sem esta conferência, acrescentar um braço só
         # num dos lados produz um dropdown com uma opção que estoura em `BRACOS[BRACO]`
         # — e só na hora de rodar, no Colab, depois de a célula do núcleo carregar.
+        lista, padrao, pre_bracos = ABLACOES[spec["param_braco"]]
         _ns = {}
-        exec(_PRE_CFG_ABLACAO.split("print(")[0], _ns)          # noqa: S102
-        if set(_ns["BRACOS"]) != set(BRACOS_ABLACAO):
+        exec(pre_bracos.split("print(")[0], _ns)                # noqa: S102
+        if set(_ns["BRACOS"]) != set(lista):
             raise ValueError(
-                "BRACOS_ABLACAO e o dicionário de _PRE_CFG_ABLACAO divergiram: "
-                f"só na lista {sorted(set(BRACOS_ABLACAO) - set(_ns['BRACOS']))}, "
-                f"só no dicionário {sorted(set(_ns['BRACOS']) - set(BRACOS_ABLACAO))}")
-        braco_param = ('\n' + f'BRACO = "{BRACO_PADRAO}"  # @param ['
-                       + ", ".join(f'"{k}"' for k in BRACOS_ABLACAO) + "]")
-        pre = _PRE_CFG_ABLACAO
+                f"a lista e o dicionário de braços do {spec['param_braco']} divergiram: "
+                f"só na lista {sorted(set(lista) - set(_ns['BRACOS']))}, "
+                f"só no dicionário {sorted(set(_ns['BRACOS']) - set(lista))}")
+        if padrao not in lista:
+            raise ValueError(f"braço padrão {padrao!r} não está na lista")
+        braco_param = ('\n' + f'BRACO = "{padrao}"  # @param ['
+                       + ", ".join(f'"{k}"' for k in lista) + "]")
+        pre = pre_bracos
         extra = "    **BRACOS[BRACO],\n    sufixo_variante=f\"_{BRACO}\",\n"
     else:
         braco_param = ""

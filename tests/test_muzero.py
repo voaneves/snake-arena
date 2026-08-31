@@ -380,3 +380,65 @@ def test_search_column_scores_the_last_apple_and_counts_wins_from_the_sample():
         assert chave in st, chave
     assert 0.0 <= st["win_rate"] <= 1.0
     assert abs(sum(st[f"fim_{k}"] for k in ("fome", "colisao", "tabuleiro_cheio")) - 1.0) < 1e-6
+
+
+# --------------------------------------------- §2.31 · o peso dos passos do desenrolar
+def _passo_isolado(cfg):
+    """Um `_passo` sobre o buffer recém-coletado, com as mesmas amostras e os mesmos
+    pesos iniciais. Duas configs com a mesma semente produzem buffers idênticos, então a
+    única diferença entre as chamadas é a que se quer medir."""
+    ag = MuZero(cfg)
+    ag.collect()
+    i = np.arange(cfg.batch_size)
+    p, v, r, p0 = ag._passo(
+        tf.convert_to_tensor(ag._buf_obs[i]), tf.convert_to_tensor(ag._buf_mask[i]),
+        tf.convert_to_tensor(ag._buf_act[i]), tf.convert_to_tensor(ag._buf_pi[i]),
+        tf.convert_to_tensor(ag._buf_z[i]), tf.convert_to_tensor(ag._buf_r[i]),
+        tf.convert_to_tensor(ag._buf_vivo[i]), cfg.coef_valor, cfg.coef_recompensa)
+    return float(p), float(p0), ag
+
+
+def test_the_unrolled_steps_are_a_raw_sum_by_default():
+    """O padrão soma os `K+1` termos sem peso. É o que a primeira execução rodou, e é o
+    que faz `unroll` maior **diluir** o passo 0 — o único que a métrica oficial mede."""
+    assert MuZeroConfig().normaliza_unroll is False
+    perda, p0, _ = _passo_isolado(cfg_min(batch_size=16, unroll=4))
+    assert p0 < perda, "com K=4 o passo 0 é uma fração pequena da soma"
+
+
+def test_normalizing_the_unroll_divides_only_the_imagined_steps():
+    """`scale_gradient(loss, 1/K)` do pseudocódigo: o passo 0 fica inteiro e os `K` passos
+    imaginados dividem um peso entre si. O passo 0 sai de `1/(K+1)` da soma para ~metade."""
+    K = 4
+    crua, p0_crua, _ = _passo_isolado(cfg_min(batch_size=16, unroll=K))
+    norm, p0_norm, _ = _passo_isolado(
+        cfg_min(batch_size=16, unroll=K, normaliza_unroll=True))
+    # mesmas amostras, mesmos pesos iniciais: o passo 0 tem de bater exatamente
+    assert p0_norm == pytest.approx(p0_crua, rel=1e-5)
+    # e a parte imaginada tem de ser exatamente `1/K` da que a soma crua usou
+    assert norm - p0_norm == pytest.approx((crua - p0_crua) / K, rel=1e-4)
+
+
+def test_the_step_zero_share_of_the_policy_loss_is_reported():
+    """Sem `frac_pi_0` não dá para distinguir "a destilação falha no estado real" de "a
+    destilação falha nos estados imaginados" — a soma esconde os dois casos."""
+    ag = MuZero(cfg_min(batch_size=16, unroll=4))
+    ag.iterate()
+    stats = ag.iterate()
+    assert stats["perda_pi_0"] <= stats["perda_pi"] + 1e-6
+    assert 0.0 < stats["frac_pi_0"] <= 1.0
+    assert stats["frac_pi_0"] == pytest.approx(
+        stats["perda_pi_0"] / stats["perda_pi"], rel=1e-6)
+
+
+def test_normalizing_makes_the_step_zero_share_independent_of_the_unroll():
+    """O ponto todo: com a soma crua, dobrar `unroll` corta a fatia do passo 0 quase pela
+    metade; com o peso do paper, a fatia não depende de `K`."""
+    fatias = {}
+    for K in (2, 6):
+        for norm in (False, True):
+            perda, p0, _ = _passo_isolado(
+                cfg_min(batch_size=16, rollout=8, unroll=K, normaliza_unroll=norm))
+            fatias[(K, norm)] = p0 / perda
+    assert fatias[(6, False)] < fatias[(2, False)] * 0.6, "a soma crua dilui o passo 0"
+    assert fatias[(6, True)] == pytest.approx(fatias[(2, True)], abs=0.12)
