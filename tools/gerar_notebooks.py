@@ -1162,7 +1162,15 @@ def gerar(destino="notebooks", check=False):
     for spec in NOTEBOOKS:
         nb = monta_notebook(spec)
         caminho = os.path.join(RAIZ, destino, spec["arquivo"])
-        novo = json.dumps(nb, ensure_ascii=False, indent=1)
+        # `ensure_ascii=True` de propósito: o `.ipynb` sai **100% ASCII**, com os acentos
+        # e os símbolos guardados como escapes JSON (`\u00e3`) em vez de bytes crus. O
+        # conteúdo é idêntico — todo leitor de JSON desfaz o escape —, mas o arquivo passa
+        # a atravessar intacto qualquer ferramenta que erre a codificação no caminho.
+        # Foi o que aconteceu com o `06` ao subir para o Kaggle: o arquivo no repositório
+        # estava correto (UTF-8 válido, sem BOM, sem mojibake) e chegou lá quebrado. Um
+        # arquivo sem byte acima de 0x7F não tem como ser mal decodificado. Custa +5% de
+        # tamanho, e estes arquivos são gerados — ninguém lê o diff deles.
+        novo = json.dumps(nb, ensure_ascii=True, indent=1)
 
         if check:
             if not os.path.exists(caminho):
