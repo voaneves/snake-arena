@@ -1,0 +1,57 @@
+{
+ "maquina": 2,
+ "linhas": [
+  {
+   "reanalise": 0.0,
+   "s_coleta": 8.871581792831421,
+   "s_treino": 8.489967823028564,
+   "s_iter": 17.361549615859985,
+   "reanalises": 0,
+   "raizes_coleta": 1024,
+   "raizes_reanalise": 0,
+   "razao_raizes": 0.0,
+   "lotes_coleta": 16,
+   "lotes_reanalise": 0,
+   "razao_lotes": 0.0
+  },
+  {
+   "reanalise": 0.25,
+   "s_coleta": 9.258578300476074,
+   "s_treino": 13.744328737258911,
+   "s_iter": 23.002907037734985,
+   "reanalises": 512,
+   "raizes_coleta": 1024,
+   "raizes_reanalise": 512,
+   "razao_raizes": 0.5,
+   "lotes_coleta": 16,
+   "lotes_reanalise": 8,
+   "razao_lotes": 0.5
+  },
+  {
+   "reanalise": 0.5,
+   "s_coleta": 8.809900283813477,
+   "s_treino": 16.526284217834473,
+   "s_iter": 25.33618450164795,
+   "reanalises": 1024,
+   "raizes_coleta": 1024,
+   "raizes_reanalise": 1024,
+   "razao_raizes": 1.0,
+   "lotes_coleta": 16,
+   "lotes_reanalise": 8,
+   "razao_lotes": 0.5
+  },
+  {
+   "reanalise": 0.8,
+   "s_coleta": 8.818812608718872,
+   "s_treino": 18.43912410736084,
+   "s_iter": 27.257936716079712,
+   "reanalises": 1640,
+   "raizes_coleta": 1024,
+   "raizes_reanalise": 1640,
+   "razao_raizes": 1.6015625,
+   "lotes_coleta": 16,
+   "lotes_reanalise": 8,
+   "razao_lotes": 0.5
+  }
+ ]
+}

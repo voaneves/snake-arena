@@ -136,11 +136,21 @@ class MuZeroConfig(BaseConfig):
     #: qualquer que seja `K`. Medido em `tools/diag_unroll.py`.
     #:
     #: Ou seja: aumentar o desenrolar sem isto **dilui** justamente o termo que decide o
-    #: número do contrato. O repositório já tinha a escala de 1/2 no estado oculto (que
-    #: controla o gradiente que chega em `h`), mas não a das perdas. Ver §2.31.
+    #: número do contrato.
+    #:
+    #: O Apêndice G do paper é explícito em ter **duas** escalas de gradiente: "we scale
+    #: the loss of each head by 1/K" e "we scale the gradient at the start of the dynamics
+    #: function by 1/2". O repositório tinha a segunda e não a primeira. Vale notar que a
+    #: leitura literal da prosa — escalar *todos* os `K+1` termos por `1/K` — não mudaria
+    #: nada aqui: sob Adam, dividir a perda inteira por uma constante é quase um no-op (o
+    #: segundo momento normaliza), sobrando só um `clipnorm` que morde menos. O que muda a
+    #: **fatia** do passo 0 é deixá-lo fora da escala, que é o que o pseudocódigo publicado
+    #: faz. Ver §2.31.
     normaliza_unroll: bool = False
 
     gamma: float = 0.997
+    #: 10 é o valor do MuZero **puro** (Apêndice G, Atari). O Apêndice H o baixa para 5,
+    #: mas como parte do pacote do Reanalyse — trocar só isto não é seguir o paper.
     n_step: int = 10
     #: Passos do desenrolar no treino. É o que obriga o modelo a ser útil por mais de um
     #: passo à frente — com K=1 ele vira um crítico caro.
@@ -156,12 +166,54 @@ class MuZeroConfig(BaseConfig):
     #: Com 1, os 5 M passos compravam ~4.900 atualizações contra as ~38.300 do PPO. O
     #: passo de gradiente aqui é caro (o desenrolar de `unroll` passos), então 8 sai ~30%
     #: mais lento por iteração — bem mais que os ~5% do AlphaZero. Ver §2.1.
+    #:
+    #: **O número que isto produz merece ser dito.** `8 × batch_size 256 = 2048` amostras
+    #: de gradiente por iteração contra `num_envs 64 × rollout 16 = 1024` passos novos:
+    #: **2,0 amostras por estado**. O paper usa 0,1 no MuZero puro e sobe justamente para
+    #: **2,0** no MuZero Reanalyse (Apêndice H) — e o Reanalyse existe porque reúso alto
+    #: precisa de alvo fresco: ele **refaz a busca** com a rede atual em 80% das
+    #: atualizações e usa rede alvo para o bootstrap de valor. Aqui não há nem um nem
+    #: outro. Estamos no regime de reúso do Reanalyse **sem** o Reanalyse, e é a hipótese
+    #: mais forte para a oscilação depois da do §2.31. Ver `docs/REVISAO_ALGORITMOS.md`.
     epochs_por_iter: int = 8
 
     temp_inicio: float = 1.0
     temp_fim: float = 0.25
     temp_frac: float = 0.5
 
+    # ------------------------------------------------------------------------------
+    # Reanalyse (Apêndice H). Ver §2.32.
+    # ------------------------------------------------------------------------------
+
+    #: Fração de cada minilote cujo alvo de política do **passo 0** é refeito com a rede
+    #: atual, antes do passo de gradiente. `0,8` é o número do paper; `0` desliga.
+    #:
+    #: Por que isto existe: este repositório faz `epochs_por_iter × batch_size` amostras
+    #: de gradiente contra `num_envs × rollout` passos novos — **2,0 amostras por
+    #: estado**, que é exatamente o número do Reanalyse (o MuZero puro usa 0,1). E o
+    #: Reanalyse não é só um número de reúso: ele existe porque reúso alto precisa de
+    #: alvo fresco. Sem ele, o alvo de visitas de uma amostra veio de uma rede `g` de
+    #: dezenas de iterações atrás e é treinado contra um modelo que já se moveu.
+    #:
+    #: O alvo refeito é **escrito de volta no buffer**, então o trabalho não se perde: uma
+    #: linha refrescada continua fresca nos sorteios seguintes.
+    #:
+    #: **Escopo, dito com todas as letras.** Só o passo 0 é refeito, porque só a
+    #: observação do passo 0 é guardada — os passos `1..K` do desenrolar precisariam das
+    #: observações seguintes. Isso cobre exatamente o termo que a métrica oficial mede
+    #: (§2.31) e deixa de fora os imaginados. O alvo de **valor** também não é refeito:
+    #: `z` é um retorno de n passos com bootstrap, e refazê-lo exigiria a rede alvo do
+    #: Apêndice H mais o estado em `t+n`, que o buffer não guarda. Isto é, portanto, o
+    #: Reanalyse **da política**, e não o Apêndice H inteiro.
+    reanalise: float = 0.0
+    #: Orçamento de busca do Reanalyse. `0` usa `num_simulations`, que é o que o paper
+    #: faz. Baixar é o botão de custo — e é um desvio, porque produz um alvo de qualidade
+    #: menor que o da coleta.
+    reanalise_sims: int = 0
+
+    #: **0,25 é o valor do paper**, não um chute: o Apêndice H baixa o alvo de valor para
+    #: 0,25 contra 1,0 de política e recompensa, e diz por quê — "avoid overfitting of the
+    #: value function". Subir isto é ir contra o paper, não em direção a ele.
     coef_valor: float = 0.25
     coef_recompensa: float = 1.0
 
@@ -565,6 +617,56 @@ class MuZero(AgentBase):
         self.optimizer.apply_gradients(zip(grads, variaveis))
         return perda_pi, perda_v, perda_r, perda_pi_0
 
+    def _busca_reanalise(self):
+        """A árvore do Reanalyse. É a **mesma** da coleta salvo se `reanalise_sims` pedir
+        outro orçamento — e então ela é construída uma vez e guardada, porque um `MCTS`
+        novo por chamada seria reconstruído `epochs_por_iter` vezes por iteração e
+        re-semeado em cada uma.
+
+        A `DinamicaAprendida` não é opcional aqui: sem ela a árvore percorreria o
+        simulador real, que é o AlphaZero. É o tipo de troca silenciosa que não levanta
+        exceção — só devolve outro algoritmo.
+        """
+        cfg = self.cfg
+        if not cfg.reanalise_sims or cfg.reanalise_sims == cfg.num_simulations:
+            return self.mcts
+        if getattr(self, "_mcts_rea", None) is None:
+            self._mcts_rea = MCTS(
+                self._avaliar_oculto, board_size=cfg.board_size, gamma=cfg.gamma,
+                num_simulations=cfg.reanalise_sims, c_puct=cfg.c_puct,
+                fpu=cfg.fpu, q_normalizado=cfg.q_normalizado, desempate=cfg.desempate,
+                dinamica=DinamicaAprendida(self._passo_dinamica),
+                rng=np.random.default_rng(cfg.seed + 3))
+        return self._mcts_rea
+
+    def _reanalisar(self, idx):
+        """Refaz a busca com a rede **atual** sobre observações guardadas e reescreve o
+        alvo de política do passo 0, no buffer.
+
+        Duas escolhas que merecem estar escritas:
+
+        * **Sem ruído de Dirichlet.** O ruído da raiz existe para explorar durante a
+          geração de dados; aqui o que se produz é um alvo. A consequência é real e vale
+          nomear: um buffer meio refrescado carrega **duas distribuições de alvo**, uma
+          sorteada e uma determinística. Qual das duas é mais aguda depende do estado do
+          treino — com a rede treinada, cujo prior já é agudo, o ruído espalha e o refeito
+          sai mais afiado; com a rede recém-iniciada, cujo prior é quase uniforme, um
+          sorteio de `Dir(1,1,1)` (máximo esperado ~0,61) é mais agudo que ela e a direção
+          se inverte. O que vale nos dois casos, e é o que o teste protege, é que o alvo
+          refeito é **reprodutível**. Com a escrita de volta, o buffer converge para ele.
+        * **Só o passo 0.** É o único cuja observação o buffer guarda — e é o único que a
+          métrica oficial mede, porque `politica()` age sobre a observação real (§2.31).
+        """
+        cfg = self.cfg
+        visitas, _valores = self._busca(self._buf_obs[idx], self._buf_mask[idx],
+                                        ruido=False, busca=self._busca_reanalise())
+        # `temp_alvo <= 0` é o regime do braço `sem_alvo_cru`, em que o alvo é a
+        # distribuição temperada que escolheu a ação. Ela depende do lance do episódio,
+        # que o buffer não guarda — então aqui o alvo refeito é sempre a contagem crua.
+        temp = cfg.temp_alvo if cfg.temp_alvo > 0 else 1.0
+        self._buf_pi[idx, 0] = MCTS.politica_das_visitas(visitas, temp)
+        return len(idx)
+
     def _aprender(self):
         cfg = self.cfg
         if self._cheio < cfg.batch_size:
@@ -574,8 +676,15 @@ class MuZero(AgentBase):
             lr = self.linear(cfg.lr, cfg.lr_final)
             self.optimizer.learning_rate.assign(lr)
         saidas = []
+        refeitos = 0
+        n_reanalise = int(round(cfg.reanalise * cfg.batch_size))
         for _ in range(cfg.epochs_por_iter):
             i = self.rng.integers(0, self._cheio, size=cfg.batch_size)
+            # antes da leitura do lote, e escrevendo no buffer: o alvo refeito vale para
+            # este passo de gradiente **e** para os sorteios futuros que caírem na mesma
+            # linha. É o que faz a taxa de refresco compor em vez de se perder.
+            if n_reanalise > 0:
+                refeitos += self._reanalisar(i[:n_reanalise])
             p, v, r, p0 = self._passo(
                 tf.convert_to_tensor(self._buf_obs[i]),
                 tf.convert_to_tensor(self._buf_mask[i]),
@@ -592,6 +701,9 @@ class MuZero(AgentBase):
                 # `perda_pi_0` é a que corresponde ao que a curva oficial mede;
                 # `frac_pi_0` diz quanto dela sobrou dentro da soma
                 "perda_pi_0": p0, "frac_pi_0": p0 / max(p, 1e-9),
+                # buscas gastas refazendo alvo — o custo do Reanalyse, contra as
+                # `num_envs × rollout` da coleta, que é a régua para lê-lo
+                "reanalises": refeitos,
                 "atualizacoes": cfg.epochs_por_iter}
 
     def iterate(self):

@@ -9,21 +9,24 @@ configuração padrão. A tabela abaixo mostra **tudo**, ablações inclusive: a
 responde *quem vai mais longe com os mesmos dados*, e uma ablação desenhada ao lado
 do próprio controle, na mesma cor, responde outra pergunta.
 
-| algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | passos até 40 | horas | amplitude | mediana/ep | máx | cheio |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | 1 | — | 0% |
-| acer · resnet_small | `resnet_small` | 334,878 | 2 | 5,001,216 | **83.96** | 88.25 | 1,251,328 | 1.4 | ±12.24 | 91 | 97 | 47.3% |
-| ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
-| acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
-| acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
-| a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
-| ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
-| acktr · resnet_small+kl_nominal+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **64.53** | 84.92 | 1,277,952 | 0.5 | ±0.00 | 69 | 97 | 26.7% |
-| rainbow · completo | `resnet_small` | 1,196,648 | 2 | 5,000,192 | **54.46** | 75.78 | 1,875,200 | 4.3 | ±21.93 | 44 | 97 | 19.9% |
-| a2c · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,005,312 | **53.60** | 53.60 | 4,005,888 | 0.3 | ±7.87 | 59 | 78 | 0.0% |
-| rainbow · completo+n3+sem_noisy+eps_greedy | `resnet_small` | 662,148 | 1 | 5,000,192 | **49.17** | 49.97 | 4,000,000 | 8.0 | ±0.00 | 49 | 90 | 0.0% |
-| dqn · base | `resnet_small` | 333,475 | 3 | 5,000,192 | **47.11** | 51.79 | 3,500,032 | 1.9 | ±2.86 | 49 | 89 | 0.0% |
-| rainbow · completo+n3 | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **0.57** | 0.78 | não chegou | 2.6 | ±0.00 | 0 | 6 | 0.0% |
+| algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | com busca | passos até 40 | horas | amplitude | mediana/ep | máx | cheio |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | — | 1 | — | 0% |
+| alphazero · sims32 | `resnet_small` | 180,464 | 3 | 5,000,192 | **81.91** | 84.05 | 95.63 (32 sims) · n=1 | 750,592 | 7.1 | ±2.20 | 97 | 97 | 67.3% |
+| ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | — | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
+| acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | — | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
+| acer · resnet_small | `resnet_small` | 334,878 | 3 | 5,001,216 | **77.84** | 85.77 | — | 1,251,328 | 1.4 | ±14.53 | 86 | 97 | 13.0% |
+| acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | — | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
+| a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | — | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
+| rainbow · completo | `resnet_small` | 1,196,648 | 3 | 5,000,192 | **65.43** | 70.51 | — | 2,250,240 | 4.0 | ±27.01 | 77 | 97 | 12.0% |
+| ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | — | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
+| acktr · resnet_small+kl_nominal+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **64.53** | 84.92 | — | 1,277,952 | 0.5 | ±0.00 | 69 | 97 | 26.7% |
+| a2c · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,005,312 | **53.60** | 53.60 | — | 4,005,888 | 0.3 | ±7.87 | 59 | 78 | 0.0% |
+| muzero · unroll5 | `resnet_small` | 154,608 | 1 | 5,000,192 | **49.26** | 66.05 | — | 1,500,160 | 6.8 | ±0.00 | 57 | 97 | 0.1% |
+| rainbow · completo+n3+sem_noisy+eps_greedy | `resnet_small` | 662,148 | 1 | 5,000,192 | **49.17** | 49.97 | — | 4,000,000 | 8.0 | ±0.00 | 49 | 90 | 0.0% |
+| dqn · base | `resnet_small` | 333,475 | 3 | 5,000,192 | **47.11** | 51.79 | — | 3,500,032 | 1.9 | ±2.86 | 49 | 89 | 0.0% |
+| alphazero · sims32_sem_correcoes | `resnet_small` | 180,464 | 1 | 5,000,192 | **10.62** | 13.03 | — | não chegou | 7.5 | ±0.00 | 5 | 44 | 0.0% |
+| rainbow · completo+n3 | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **0.57** | 0.78 | — | não chegou | 2.6 | ±0.00 | 0 | 6 | 0.0% |
 
 Score perfeito no 10×10: **97**.
 
@@ -32,6 +35,8 @@ Score perfeito no 10×10: **97**.
 **horas** é tempo de parede da execução inteira, útil só entre execuções do mesmo hardware. O eixo de passos iguala os *dados vistos*; ele não iguala o *esforço*, e a diferença entre os dois é enorme para quem faz busca em árvore.
 
 A coluna **score (last)** é o número oficial: o modelo do último passo, que é o estado final do algoritmo. O valor é a **mediana entre as sementes** do score médio de cada uma — não a média entre elas. É a mesma estatística que o gráfico desenha como linha, com o intervalo entre sementes como faixa, e com três sementes ela é o que uma semente divergente não consegue arrastar. Os documentos de ablação (`ORCAMENTO_DE_GRADIENTE.md`, `CANAL_DE_FOME.md`) reportam **média e desvio**, porque lá a pergunta é o tamanho de um efeito, não a ordem de um ranking: os dois números convivem, e cada um diz qual é. **mediana/ep** é outra coisa ainda — a mediana entre *episódios*, não entre sementes. **melhor ckpt** é o melhor que aquela execução produziu em algum momento — fica à parte porque premia quem foi medido mais vezes, pela mesma razão que a busca do AlphaZero e o filtro de flood-fill ficam fora da curva.
+
+**com busca** é o agente medido com a máquina que ele de fato usa para jogar — a árvore do AlphaZero e do MuZero — no mesmo protocolo de 1.000 episódios. Ela fica numa coluna separada, e não na curva, porque **não divide eixo**: uma jogada com 32 simulações gasta dezenas de avaliações de rede contra uma do PPO, e desenhá-las juntas daria computação de graça a quem busca. `n=k` marca quantas sementes foram medidas sob o protocolo inteiro; medir com busca custa horas, então quase sempre é menos que o total. Medições parciais — menos episódios que o contrato, ou que estouraram o teto de tempo — ficam gravadas em `busca` e **não** aparecem aqui: uma amostra que acabou por tempo é enviesada para episódios curtos, que são justamente os ruins.
 
 ## O mesmo resultado, no eixo do custo
 
@@ -58,16 +63,39 @@ diferentes, e a curva de score é idêntica nos dois casos.
 
 ![quem fecha o tabuleiro](../assets/arena_vitorias_light.png)
 
+## Os melhores modelos nas suas melhores tentativas
+
+Três perguntas sobre a **mesma** execução: como o algoritmo terminou (`final`,
+que é o número oficial), o melhor que ele produziu em algum momento (`melhor`), e
+o que você levaria para jogar (`com busca`). Cada barra é a **mediana entre
+sementes** dentro do regime — o que varia entre elas é a pergunta, não a
+estatística.
+
+A tentação aqui é responder com um **máximo**: o maior número que qualquer
+semente produziu em qualquer regime. Seria enviesado de um jeito específico e
+evitável — o máximo cresce com o número de sorteios, então premia quem rodou mais
+sementes, não quem é melhor. Comparar o máximo de três sementes com o de uma é
+comparar 3 sorteios com 1.
+
+O viés que sobra está escrito na figura: `melhor` é um máximo sobre os ~20 pontos
+de avaliação da execução, então é otimista **por construção**, e não
+uniformemente — com 1.000 episódios o erro padrão é `desvio/√1000`, que vale ~0,25
+para o AlphaZero e ~0,88 para o MuZero. Quanto mais instável o algoritmo, mais o
+`melhor` o favorece. Uma diferença de dois ou três pontos entre `final` e `melhor`
+não significa nada; a queda de 42 pontos do `rainbow/completo/seed1` significa.
+
+![melhores tentativas](../assets/arena_melhores_light.png)
+
 ## Configurações com menos de 3 sementes
 
 Entram no gráfico, mas **não sustentam comparação**: a amplitude entre
 sementes do PPO neste ambiente é de 19 pontos, maior que quase toda
 diferença entre algoritmos que a tabela mostra.
 
-- `acer/resnet_small`: 2 de 3 — faltam 1
 - `acktr/resnet_small+kl0.002`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl_nominal+kl0.002`: 1 de 3 — faltam 2
-- `rainbow/completo`: 2 de 3 — faltam 1
+- `alphazero/sims32_sem_correcoes`: 1 de 3 — faltam 2
+- `muzero/unroll5`: 1 de 3 — faltam 2
 - `rainbow/completo+n3`: 1 de 3 — faltam 2
 - `rainbow/completo+n3+sem_noisy+eps_greedy`: 1 de 3 — faltam 2
 

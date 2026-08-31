@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 from snakeai.plot import (
     PALETA,
     arena_vitorias,
+    arena_melhores,
     VARIANTE_PRINCIPAL,
     e_principal,
     separa_principais,
@@ -447,3 +448,63 @@ def test_a_run_without_the_end_causes_is_skipped_not_crashed():
     fig, ax = arena_vitorias([run(algo="ppo", variant="resnet_small")])
     assert [t.get_text() for t in ax.get_yticklabels()] == []
     plt.close(fig)
+
+
+# ------------------------------------------------- os três regimes, sem estimador viciado
+def _com_busca(r, score, episodes=1000, completo=True, sims=32, checkpoint="last"):
+    r.melhor = {**r.final, "score_mean": r.final["score_mean"] + 3.0}
+    r.busca = {f"{checkpoint}_sims{sims}": {
+        "episodes": episodes, "score_mean": score, "completo": completo,
+        "num_simulations": sims, "checkpoint": checkpoint}}
+    return r
+
+
+def test_the_three_regimes_chart_uses_the_median_and_never_the_max():
+    """A pergunta "os melhores nas suas melhores tentativas" tem uma resposta errada
+    óbvia: o máximo entre sementes. O máximo cresce com o número de sorteios, então
+    premiaria quem rodou 3 sementes sobre quem rodou 1 — que é o contrário de medir."""
+    from snakeai.plot import _mediana_de
+    rs = [run(seed=s, teto=20.0 + s * 10) for s in range(3)]
+    fin = _mediana_de(rs, "final")
+    finais = sorted(r.final["score_mean"] for r in rs)
+    assert fin[0] == pytest.approx(finais[1]), "é a mediana, não o máximo"
+    assert fin[1] == pytest.approx(finais[0]) and fin[2] == pytest.approx(finais[-1])
+    assert fin[3] == 3
+
+
+def test_the_search_bar_only_uses_contract_grade_measurements():
+    """Uma espiada de 200 episódios e uma medição que estourou o tempo ficam no registro
+    e **fora** da barra: a segunda é enviesada para episódios curtos, os ruins."""
+    from snakeai.plot import _mediana_da_busca
+    bons = [_com_busca(run(seed=s), 95.0 + s) for s in range(3)]
+    assert _mediana_da_busca(bons)[:1] == (96.0,)
+    assert _mediana_da_busca(bons)[3] == 3
+    assert _mediana_da_busca(bons)[4] == [32]
+    curtos = [_com_busca(run(seed=s), 95.0, episodes=200) for s in range(3)]
+    assert _mediana_da_busca(curtos) is None
+    parciais = [_com_busca(run(seed=s), 95.0, completo=False) for s in range(3)]
+    assert _mediana_da_busca(parciais) is None
+
+
+def test_the_three_regimes_chart_draws_only_what_exists():
+    """Quem não tem busca não ganha barra — e muito menos uma barra em zero, que afirmaria
+    que o algoritmo foi medido e tirou zero."""
+    rs = [run(algo="ppo", seed=s) for s in range(3)]
+    rs += [_com_busca(run(algo="alphazero", seed=s), 95.0) for s in range(3)]
+    for r in rs:
+        r.melhor = {**r.final, "score_mean": r.final["score_mean"] + 3.0}
+    fig, ax = arena_melhores(rs, so_principais=False)
+    # 3 regimes × alphazero + 2 regimes × ppo = 5 barras
+    assert len(ax.patches) == 5
+    assert all(b.get_width() > 0 for b in ax.patches)
+    rotulos = {t.get_text() for t in ax.get_legend().get_texts()}
+    assert "com busca" in rotulos, "a legenda registra o regime mesmo fora da 1ª linha"
+    plt.close(fig)
+
+
+def test_the_search_column_appears_in_the_table_with_its_budget():
+    rs = [_com_busca(run(algo="alphazero", seed=s), 95.0) for s in range(3)]
+    md = arena_table(rs)
+    assert "com busca" in md and "95.00 (32 sims)" in md
+    # sem medição nenhuma, a coluna é um travessão e não um zero
+    assert "| — |" in arena_table([run(algo="ppo", seed=s) for s in range(3)])

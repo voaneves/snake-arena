@@ -41,7 +41,10 @@ __all__ = [
     "from_legacy_csv",
 ]
 
-SCHEMA_VERSION = 1
+#: 2 — `busca` virou campo de primeira classe; antes era `meta["com_busca"]`,
+#: gravado com `skip_validation=True` e portanto fora de qualquer conferência.
+#: `load` migra o lugar antigo, então nenhum `history.json` precisou ser reescrito.
+SCHEMA_VERSION = 2
 
 #: Os valores que **todos** os resultados oficiais precisam compartilhar.
 #: Espelha a tabela do README; mudar aqui é mudar o contrato, e invalida o histórico.
@@ -110,6 +113,22 @@ class RunRecord:
         os dois separa duas perguntas diferentes: *como o algoritmo terminou* (final) e
         *o melhor que ele produziu* (melhor). A primeira é a da arena; a segunda é a de
         quem vai levar o modelo para o jogo. Ver `docs/COMPARABILITY.md`.
+    busca
+        Os mesmos `stats`, para o agente medido **com a máquina que ele usa para jogar** —
+        a busca em árvore do AlphaZero e do MuZero. Um dicionário `"<checkpoint>_sims<N>"`
+        → `stats`, porque um agente pode ser medido em mais de um orçamento de busca e em
+        mais de um checkpoint.
+
+        Mora aqui, e não em `meta`, porque **é um resultado**, e resultado se valida. Fica
+        numa coluna separada de `final` pelo motivo do `docs/COMPARABILITY.md`: a busca
+        gasta dezenas de avaliações de rede por jogada contra uma do PPO, então ela não
+        divide eixo com a curva oficial. As três colunas respondem a três perguntas:
+        *como o algoritmo terminou* (`final`), *o melhor que ele produziu* (`melhor`) e
+        *o que você levaria para jogar* (`busca`).
+
+        Cada entrada carrega `num_simulations`, `checkpoint` e `episodes`. Só as que
+        cumprem o protocolo do contrato (1000 episódios, `completo=True`) contam para a
+        arena — as demais ficam gravadas, marcadas, como o que são: uma espiada.
     comparable, caveat
         `False` marca uma curva que entra no gráfico como contexto histórico, com o
         motivo em `caveat`. Toda execução nova nasce `True`.
@@ -125,6 +144,7 @@ class RunRecord:
     curve: list = field(default_factory=list)
     final: dict = field(default_factory=dict)
     melhor: dict = field(default_factory=dict)
+    busca: dict = field(default_factory=dict)
     comparable: bool = True
     caveat: str = ""
     meta: dict = field(default_factory=dict)
@@ -152,6 +172,35 @@ class RunRecord:
         aparece, e o motivo fica em `meta["contract_violations"]`.
         """
         return self.comparable and not self.meta.get("contract_violations")
+
+    @property
+    def busca_oficial(self):
+        """As entradas de `busca` que cumprem o protocolo do contrato.
+
+        Mesma régua de `final`: 1000 episódios e `completo=True`. Uma medição de 200
+        episódios tem erro padrão ~2× o da oficial e uma que estourou o teto de tempo é
+        uma amostra enviesada para episódios **curtos** — justamente os ruins. As duas
+        ficam gravadas, e nenhuma das duas entra na arena.
+        """
+        return {k: st for k, st in (self.busca or {}).items()
+                if isinstance(st, dict)
+                and st.get("episodes") == CONTRATO["eval_episodes"]
+                and st.get("completo", False)}
+
+    def melhor_com_busca(self, checkpoint=None):
+        """A melhor entrada oficial de `busca`, ou `None`.
+
+        `checkpoint` filtra por `"last"`/`"best"`; sem ele, o melhor de qualquer um. Não
+        há escolha "correta" entre os dois — quem leva o modelo para jogar leva o melhor
+        que tem —, e é por isso que o critério fica explícito aqui em vez de implícito
+        num max espalhado pelo gráfico.
+        """
+        itens = [(k, st) for k, st in self.busca_oficial.items()
+                 if checkpoint is None or st.get("checkpoint") == checkpoint
+                 or (st.get("checkpoint") is None and k.startswith(f"{checkpoint}_"))]
+        if not itens:
+            return None
+        return max((st for _k, st in itens), key=lambda st: st.get("score_mean", -1.0))
 
     def eval_curve(self):
         """`(passos, scores)` só dos pontos em que a avaliação rodou."""
@@ -268,6 +317,13 @@ def load(path) -> RunRecord:
     with open(path, encoding="utf-8") as f:
         d = json.load(f)
     d.pop("schema_version", None)
+    # v1 → v2: a coluna com busca morava em `meta["com_busca"]`, gravada com
+    # `skip_validation=True`. Migrar na leitura em vez de reescrever os arquivos mantém
+    # os registros já publicados byte a byte iguais — a assinatura de um `history.json`
+    # é parte do que torna uma execução citável. O lugar antigo continua legível; o novo
+    # é o que a arena consulta.
+    if not d.get("busca"):
+        d["busca"] = dict(d.get("meta", {}).get("com_busca") or {})
     return RunRecord(**d, schema_version=SCHEMA_VERSION)
 
 
@@ -353,6 +409,24 @@ def validate(record: RunRecord, strict_eval=True):
             p.append("`final.score_mean` ausente")
         elif not (0.0 <= media <= SCORE_PERFEITO):
             p.append(f"score_mean fora da faixa possível: {media}")
+
+    # A coluna com busca é opcional — a maioria dos algoritmos não tem máquina além da
+    # rede. Mas uma entrada que **existe** tem de dizer o que é: sem `num_simulations` o
+    # número não é interpretável, e sem `checkpoint` não se sabe se mediu o `last` ou o
+    # `best`. O tamanho da amostra **não** é violação: uma espiada de 200 episódios é
+    # legítima, só não entra na arena (ver `busca_oficial`).
+    for chave, st in (record.busca or {}).items():
+        if not isinstance(st, dict):
+            p.append(f"`busca['{chave}']` não é um dicionário de stats")
+            continue
+        if st.get("num_simulations") is None:
+            p.append(f"`busca['{chave}']` sem `num_simulations` — o número só significa "
+                     "alguma coisa junto com o orçamento de busca que o produziu")
+        media = st.get("score_mean")
+        if media is None:
+            p.append(f"`busca['{chave}'].score_mean` ausente")
+        elif not (0.0 <= media <= SCORE_PERFEITO):
+            p.append(f"`busca['{chave}'].score_mean` fora da faixa possível: {media}")
 
     orcamento = record.config.get("total_steps")
     if orcamento is None:

@@ -278,7 +278,7 @@ agentes — a coluna com busca não pode mais divergir do protocolo oficial por 
 **Uma coluna que faltava.** O AlphaZero existe para buscar, e era avaliado só sem buscar.
 `avaliar_com_busca` estava no agente desde sempre — protocolo oficial, 1.000 episódios,
 greedy, semente 123 — e **nenhuma célula do notebook chamava**. Agora o `06` e o `93` têm a
-célula, com dois orçamentos de simulação, e o resultado vai para `meta["com_busca"]` do
+célula, com dois orçamentos de simulação, e o resultado vai para o campo `busca` do
 registro. A curva oficial continua sendo a rede pura, porque a busca gasta 33 avaliações de
 rede por jogada contra 1 do PPO; a coluna separada é como se reporta isso sem trapacear no
 eixo. Falta fazer o mesmo no MuZero — ver `docs/ANTES_DO_ARTIGO.md`.

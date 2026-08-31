@@ -19,8 +19,8 @@ import argparse
 import glob
 import os
 
-from .plot import (arena_figure, arena_table, arena_tempo, arena_vitorias,
-                   mesmo_hardware, separa_principais)
+from .plot import (arena_figure, arena_melhores, arena_table, arena_tempo,
+                   arena_vitorias, mesmo_hardware, separa_principais)
 from .record import (ORCAMENTO_OFICIAL, SEMENTES_OFICIAIS, configuracoes_incompletas,
                      from_legacy_csv, load_all, validate)
 
@@ -139,6 +139,19 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
         except Exception as e:                    # nunca derrubar a arena pelo secundário
             saidas[f"vitorias_{modo}_erro"] = repr(e)
 
+    # O painel dos três regimes. Quarta pergunta: "quais são os melhores modelos nas
+    # suas melhores tentativas" — respondida com três medianas e não com um máximo, que
+    # premiaria quem rodou mais sementes.
+    for modo in ("light", "dark"):
+        try:
+            fig, _ = arena_melhores(oficiais, mode=modo)
+            caminho = os.path.join(assets, f"arena_melhores_{modo}.png")
+            fig.savefig(caminho, dpi=165, facecolor=fig.get_facecolor())
+            plt.close(fig)
+            saidas[f"melhores_{modo}"] = caminho
+        except Exception as e:                    # nunca derrubar a arena pelo secundário
+            saidas[f"melhores_{modo}_erro"] = repr(e)
+
     igual, hw = mesmo_hardware(oficiais)
     if verbose and oficiais and not igual:
         print("  [atenção] execuções de hardwares diferentes (" + " · ".join(sorted(hw))
@@ -183,6 +196,29 @@ def montar(runs="runs", legado="results/legacy", assets="assets", docs="docs",
         "diferentes, e a curva de score é idêntica nos dois casos.",
         "",
         "![quem fecha o tabuleiro](../assets/arena_vitorias_light.png)",
+        "",
+        "## Os melhores modelos nas suas melhores tentativas",
+        "",
+        "Três perguntas sobre a **mesma** execução: como o algoritmo terminou (`final`,",
+        "que é o número oficial), o melhor que ele produziu em algum momento (`melhor`), e",
+        "o que você levaria para jogar (`com busca`). Cada barra é a **mediana entre",
+        "sementes** dentro do regime — o que varia entre elas é a pergunta, não a",
+        "estatística.",
+        "",
+        "A tentação aqui é responder com um **máximo**: o maior número que qualquer",
+        "semente produziu em qualquer regime. Seria enviesado de um jeito específico e",
+        "evitável — o máximo cresce com o número de sorteios, então premia quem rodou mais",
+        "sementes, não quem é melhor. Comparar o máximo de três sementes com o de uma é",
+        "comparar 3 sorteios com 1.",
+        "",
+        "O viés que sobra está escrito na figura: `melhor` é um máximo sobre os ~20 pontos",
+        "de avaliação da execução, então é otimista **por construção**, e não",
+        "uniformemente — com 1.000 episódios o erro padrão é `desvio/√1000`, que vale ~0,25",
+        "para o AlphaZero e ~0,88 para o MuZero. Quanto mais instável o algoritmo, mais o",
+        "`melhor` o favorece. Uma diferença de dois ou três pontos entre `final` e `melhor`",
+        "não significa nada; a queda de 42 pontos do `rainbow/completo/seed1` significa.",
+        "",
+        "![melhores tentativas](../assets/arena_melhores_light.png)",
         "",
     ]
     if incompletas:

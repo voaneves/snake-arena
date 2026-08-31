@@ -15,8 +15,12 @@ simulador está disponível na hora de agir.
 Este script existe para o caso em que o treino acabou e a coluna não foi medida. Ele
 reconstrói o agente com a configuração **da execução** (e não com os padrões de hoje:
 `fpu`, `q_normalizado`, `c_puct` e `gamma` mudam a busca, e medir com outra configuração
-mediria outro agente), carrega o modelo salvo, roda o protocolo oficial e **grava de volta**
-em `meta["com_busca"]` do `history.json`.
+mediria outro agente), carrega o modelo salvo, roda o protocolo oficial e **grava de volta** no campo `busca` do
+`history.json` — irmão de `final` e `melhor` desde o schema 2, e não um canto de `meta`,
+porque o que mora em `meta` não passa por `validate()` e isto é um resultado.
+
+Só entradas com os 1.000 episódios do contrato e `completo=True` entram na coluna *com
+busca* da arena; as demais ficam gravadas e marcadas como o que são.
 
 Custo
 -----
@@ -153,13 +157,15 @@ def main(argv=None):
           + ("sem teto de tempo" if teto is None else f"teto {a.minutos:.0f} min")
           + f", {a.ambientes} ambientes", flush=True)
 
-    medidas = dict(rec.get("meta", {}).get("com_busca", {}))
+    # lê dos dois lugares: `busca` é o campo atual, `meta["com_busca"]` é onde os
+    # registros anteriores ao schema 2 guardavam a mesma coisa
+    medidas = dict(rec.get("busca") or rec.get("meta", {}).get("com_busca", {}))
     for s in sims:
         t0 = time.time()
         st = ag.avaliar_com_busca(episodes=a.episodios, num_simulations=s,
                                   num_envs=a.ambientes,
                                   max_segundos=teto, verbose=True)
-        medidas[f"{a.modelo}_sims{s}"] = st
+        medidas[f"{a.modelo}_sims{s}"] = {**st, "checkpoint": a.modelo}
         aviso = "" if st["completo"] else "   ATENCAO: parcial, completo=False, fora da arena"
         print(f"  {s:>3} sims: score {st['score_mean']:6.2f} · cheio {st['win_rate']:5.1%} "
               f"· fome {st['fim_fome']:5.1%} · {st['episodes']} episódios · "
@@ -179,10 +185,17 @@ def main(argv=None):
     if a.seco:
         print("\n(--seco: nada gravado)")
         return
-    rec.setdefault("meta", {})["com_busca"] = medidas
+    rec["busca"] = medidas
+    # o lugar antigo sai junto, senão o registro passa a afirmar a mesma coisa em dois
+    # lugares que podem divergir na próxima medição
+    rec.get("meta", {}).pop("com_busca", None)
     with open(caminho_hist, "w", encoding="utf-8") as f:
         json.dump(rec, f, ensure_ascii=False, indent=1)
-    print("\ngravado em meta['com_busca'] de", caminho_hist)
+    print("\ngravado no campo `busca` de", caminho_hist)
+    oficiais = [k for k, v in medidas.items()
+                if v.get("episodes") == 1000 and v.get("completo")]
+    print("entram na arena: " + (", ".join(oficiais) if oficiais else
+                                 "nenhuma (o contrato pede 1000 episodios completos)"))
 
 
 if __name__ == "__main__":

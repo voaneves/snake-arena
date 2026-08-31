@@ -92,6 +92,7 @@ Por isso cada execução guarda dois resultados:
 |---|---|---|
 | `final` | o modelo do **último** passo | a curva e o **número oficial** da arena |
 | `melhor` | o **melhor checkpoint**, com o passo em que apareceu | coluna à parte na tabela |
+| `busca` | o agente medido com a **máquina que ele usa para jogar** | coluna à parte, nunca na curva |
 
 O oficial é o `final`, e a razão é a mesma que mantém a busca do AlphaZero fora da curva:
 escolher o melhor entre N avaliações **premia quem foi medido mais vezes**. Com avaliação
@@ -160,7 +161,7 @@ feito lendo o código e não a intuição:
 
 | categoria | quem | como aparece |
 |---|---|---|
-| **busca na hora de agir** | `06_alphazero` (MCTS sobre o `VecSnake`), `07_muzero` (MCTS sobre a rede `g`) | **coluna separada.** `avaliar_com_busca` roda o protocolo oficial — 1.000 episódios, greedy sobre as contagens de visita, semente 123 — e o resultado vai para `meta["com_busca"]` do registro. Nunca entra na curva |
+| **busca na hora de agir** | `06_alphazero` (MCTS sobre o `VecSnake`), `07_muzero` (MCTS sobre a rede `g`) | **coluna separada.** `avaliar_com_busca` roda o protocolo oficial — 1.000 episódios, greedy sobre as contagens de visita, semente 123 — e o resultado vai para o campo `busca` do registro. Nunca entra na curva |
 | **memória interna** | `09_dreamerv3` (`h`,`z` do RSSM), `11_soap` (crença de opção) | **já é a curva.** O latente *é* a política, não um acessório: não existe "rede pura" para separar, e medir sem ele seria medir um agente que não existe. O `evaluate()` sustenta isso pelo contrato `apos_passo` — ver a seção sobre políticas com memória |
 | **filtro de flood-fill** | **todos** | terceira linha do `verdict()`, para o benchmark inteiro. É computação extra na hora de jogar, disponível a qualquer agente, e por isso já nasceu em coluna própria |
 | nada além da rede | PPO, A2C, ACER, ACKTR, ACEKTR, DQN, Rainbow, LBC | a curva e ponto. O LBC parece exceção e não é: ele avalia **uma** política da população, que é rede pura |
@@ -282,6 +283,59 @@ desenhada.
 Esse painel só vale **dentro do mesmo hardware**. Uma curva de P100 ao lado de uma de T4
 compara aceleradores, não algoritmos, e nada no gráfico denunciaria — por isso o registro
 guarda plataforma e GPU, e o painel escreve o aviso na figura quando elas divergem.
+
+## Os melhores modelos nas suas melhores tentativas
+
+Esta é a quarta pergunta, e ela tem uma resposta errada tentadora: **o máximo**. O maior
+número que qualquer semente de qualquer algoritmo produziu em qualquer regime, tudo numa
+lista só.
+
+O problema não é filosófico, é aritmético: **o máximo cresce com o número de sorteios.**
+Sob a hipótese nula de que dois algoritmos são idênticos, aquele que rodou três sementes
+espera um máximo maior que o que rodou uma — não porque seja melhor, mas porque sorteou
+mais vezes. O `alphazero/sims32` tem três sementes e o `muzero/unroll5` tem uma; comparar
+os máximos dos dois é comparar 3 sorteios com 1, e a diferença que aparece é em parte a
+resposta a uma pergunta que ninguém fez.
+
+Então o painel `arena_melhores` desenha **três medianas entre sementes**, uma por regime.
+O que varia entre as barras é a pergunta, não a estatística:
+
+| barra | a pergunta | de onde sai |
+|---|---|---|
+| `final` | como o algoritmo **terminou** | `final.score_mean`, mediana entre sementes — é o número oficial |
+| `melhor` | o melhor que ele **produziu** | `melhor.score_mean`, mesma agregação |
+| `com busca` | o que você **levaria para jogar** | `busca_oficial`, mesma agregação |
+
+### O viés que sobra, e que fica escrito na figura
+
+A mediana entre sementes não conserta tudo. O `melhor` continua sendo um **máximo sobre os
+~20 pontos de avaliação** de cada execução, então é otimista por construção. E o tamanho
+disso não é uniforme entre algoritmos: com 1.000 episódios o erro padrão da média é
+`desvio/√1000`, que vale ~0,25 para o AlphaZero (desvio 7,9) e ~0,88 para o MuZero (desvio
+27,9). Sobre um platô de ~8 avaliações, `E[máx]` fica cerca de 2 desvios acima da média —
+meio ponto para um, uns dois pontos para o outro.
+
+**Quanto mais instável o algoritmo, mais o `melhor` o favorece.** Uma diferença de dois ou
+três pontos entre `final` e `melhor` não significa nada. Uma de 42 — `rainbow/completo`,
+semente 1, `final` 43,50 contra `melhor` 86,13 — significa, e é exatamente o que a coluna
+existe para mostrar.
+
+### Por que a barra com busca não divide eixo com as outras
+
+Pela mesma razão que ela não entra na curva: uma jogada com 32 simulações gasta dezenas de
+avaliações de rede contra **uma** do PPO. Desenhá-las no mesmo eixo daria computação de
+graça a quem busca. Ela está no painel porque é a resposta honesta a "qual eu levo para o
+jogo", e vem marcada com o orçamento que a produziu.
+
+Só entradas que cumprem o protocolo inteiro — 1.000 episódios e `completo=True` — contam.
+Uma espiada de 200 episódios tem erro padrão ~2,2× o da oficial; uma medição que estourou
+`MINUTOS_MAX` é uma amostra enviesada para episódios **curtos**, que são justamente os
+ruins. As duas ficam gravadas em `busca` e nenhuma aparece na coluna: o registro guarda o
+que foi medido, a arena publica o que cumpre a régua.
+
+Medir com busca custa horas, então normalmente só uma semente foi medida sob o protocolo
+inteiro. Isso aparece na figura como **hachura** e um `n=k` no rótulo — uma barra
+sustentada por uma semente não pode ser desenhada como uma sustentada por três.
 
 ## Como uma execução é reprovada
 

@@ -13,7 +13,8 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
-| §2.31 a perda do MuZero soma os `K+1` passos do desenrolar **sem peso** | **levantado, com conserto opcional pronto** — o passo 0, o único que a métrica oficial mede, vale 14,5% da perda de política com `unroll=5`; `normaliza_unroll` traz o `scale_gradient(loss, 1/K)` do paper e o põe em ~46%. Padrão **desligado** até a medição; braços no `92_muzero_ablacoes` |
+| §2.32 o reúso de amostra do MuZero está no regime do **Reanalyse**, sem o Reanalyse | **implementado, desligado por padrão** — 2,0 amostras por estado é o número do Apêndice H, onde ele vem acompanhado de refazer a busca com a rede atual e de rede alvo; `reanalise` traz o primeiro (só a política, só o passo 0). Custo medido: 1,32×–1,57× em CPU, sublinear porque as buscas são em lote |
+| §2.31 a perda do MuZero soma os `K+1` passos do desenrolar **sem peso**, e o reúso de amostra está no regime do Reanalyse sem o Reanalyse | **levantado, com conserto opcional pronto** — o passo 0, o único que a métrica oficial mede, vale 14,5% da perda de política com `unroll=5`; `normaliza_unroll` traz o `scale_gradient(loss, 1/K)` do paper e o põe em ~46%. Padrão **desligado** até a medição; braços no `92_muzero_ablacoes` |
 | §2.30 o desenrolar de K passos do MuZero atravessava a morte da cobra | **corrigido** — 25% das amostras treinavam a dinâmica contra a recompensa de outra partida; a máscara também recuperou os 31% de passos que eram descartados |
 | §2.29 a temperatura do AlphaZero transforma o alvo de política em rótulo duro | **corrigido e é o padrão** — `temp_alvo=1,0` separa o alvo da exploração e `temp_passos=30` traz o agendamento do paper; braço `sem_conserto_do_alvo` |
 | §2.28 alvo de valor não normalizado domina o tronco compartilhado do AlphaZero | **corrigido e é o padrão** — `valor_symlog` + `vf_coef=0,5` levam `‖∇v‖/‖∇π‖` de 71× para 7× no `|z|` real; braço `sem_conserto_do_tronco`. **Aplicado também no MuZero** |
@@ -717,6 +718,93 @@ execução não teve. Aquela execução foi renomeada para
 `completo+n3+sem_noisy+eps_greedy`, com o motivo gravado em `meta["variante_corrigida"]`;
 o teste é `test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not`.
 
+### 2.32 ✔ O reúso de amostra está no regime do Reanalyse, sem o Reanalyse
+`muzero.py:_aprender,_reanalisar` · `tools/diag_reanalise.py` · Apêndice H
+
+**A aritmética que fecha.** Este repositório faz `epochs_por_iter=8 × batch_size=256 =
+2048` amostras de gradiente por iteração contra `num_envs=64 × rollout=16 = 1024` passos
+novos: **2,0 amostras por estado**. O Apêndice H diz o número dos dois lados:
+
+> *several other hyperparameters were adjusted — primarily to increase sample reuse and
+> avoid overfitting of the value function. Specifically, **2.0 samples were drawn per
+> state, instead of 0.1**; the value target was weighted down to 0.25 (…); and the n-step
+> return was reduced to n = 5 steps instead of n = 10.*
+
+0,1 é o MuZero puro. 2,0 é o **Reanalyse**. Estamos no número do Reanalyse — 20× o reúso
+do MuZero puro — e não temos o Reanalyse. Que não é um número de reúso, é maquinário:
+
+> *MuZero Reanalyze **revisits its past time-steps and re-executes its search using the
+> latest model parameters**, potentially resulting in a better quality policy than the
+> original search. This fresh policy is used as the policy target for 80% of updates (…)
+> Furthermore, a **target network** (…) is used to provide a fresher, stable n-step
+> bootstrapped target for the value function.*
+
+O Reanalyse existe **porque** reúso alto precisa de alvo fresco. Sem ele, o alvo de visitas
+de uma amostra veio de uma rede `g` que já não existe — com buffer de 50 mil e 1.024 passos
+novos por iteração, até 49 iterações atrás — e é reamostrado duas vezes contra um modelo que
+se moveu. É a descrição do modo de falha medido no §2.31: professor estável em 58–60, aluno
+oscilando entre 31,7 e 66,0, `perda_pi` subindo enquanto o `lr` desce.
+
+**O que foi implementado, e o que não foi.** `reanalise` refaz a busca com a rede atual sobre
+uma fração de cada minilote e reescreve o alvo de política do **passo 0**, gravando de volta
+no buffer para o refresco compor em vez de se perder. Fora do escopo, e dito com todas as
+letras:
+
+* os passos `1..K` do desenrolar, porque o buffer guarda só a observação do passo 0. Isto
+  cobre exatamente o termo que a métrica oficial mede (§2.31) e deixa os imaginados de fora;
+* o alvo de **valor**, porque `z` é um retorno de n passos com bootstrap e refazê-lo exigiria
+  a rede alvo do Apêndice H mais o estado em `t+n`, que o buffer não guarda.
+
+É, portanto, o Reanalyse **da política**. Chamá-lo de "Reanalyse" sem esta lista seria
+afirmar o Apêndice H inteiro.
+
+**Uma escolha que muda o alvo:** sem ruído de Dirichlet. O ruído da raiz existe para explorar
+durante a geração de dados; aqui o que se produz é um alvo, e um alvo não deve depender de um
+sorteio. A consequência é que um buffer meio refrescado carrega **duas** distribuições de
+alvo, uma sorteada e uma determinística. Qual delas é mais aguda depende do estado do treino —
+com a rede treinada o ruído espalha e o refeito sai mais afiado; com a rede recém-iniciada um
+sorteio de `Dir(1,1,1)` tem máximo esperado ~0,61 contra o prior quase uniforme, e a direção
+se inverte. O teste protege a **reprodutibilidade**, que vale nos dois casos.
+
+**O custo, medido antes de gastar sete horas** (`tools/diag_reanalise.py`, forma do contrato,
+2 núcleos de CPU):
+
+| `reanalise` | raízes / coleta | lotes / coleta | s/coleta | s/treino | s/iter | × base |
+|---|---|---|---|---|---|---|
+| 0,00 | 0,00× | 0,00× | 8,9 | 8,5 | 17,4 | 1,00× |
+| 0,25 | 0,50× | 0,50× | 9,3 | 13,7 | 23,0 | **1,32×** |
+| 0,50 | 1,00× | 0,50× | 8,8 | 16,5 | 25,3 | **1,46×** |
+| 0,80 | 1,60× | 0,50× | 8,8 | 18,4 | 27,3 | **1,57×** |
+
+O interessante é a **sublinearidade**, e ela não é um acidente de medição: as buscas são
+feitas em lote. A coleta roda `rollout` buscas batelada de largura `num_envs` (16 × 64); o
+Reanalyse roda `epochs_por_iter` buscas batelada de largura `reanalise × batch_size` (8 ×
+205). **O número de laços de árvore em Python é 8, qualquer que seja a fração** — só a
+largura do lote cresce. Em trabalho de rede 0,80 é 1,6× a coleta; em iterações do laço é
+sempre 0,5× dela.
+
+Isso inverte a recomendação conforme o hardware, e vale escrever antes que alguém escolha
+errado: **numa GPU o laço em Python domina e a largura do lote é quase de graça, então
+0,80 custa quase o mesmo que 0,25** — não há razão para não ir direto ao número do paper.
+Numa CPU manda a coluna das raízes, e 0,25 é o ponto razoável. O botão de custo para GPU é
+`reanalise_sims`, que encurta o laço; ele é desvio do paper, porque produz alvo de qualidade
+menor que o da coleta.
+
+Extrapolando para a execução real (6,8 h, ~4.900 iterações em GPU, onde a busca da coleta é
+o termo dominante), o Reanalyse deve custar cerca de meio termo de coleta a mais — algo como
+**9 a 10 h**. É estimativa, não medição: o número honesto sai do primeiro braço que rodar.
+
+**Fica desligado por padrão.** Há uma execução de controle a preservar, e — mais importante —
+o §2.31 tem um conserto de **graça** que ataca o mesmo sintoma. A ordem certa é
+`normaliza_unroll` primeiro; se ele resolver, este maquinário fica registrado e não gasta
+GPU nenhuma. Os braços `reanalise_25`, `reanalise_80`, `reanalise_80_sims12` e
+`normaliza_e_reanalise` estão no `92_muzero_ablacoes`.
+
+**O que está certo e não precisa mexer:** `n_step = 10` é o valor do MuZero puro (Apêndice G,
+Atari); o `n = 5` do Apêndice H vem no pacote do Reanalyse, então trocá-lo sozinho não é
+seguir o paper. `coef_valor = 0,25` **é** o número do Apêndice H. E `gamma = 0,997` é
+literalmente o do paper, herdado do R2D2.
+
 ### 2.31 ✔ A perda do MuZero soma os `K+1` passos do desenrolar sem peso
 `muzero.py:_passo` · `tools/diag_unroll.py` · `runs/muzero/unroll5/seed0`
 
@@ -771,12 +859,26 @@ percorre**. E a consequência é contraintuitiva o bastante para valer o destaqu
 `unroll` sem peso dilui ainda mais o único termo que produz o número do contrato** — a
 reação instintiva a uma curva que oscila vai para o lado errado.
 
-**Desvio do paper, e onde ele entrou.** O pseudocódigo do MuZero aplica
-`scale_gradient(loss, 1/K)` às perdas dos passos do desenrolar, deixando o passo 0 inteiro;
-com isso a fatia do passo 0 fica em ~metade, qualquer que seja `K`. Este repositório tinha
-**a outra** escala de gradiente — o `s = s*0.5 + stop_gradient(s)*0.5` no estado oculto, que
-controla o gradiente que chega em `h` — e não a das perdas. As duas têm nome parecido e
+**Desvio do paper, e onde ele entrou.** O Apêndice G do MuZero (Schrittwieser et al., 2020,
+arXiv:1911.08265v2) é explícito em ter **duas** escalas de gradiente, e lista as duas em
+sequência:
+
+> *To maintain roughly similar magnitude of gradient across different unroll steps, we scale
+> the gradient in two separate locations:*
+> * *We scale the loss of each head by `1/K`, where `K` is the number of unroll steps.*
+> * *We also scale the gradient at the start of the dynamics function by `1/2`.*
+
+Este repositório tinha **a segunda** — o `s = s*0.5 + stop_gradient(s)*0.5` no estado oculto,
+que controla o gradiente que chega em `h` — e não a primeira. As duas têm nome parecido e
 propósito diferente; ter uma delas é fácil de confundir com ter as duas.
+
+Vale registrar uma ambiguidade honesta: lida ao pé da letra, "the loss of each head" incluiria
+o passo 0. Só que essa leitura **não muda nada aqui** — dividir a perda inteira por uma
+constante, sob Adam, é quase um no-op, porque o segundo momento normaliza a escala do
+gradiente; sobraria só o `clipnorm=5` mordendo menos. O que muda a *fatia* do passo 0 é
+deixá-lo fora da escala, que é o que o pseudocódigo publicado faz (`gradient_scale = 1.0` na
+inferência inicial e `1/len(actions)` nos passos seguintes) e o que `normaliza_unroll`
+implementa.
 
 **Conserto:** `normaliza_unroll`, que escala só os `K` termos imaginados por `1/K`. E
 `_passo` passou a devolver `perda_pi_0` separada, com `frac_pi_0` no registro — sem
@@ -793,10 +895,35 @@ pré-registradas de que **não** vão ajudar, para o registro ser falsificável 
 * `sims32` **não ganha nada**, porque o professor não é o gargalo — melhorar o professor
   alarga o vão que já não está sendo atravessado.
 
-A hipótese secundária tem braço próprio (`coef_valor_1`): `perda_v ≈ 0,19` em `symlog` vira
-uma banda de `[6,7; 17,5]` na escala real, e é esse valor que a árvore soma no backup. Valor
-ruidoso produz contagem de visitas ruidosa, que é um alvo que o aluno não consegue fixar. O
-AlphaZero deste repositório usa `vf_coef = 0,5`; o MuZero usa 0,25.
+**Uma hipótese minha que o paper derrubou.** Eu havia proposto `coef_valor: 0,25 → 1,0` como
+segunda aposta, pelo argumento de que `perda_v ≈ 0,19` em `symlog` vira uma banda de
+`[6,7; 17,5]` na escala real e que valor ruidoso produz contagem de visitas ruidosa. O
+Apêndice H diz o oposto, e diz por quê: no MuZero Reanalyse *"the value target was weighted
+down to **0.25** compared to weights of 1.0 for policy and reward targets"*, entre os ajustes
+feitos "primarily to increase sample reuse and **avoid overfitting of the value function**".
+Ou seja, 0,25 já **é** o número do paper, e subir para 1,0 é andar contra ele. O braço
+continua no `92` porque a hipótese é testável; deixou de ser a segunda coisa a rodar.
+
+**O que o Apêndice H revelou no lugar, e é mais sério.** Este repositório faz
+`epochs_por_iter=8 × batch_size=256 = 2048` amostras de gradiente por iteração contra
+`num_envs=64 × rollout=16 = 1024` passos novos — **2,0 amostras por estado**. O paper usa
+**0,1** no MuZero puro e sobe para **exatamente 2,0** no MuZero Reanalyse. E o Reanalyse não
+é só um número de reúso: ele **refaz a busca** com os parâmetros atuais sobre estados antigos,
+usando essa política fresca como alvo em 80% das atualizações, e acrescenta uma **rede alvo**
+`f_{θ⁻}` para o bootstrap de valor. Nenhum dos dois existe aqui.
+
+Estamos, portanto, no regime de reúso do Reanalyse **sem** o Reanalyse: alvos de visitas
+congelados de uma rede `g` de ~49 iterações atrás, reamostrados duas vezes cada, contra um
+modelo que se move. É a descrição exata do modo de falha medido — professor estável, aluno
+oscilando, `perda_pi` subindo com o `lr` caindo — e o Reanalyse foi introduzido no paper
+precisamente para esse regime. O braço `reuso_do_paper` (`epochs_por_iter=1`) volta ao reúso
+do MuZero puro, que é a única forma de sair do regime **sem** implementar o Reanalyse; o custo
+é orçamento de gradiente (§2.1), então é uma troca e não um conserto. Implementar Reanalyse de
+verdade é a entrada nova da fila em `docs/ANTES_DO_ARTIGO.md`.
+
+Vale dizer o que está **certo**: `n_step = 10` é o valor do MuZero puro (Apêndice G, Atari), e
+o `n = 5` do Apêndice H vem no pacote do Reanalyse — trocar só ele não seria seguir o paper.
+E `gamma = 0,997` é literalmente o do paper, herdado do R2D2.
 
 ### 2.30 ✔ O desenrolar do MuZero atravessava a fronteira do episódio
 `muzero.py:collect,_passo`

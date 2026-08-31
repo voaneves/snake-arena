@@ -351,3 +351,79 @@ def test_no_test_writes_run_artifacts_into_the_repository():
     assert not faltando, (
         "estes testes chamam train() sem isolar o disco e vão sujar o repositório:\n  "
         + "\n  ".join(faltando))
+
+
+# ------------------------------------------- a coluna com busca, campo de primeira classe
+def _busca(**kw):
+    base = {"episodes": 1000, "score_mean": 95.6, "completo": True,
+            "num_simulations": 32, "checkpoint": "last",
+            "fim_fome": 0.01, "fim_colisao": 0.04, "fim_tabuleiro_cheio": 0.95}
+    base.update(kw)
+    return base
+
+
+def test_the_search_column_is_a_field_and_not_a_corner_of_meta():
+    """Antes ela morava em `meta["com_busca"]`, gravada com `skip_validation=True`. O que
+    mora em `meta` não passa por `validate()` — e isto é um resultado."""
+    r = registro_valido(busca={"last_sims32": _busca()})
+    assert validate(r) == []
+    assert "busca" in json.loads(json.dumps(__import__("dataclasses").asdict(r)))
+
+
+def test_a_search_entry_must_say_which_budget_produced_it():
+    """`score_mean` sem `num_simulations` não é interpretável: é o número de um agente que
+    não se sabe quanto pensou."""
+    r = registro_valido(busca={"last": _busca(num_simulations=None)})
+    assert any("num_simulations" in p for p in validate(r))
+    fora = registro_valido(busca={"last_sims32": _busca(score_mean=1e9)})
+    assert any("fora da faixa" in p for p in validate(fora))
+
+
+def test_only_a_full_protocol_search_measurement_reaches_the_arena():
+    """Uma espiada de 200 episódios e uma medição que estourou o teto de tempo ficam
+    gravadas — e nenhuma das duas entra na coluna. A segunda é pior que a primeira: ela é
+    enviesada para episódios curtos, que são justamente os ruins."""
+    r = registro_valido(busca={
+        "last_sims32": _busca(),                              # o protocolo inteiro
+        "last_sims16": _busca(episodes=200, score_mean=94.0),  # espiada
+        "last_sims64": _busca(completo=False, score_mean=96.0),  # estourou o tempo
+    })
+    assert validate(r) == [], "as três são gravadas sem violar o contrato"
+    assert set(r.busca_oficial) == {"last_sims32"}
+    assert r.melhor_com_busca()["score_mean"] == pytest.approx(95.6)
+
+
+def test_the_best_search_measurement_can_be_filtered_by_checkpoint():
+    r = registro_valido(busca={
+        "last_sims32": _busca(score_mean=90.0, checkpoint="last"),
+        "best_sims32": _busca(score_mean=95.6, checkpoint="best"),
+    })
+    assert r.melhor_com_busca()["score_mean"] == pytest.approx(95.6)
+    assert r.melhor_com_busca("last")["score_mean"] == pytest.approx(90.0)
+    assert r.melhor_com_busca("best")["score_mean"] == pytest.approx(95.6)
+    assert registro_valido().melhor_com_busca() is None
+
+
+def test_records_written_before_the_field_existed_are_migrated_on_load(tmp_path):
+    """Migrar na leitura em vez de reescrever mantém os `history.json` já publicados byte
+    a byte iguais — a assinatura de um registro é parte do que o torna citável."""
+    r = registro_valido()
+    r.meta["com_busca"] = {"last_sims32": _busca()}
+    caminho = tmp_path / "history.json"
+    save(r, str(caminho))
+    # o arquivo em disco continua com a coluna no lugar antigo
+    assert json.loads(caminho.read_text(encoding="utf-8"))["meta"]["com_busca"]
+    lido = load(str(caminho))
+    assert set(lido.busca) == {"last_sims32"}
+    assert set(lido.busca_oficial) == {"last_sims32"}
+    assert validate(lido) == []
+
+
+def test_the_new_field_wins_over_the_migrated_one(tmp_path):
+    """Se os dois lugares existirem, o campo manda — senão uma medição nova ficaria
+    silenciosamente escondida por uma antiga."""
+    r = registro_valido(busca={"last_sims32": _busca(score_mean=95.6)})
+    r.meta["com_busca"] = {"last_sims32": _busca(score_mean=1.0)}
+    caminho = tmp_path / "history.json"
+    save(r, str(caminho))
+    assert load(str(caminho)).busca["last_sims32"]["score_mean"] == pytest.approx(95.6)

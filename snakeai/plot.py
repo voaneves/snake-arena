@@ -29,7 +29,8 @@ import numpy as np
 
 __all__ = ["PALETA", "VARIANTE_PRINCIPAL", "cores_por_algoritmo", "e_principal",
            "separa_principais", "arena_figure", "arena_familias",
-           "arena_tempo", "arena_vitorias", "arena_table", "plot_run",
+           "arena_tempo", "arena_vitorias", "arena_melhores", "arena_table",
+           "plot_run",
            "mesmo_hardware"]
 
 # ---------------------------------------------------------------------- paleta
@@ -773,6 +774,191 @@ def arena_vitorias(registros, mode="light", figsize=(8.6, 4.4), titulo=None,
     return fig, ax
 
 
+#: Os três regimes que a arena sabe medir, na ordem em que fazem sentido lidos juntos.
+#: Cada um responde uma pergunta diferente **sobre o mesmo modelo**, e nenhum é "o
+#: resultado": ver `docs/COMPARABILITY.md`.
+REGIMES = (
+    ("final", "rede pura · último passo", "como o algoritmo terminou"),
+    ("melhor", "rede pura · melhor checkpoint", "o melhor que ele produziu"),
+    ("busca", "com busca", "o que você levaria para jogar"),
+)
+
+
+def _mediana_da_busca(registros):
+    """`(mediana, minimo, maximo, n, sims)` das entradas **oficiais** de `busca`.
+
+    Devolve `None` quando nenhuma semente do grupo tem medição válida. `n` é quantas
+    sementes contribuíram, que quase nunca é o total do grupo — medir com busca custa
+    horas e normalmente só uma semente foi medida sob o protocolo inteiro. É por isso que
+    o `n` volta daqui em vez de ser assumido: uma barra sustentada por uma semente não
+    pode ser desenhada como as outras.
+    """
+    valores, sims = [], set()
+    for r in registros:
+        melhor = r.melhor_com_busca()
+        if melhor is None:
+            continue
+        valores.append(float(melhor["score_mean"]))
+        if melhor.get("num_simulations") is not None:
+            sims.add(int(melhor["num_simulations"]))
+    if not valores:
+        return None
+    v = np.array(valores, dtype=np.float64)
+    return float(np.median(v)), float(v.min()), float(v.max()), len(v), sorted(sims)
+
+
+def _mediana_de(registros, campo, chave="score_mean"):
+    """`(mediana, minimo, maximo, n)` de `record.<campo>[chave]` entre sementes."""
+    valores = [r_c[chave] for r in registros
+               if (r_c := getattr(r, campo, None) or {}).get(chave) is not None]
+    if not valores:
+        return None
+    v = np.array(valores, dtype=np.float64)
+    return float(np.median(v)), float(v.min()), float(v.max()), len(v)
+
+
+def arena_melhores(registros, mode="light", figsize=(10.4, 5.6), titulo=None,
+                   so_principais=True):
+    """Os três regimes lado a lado: como terminou, o melhor que produziu, e com busca.
+
+    Por que este painel existe
+    --------------------------
+    A pergunta "quais são os melhores modelos nas suas melhores tentativas" não tem uma
+    resposta só, e a tentação é responder com **um máximo** — o maior número que qualquer
+    semente de qualquer algoritmo produziu em qualquer regime. Isso seria um estimador
+    enviesado de um jeito específico e evitável: o máximo cresce com o número de sorteios,
+    então ele premia quem **rodou mais sementes**, não quem é melhor. O AlphaZero tem três
+    sementes e o `acktr/resnet_small_regua_antiga` tem uma; comparar os máximos dos dois é
+    comparar 3 sorteios com 1.
+
+    Então aqui cada barra é a **mediana entre sementes**, dentro do regime, exatamente
+    como a arena oficial faz. O que varia entre as barras é a *pergunta*, não a
+    estatística. A linha fina sobre a barra é o intervalo entre as sementes.
+
+    O viés que sobra, e que fica escrito na figura
+    ----------------------------------------------
+    `melhor` é um máximo sobre os ~20 pontos de avaliação da execução, então ele é
+    otimista **por construção**, mesmo com a mediana entre sementes por cima. O tamanho
+    do viés não é uniforme: com 1000 episódios o erro padrão é `desvio/√1000`, que vale
+    ~0,25 para o AlphaZero (desvio 7,9) e ~0,88 para o MuZero (desvio 27,9). Sobre um
+    platô de ~8 pontos, `E[máx]` fica ~2 desvios padrão acima da média — ou seja, meio
+    ponto para um, cerca de dois pontos para o outro. **Quanto mais instável o algoritmo,
+    mais o `melhor` o favorece.**
+
+    Isso não invalida a coluna: uma queda como a do `rainbow/completo/seed1` (final 43,50,
+    melhor 86,13) é 42 pontos, muito além de qualquer seleção sobre ruído — é colapso de
+    verdade, e é exatamente o que a coluna existe para mostrar. Mas uma diferença de dois
+    ou três pontos entre `final` e `melhor` não significa nada.
+
+    A barra `busca` é a única que **não** divide eixo com as outras duas: ela gasta
+    dezenas de avaliações de rede por jogada contra uma do PPO. Ela está aqui porque é o
+    que se leva para jogar, e está marcada com o orçamento de busca que a produziu.
+    """
+    import matplotlib.pyplot as plt
+
+    p = PALETA[mode]
+    comparaveis = [r for r in registros if r.oficial]
+    if so_principais:
+        comparaveis, _ = separa_principais(comparaveis)
+
+    linhas = []
+    for (algo, variante), rs in _agrupa(comparaveis).items():
+        fin = _mediana_de(rs, "final")
+        if fin is None:
+            continue
+        mel = _mediana_de(rs, "melhor")
+        bus = _mediana_da_busca(rs)
+        linhas.append({
+            "nome": algo if variante in ("default", "") else f"{algo} · {variante}",
+            "sementes": len(rs),
+            "final": fin, "melhor": mel, "busca": bus,
+            # a ordenação é pela melhor tentativa disponível — é a pergunta da figura
+            "topo": max(v[0] for v in (fin, mel, bus and bus[:4]) if v),
+        })
+    linhas.sort(key=lambda d: d["topo"])
+
+    fig, ax = plt.subplots(figsize=figsize, facecolor=p["plane"])
+    ax.set_facecolor(p["surface"])
+
+    cores = {"final": p["series"][0], "melhor": p["series"][2], "busca": p["series"][3]}
+    altura, folga = 0.24, 0.02
+    deslocamento = {"final": -(altura + folga), "melhor": 0.0, "busca": altura + folga}
+
+    # a legenda é registrada no primeiro grupo que TEM cada regime, não na primeira
+    # linha: a barra com busca só aparece em um ou dois algoritmos, e amarrá-la a `i == 0`
+    # deixaria a figura com uma cor sem entrada na legenda
+    rotulado = set()
+    for i, linha in enumerate(linhas):
+        for campo, rotulo, _pergunta in REGIMES:
+            dado = linha[campo]
+            if dado is None:
+                continue
+            mediana, minimo, maximo, n = dado[:4]
+            y = i - deslocamento[campo]
+            ax.barh(y, mediana, color=cores[campo], height=altura, zorder=3,
+                    label=None if campo in rotulado else rotulo,
+                    # uma barra sustentada por menos sementes que o grupo não pode ser
+                    # desenhada igual às outras — ela é hachurada e leva o `n` no rótulo
+                    hatch=None if n >= linha["sementes"] else "///",
+                    edgecolor=p["surface"], linewidth=1.0)
+            rotulado.add(campo)
+            if maximo > minimo:
+                ax.plot([minimo, maximo], [y, y], color=p["ink2"], lw=1.1, zorder=4,
+                        solid_capstyle="butt")
+            texto = f"{mediana:.2f}".replace(".", ",")
+            if campo == "busca" and dado[4]:
+                texto += " · " + "/".join(str(x) for x in dado[4]) + " sims"
+            if n < linha["sementes"]:
+                texto += f" · n={n}"
+            # o rótulo vai depois do que estiver mais à direita, barra ou bigode — senão
+            # ele cai em cima da linha do intervalo justamente onde ela é grande
+            ax.annotate(texto, xy=(max(mediana, maximo), y), xytext=(5, 0),
+                        textcoords="offset points", color=p["ink2"], fontsize=8.5,
+                        va="center", ha="left", zorder=5)
+
+    ax.axvline(SCORE_PERFEITO, color=p["muted"], lw=1.0, ls=(0, (4, 3)), zorder=2)
+    # embaixo, e não em cima: a faixa de cima é da legenda e a primeira linha é a mais
+    # longa — é justamente lá que o rótulo do teto colidiria com o número da barra
+    ax.annotate(f"tabuleiro cheio · {SCORE_PERFEITO}",
+                xy=(SCORE_PERFEITO, 0.0), xycoords=("data", "axes fraction"),
+                xytext=(-5, 4), textcoords="offset points", color=p["muted"],
+                fontsize=8.5, ha="right", va="bottom", zorder=5)
+
+    ax.set_yticks(range(len(linhas)), [linha["nome"] for linha in linhas],
+                  color=p["ink2"], fontsize=9.5)
+    ax.set_ylim(-0.6, len(linhas) - 0.4)
+    ax.set_xlim(0, SCORE_PERFEITO * 1.42)
+    ax.set_xlabel("score de avaliação · mediana entre sementes, 1.000 episódios, greedy",
+                  color=p["ink2"], fontsize=10, loc="left")
+    ax.set_title(titulo or "snake-arena · a mesma execução, três perguntas",
+                 color=p["ink"], fontsize=13, pad=26, loc="left")
+    ax.grid(True, axis="x", color=p["grid"], lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for lado in ("top", "right", "left"):
+        ax.spines[lado].set_visible(False)
+    ax.spines["bottom"].set_color(p["axis"])
+    ax.tick_params(colors=p["muted"], labelsize=9, length=0)
+
+    if linhas:
+        leg = ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncols=3,
+                        frameon=False, fontsize=9, handlelength=1.2)
+        for t in leg.get_texts():
+            t.set_color(p["ink2"])
+
+    notas = (
+        "Cada barra é a MEDIANA entre sementes, não o máximo: o máximo premia quem rodou "
+        "mais sementes. A linha fina é o intervalo entre elas.",
+        "`melhor` é um máximo sobre ~20 avaliações, então é otimista por construção — e "
+        "mais para quem oscila (~2 pontos) que para quem é estável (~0,5).",
+        "`com busca` NÃO divide eixo com as outras duas: gasta dezenas de avaliações de "
+        "rede por jogada contra uma do PPO. Hachura = menos sementes que o grupo.",
+    )
+    for i, nota in enumerate(notas):
+        fig.text(.012, .058 - i * .022, nota, color=p["muted"], fontsize=7.6)
+    fig.subplots_adjust(left=.22, right=.99, top=.86, bottom=.24)
+    return fig, ax
+
+
 def _mediana_do_final(registros, chave):
     """Mediana entre sementes de um campo de `final` — a estatística oficial da arena."""
     valores = [r.final.get(chave) for r in registros if r.final.get(chave) is not None]
@@ -961,6 +1147,10 @@ def arena_table(registros, markdown=True, limiar=LIMIAR_PADRAO):
             "melhor_mean": float(np.median(
                 [r.melhor["score_mean"] for r in rs if r.melhor])) if any(
                     r.melhor for r in rs) else None,
+            # a terceira coluna, pelo mesmo motivo: o agente medido com a máquina que ele
+            # usa para jogar. Só entradas que cumprem o protocolo do contrato
+            # (`busca_oficial`); as espiadas de 200 episódios ficam gravadas e fora daqui
+            "busca": _mediana_da_busca(rs),
             # A leitura HORIZONTAL da curva: em vez de "quanto marcou no fim", "quantos
             # passos precisou para chegar a `limiar`". Sai dos mesmos dados e responde à
             # outra pergunta — eficiência amostral no sentido estrito.
@@ -975,13 +1165,21 @@ def arena_table(registros, markdown=True, limiar=LIMIAR_PADRAO):
 
     out = [
         "| algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | "
-        + f"passos até {limiar:.0f} | horas | amplitude | mediana/ep | máx | cheio |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-        f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | — | — | — | 1 | — | 0% |".replace(".", ","),
+        + f"com busca | passos até {limiar:.0f} | horas | amplitude | mediana/ep | máx | cheio |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"| _piso aleatório_ | — | — | — | 0 | **{PISO_ALEATORIO:.2f}** | — | — | — | — | — | 1 | — | 0% |".replace(".", ","),
     ]
     for d in linhas:
         nome = d["algo"] if d["variante"] in ("default", "") else f"{d['algo']} · {d['variante']}"
         melhor = f"{d['melhor_mean']:.2f}" if d["melhor_mean"] is not None else "—"
+        if d["busca"] is None:
+            busca = "—"
+        else:
+            busca = f"{d['busca'][0]:.2f}"
+            if d["busca"][4]:
+                busca += f" ({'/'.join(str(x) for x in d['busca'][4])} sims)"
+            if d["busca"][3] < d["sementes"]:
+                busca += f" · n={d['busca'][3]}"
         if d["passos_ate"] is None:
             ate = "não chegou"
         else:
@@ -991,7 +1189,8 @@ def arena_table(registros, markdown=True, limiar=LIMIAR_PADRAO):
         horas = f"{d['horas']:.1f}" if np.isfinite(d["horas"]) else "—"
         out.append(
             f"| {nome} | `{d['rede']}` | {d['params']:,} | {d['sementes']} | "
-            f"{d['passos']:,} | **{d['score_mean']:.2f}** | {melhor} | {ate} | {horas} | "
+            f"{d['passos']:,} | **{d['score_mean']:.2f}** | {melhor} | {busca} | {ate} | "
+            f"{horas} | "
             f"±{d['score_spread']:.2f} | "
             f"{d['score_median']:.0f} | {d['score_max']} | {d['win_rate']:.1%} |"
         )
@@ -1023,5 +1222,17 @@ def arena_table(registros, markdown=True, limiar=LIMIAR_PADRAO):
         "o melhor que aquela execução produziu em algum momento — fica à parte porque "
         "premia quem foi medido mais vezes, pela mesma razão que a busca do AlphaZero e o "
         "filtro de flood-fill ficam fora da curva."
+    )
+    out.append(
+        "\n**com busca** é o agente medido com a máquina que ele de fato usa para jogar — "
+        "a árvore do AlphaZero e do MuZero — no mesmo protocolo de 1.000 episódios. Ela "
+        "fica numa coluna separada, e não na curva, porque **não divide eixo**: uma "
+        "jogada com 32 simulações gasta dezenas de avaliações de rede contra uma do PPO, "
+        "e desenhá-las juntas daria computação de graça a quem busca. `n=k` marca quantas "
+        "sementes foram medidas sob o protocolo inteiro; medir com busca custa horas, "
+        "então quase sempre é menos que o total. Medições parciais — menos episódios que "
+        "o contrato, ou que estouraram o teto de tempo — ficam gravadas em `busca` e "
+        "**não** aparecem aqui: uma amostra que acabou por tempo é enviesada para "
+        "episódios curtos, que são justamente os ruins."
     )
     return "\n".join(out)

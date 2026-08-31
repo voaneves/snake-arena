@@ -442,3 +442,105 @@ def test_normalizing_makes_the_step_zero_share_independent_of_the_unroll():
             fatias[(K, norm)] = p0 / perda
     assert fatias[(6, False)] < fatias[(2, False)] * 0.6, "a soma crua dilui o passo 0"
     assert fatias[(6, True)] == pytest.approx(fatias[(2, True)], abs=0.12)
+
+
+# --------------------------------------------------- §2.32 · Reanalyse da política
+def test_reanalyse_is_off_by_default():
+    """Ligar por argumento de paper repetiria o erro do §2.27 ao contrário. E aqui há um
+    custo de busca real a pagar, medido em `tools/diag_reanalise.py`."""
+    assert MuZeroConfig().reanalise == 0.0
+    ag = MuZero(cfg_min(batch_size=16))
+    ag.iterate()
+    assert ag.iterate()["reanalises"] == 0
+
+
+def test_reanalyse_refreshes_the_step_zero_target_with_the_current_network():
+    """O alvo guardado veio de uma rede de dezenas de iterações atrás. Refazer a busca com
+    a rede atual é o que o Apêndice H chama de Reanalyse."""
+    cfg = cfg_min(batch_size=16, epochs_por_iter=2, reanalise=0.5)
+    ag = MuZero(cfg)
+    ag.collect()
+    antes = ag._buf_pi.copy()
+    i = np.arange(8)
+    n = ag._reanalisar(i)
+    assert n == 8
+    depois = ag._buf_pi
+    # o passo 0 das linhas escolhidas mudou; nada mais mudou
+    assert not np.allclose(antes[i, 0], depois[i, 0])
+    assert np.allclose(antes[i, 1:], depois[i, 1:]), "só o passo 0 é refeito"
+    resto = np.arange(8, ag._cheio)
+    assert np.allclose(antes[resto], depois[resto]), "só as linhas escolhidas"
+    # continua sendo uma distribuição
+    assert np.allclose(depois[i, 0].sum(-1), 1.0, atol=1e-4)
+
+
+def test_reanalyse_writes_back_so_the_work_compounds():
+    """Se o alvo refeito não voltasse para o buffer, cada sorteio pagaria a busca de novo
+    e a taxa de refresco não comporia — seria custo puro."""
+    cfg = cfg_min(batch_size=16, epochs_por_iter=2, reanalise=1.0)
+    ag = MuZero(cfg)
+    ag.collect()
+    alvo = ag._buf_pi.copy()
+    ag._aprender()
+    mudou = ~np.all(np.isclose(alvo[: ag._cheio, 0], ag._buf_pi[: ag._cheio, 0]), axis=-1)
+    assert mudou.sum() > 0, "o alvo refeito ficou gravado no buffer"
+    assert np.allclose(alvo[: ag._cheio, 1:], ag._buf_pi[: ag._cheio, 1:])
+
+
+def test_reanalyse_counts_its_searches():
+    """O custo tem de estar no registro: é ele que se lê contra as `num_envs × rollout`
+    buscas da coleta para saber o que a execução vai custar de parede."""
+    cfg = cfg_min(batch_size=16, epochs_por_iter=3, reanalise=0.5)
+    ag = MuZero(cfg)
+    ag.iterate()
+    st = ag.iterate()
+    assert st["reanalises"] == 3 * 8
+
+
+def test_reanalyse_can_search_cheaper_than_collection():
+    """O botão de custo. É desvio do paper — produz alvo de qualidade menor que o da
+    coleta — e existe para o caso de a busca cheia não caber no tempo de parede."""
+    cfg = cfg_min(batch_size=16, num_simulations=8, reanalise=0.5, reanalise_sims=3)
+    ag = MuZero(cfg)
+    ag.collect()
+    ag._reanalisar(np.arange(4))
+    assert ag._busca_reanalise().num_simulations == 3
+    assert ag.mcts.num_simulations == 8, "a busca da coleta não é tocada"
+
+
+def test_reanalyse_adds_no_root_noise_so_the_target_is_reproducible():
+    """O ruído de Dirichlet existe para explorar na geração de dados; aqui o que se produz
+    é um alvo, e um alvo não deve depender de um sorteio.
+
+    O teste é a **reprodutibilidade**, e não "o alvo refeito é mais afiado": esta última
+    depende do estado do treino. Com a rede treinada, cujo prior já é agudo, o ruído
+    espalha e o refeito sai mais afiado; com a rede recém-iniciada, cujo prior é quase
+    uniforme, um sorteio típico de `Dir(1,1,1)` (máximo esperado ~0,61) é *mais* agudo que
+    ela e a direção se inverte. A ausência de ruído vale nos dois casos.
+    """
+    cfg = cfg_min(batch_size=16, num_simulations=24, reanalise=1.0, desempate="ordem")
+    ag = MuZero(cfg)
+    ag.collect()
+    i = np.arange(min(24, ag._cheio))
+    ag._reanalisar(i)
+    uma = ag._buf_pi[i, 0].copy()
+    ag._reanalisar(i)
+    assert np.allclose(uma, ag._buf_pi[i, 0]), "sem ruído, o alvo é reprodutível"
+    # o contraste: com ruído na raiz, dois alvos do mesmo estado e da mesma rede diferem
+    visitas_a, _ = ag._busca(ag._buf_obs[i], ag._buf_mask[i], ruido=True)
+    visitas_b, _ = ag._busca(ag._buf_obs[i], ag._buf_mask[i], ruido=True)
+    assert not np.allclose(visitas_a, visitas_b), "o ruído da coleta é um sorteio"
+
+
+def test_reanalyse_never_swaps_the_learned_dynamics_for_the_real_one():
+    """Uma árvore sem a `DinamicaAprendida` percorre o `VecSnake` — isto é, vira o
+    AlphaZero. É uma troca que não levanta exceção: só devolve outro algoritmo."""
+    from snakeai.search import DinamicaAprendida
+    for sims in (0, 3):
+        ag = MuZero(cfg_min(batch_size=16, num_simulations=8, reanalise_sims=sims))
+        assert isinstance(ag._busca_reanalise().dinamica, DinamicaAprendida)
+    # e a árvore alternativa é construída uma vez só
+    ag = MuZero(cfg_min(batch_size=16, num_simulations=8, reanalise_sims=3))
+    assert ag._busca_reanalise() is ag._busca_reanalise()
+    assert ag._busca_reanalise() is not ag.mcts
+    assert ag.mcts.num_simulations == 8, "a busca da coleta não é tocada"

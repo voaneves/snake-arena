@@ -198,18 +198,29 @@ Por isso ela vem com `MINUTOS_MAX`. Ao estourar, o que deu tempo de medir volta 
 modo que o número serve para você olhar e **não entra na arena por engano**. O progresso é
 impresso a cada 30 s, com estimativa do que falta.
 
-**Comece pequeno.** `EPISODIOS = 200` e **um** orçamento dão a ordem de grandeza em poucos
-minutos. Só depois vale gastar o número do contrato. Subir `EPISODIOS` é o lever que
-importa; `AMBIENTES` mais alto melhora o aproveitamento da GPU mas encarece o laço de árvore
-em Python na mesma proporção, então costuma ser quase neutro.
+**Comece pequeno se for só olhar.** `EPISODIOS = 200` e **um** orçamento dão a ordem de
+grandeza em poucos minutos. Subir `EPISODIOS` é o lever que importa; `AMBIENTES` mais alto
+melhora o aproveitamento da GPU mas encarece o laço de árvore em Python na mesma proporção,
+então costuma ser quase neutro.
+
+**Mas o padrão é 1.000, porque é o que entra na arena.** O resultado vai para o campo
+`busca` do registro — irmão de `final` e `melhor`, não um canto de `meta` —, e a coluna
+*com busca* da tabela só aceita entradas com os 1.000 episódios do contrato e
+`completo=True`. Uma medição de 200 episódios tem erro padrão ~2,2× o da oficial; uma que
+estourou `MINUTOS_MAX` é uma amostra enviesada para episódios **curtos**, que são
+justamente os ruins. As duas ficam gravadas e marcadas — o registro guarda o que você
+mediu, a arena publica só o que cumpre a régua.
 """
 
 BUSCA_CODE = '''import time
 
 import numpy as np
 
-EPISODIOS = 200               # @param {type:"integer"}
-MINUTOS_MAX = 20              # @param {type:"integer"}
+# O contrato pede 1000. Menos que isso mede e grava, mas nao entra na arena: a coluna
+# `com busca` da tabela so aceita o protocolo inteiro. 200/20min da a ordem de grandeza.
+EPISODIOS_DO_CONTRATO = 1000
+EPISODIOS = 1000              # @param {type:"integer"}
+MINUTOS_MAX = 120             # @param {type:"integer"}
 ORCAMENTOS = [cfg.sims_avaliacao]   # @param
 AMBIENTES = 64                # @param {type:"integer"}
 AVALIAR_MELHOR = False        # @param {type:"boolean"}
@@ -236,6 +247,10 @@ def _mede_com_busca(_ag, modelo_nome):
                                     num_envs=AMBIENTES, max_segundos=MINUTOS_MAX * 60,
                                     verbose=True)
         _dt = time.time() - _t0
+        # `checkpoint` e `num_simulations` viajam DENTRO da entrada: sem eles o
+        # número não é interpretável, e ler a chave para descobrir de onde veio é um
+        # contrato implícito que quebra na primeira vez que alguém renomeia a chave
+        _st = {**_st, "checkpoint": modelo_nome}
         _medidas[f"{modelo_nome}_sims{_sims}"] = _st
         _rotulo = f"agente + busca ({_sims} sims)"
         if modelo_nome != "last":
@@ -287,10 +302,19 @@ for _nome, _st in _medidas.items():
         _linha += f"  ·  {_s / _pura:.2f}x  ·  a rede está À FRENTE da busca aqui"
     print(_linha)
 
-# o número precisa sobreviver ao fim da sessão, senão vira print no console
-registro.record.meta["com_busca"] = _medidas
+# `busca` é campo de primeira classe do registro desde o schema 2 — irmão de `final` e
+# `melhor`, e não um canto de `meta`. A diferença não é organizacional: o que mora em
+# `meta` não passa por `validate()`, e isto **é um resultado**.
+registro.record.busca = {**(registro.record.busca or {}), **_medidas}
+_oficiais = [k for k, v in _medidas.items()
+             if v.get("episodes") == EPISODIOS_DO_CONTRATO and v.get("completo")]
 print()
-print("gravado em meta['com_busca'] de", registro.save(skip_validation=True))'''
+print("gravado em `busca` de", registro.save())
+if _oficiais:
+    print(f"entram na arena: {', '.join(_oficiais)}")
+else:
+    print(f"NENHUMA entrada entra na arena — o contrato pede {EPISODIOS_DO_CONTRATO} "
+          "episodios completos. O que foi medido fica gravado e marcado como espiada.")'''
 
 
 ENSAIO_MZ_MD = """## Ensaio — 2 minutos antes de queimar 7 horas
@@ -433,7 +457,10 @@ for _k, _v in sorted(BRACOS[BRACO].items()):
 BRACOS_MUZERO = [
     # a hipótese principal e as suas variações
     "normaliza_unroll", "unroll10_normalizado", "unroll2_normalizado",
-    # a hipótese secundária: o valor que a busca faz o backup
+    # o regime de reúso: sair dele de graça, ou ficar nele com alvo fresco
+    "reuso_do_paper", "reanalise_25", "reanalise_80", "reanalise_80_sims12",
+    "normaliza_e_reanalise",
+    # o valor — este **contra** o paper
     "coef_valor_1",
     # a frescura do alvo
     "memoria_200k", "memoria_20k",
@@ -461,11 +488,35 @@ _PRE_CFG_MUZERO = """BRACOS = {
     # metade do tempo de parede por atualizacao
     "unroll2_normalizado":  {"unroll": 2, "normaliza_unroll": True},
 
-    # -------------------------------------------- a hipotese secundaria: o valor
+    # ------------------------------------- a hipotese secundaria, CONTRA o paper
     # `perda_v` fica em ~0,19 em symlog, o que da uma banda de [6,7; 17,5] na escala
-    # real - e e esse valor que o MCTS soma no backup. Alvo de politica ruidoso e um
-    # alvo que o aluno nao consegue fixar. O AlphaZero deste repositorio usa 0,5.
+    # real - e e esse valor que o MCTS soma no backup. Mas 0,25 E O VALOR DO PAPER: o
+    # Apendice H baixa o alvo de valor para 0,25 contra 1,0 de politica e recompensa,
+    # exatamente para "avoid overfitting of the value function". Subir isto e ir CONTRA
+    # o paper. O braco fica, porque a hipotese e testavel; a prioridade cai.
     "coef_valor_1":         {"coef_valor": 1.0},
+
+    # ------------------------------------------ o regime de reuso do Reanalyse
+    # 8 epocas x 256 / 1024 passos novos = 2,0 amostras por estado. O paper usa 0,1 no
+    # MuZero puro e 2,0 no Reanalyse - e o Reanalyse REFAZ A BUSCA com a rede atual em
+    # 80% das atualizacoes, mais rede alvo para o bootstrap.
+    #
+    # Duas saidas. `reuso_do_paper` volta ao reuso do MuZero puro, de graca, pagando em
+    # orcamento de gradiente (§2.1). Os `reanalise_*` ficam com o reuso alto e trazem o
+    # alvo fresco, pagando em busca. NAO rode nenhum antes de `normaliza_unroll` voltar:
+    # se o conserto de graca resolver, isto aqui vira desnecessario.
+    "reuso_do_paper":       {"epochs_por_iter": 1},
+
+    # o alvo de politica do passo 0 refeito com a rede ATUAL, escrito de volta no
+    # buffer. 0,8 e o numero do paper; 0,25 e o ponto em que o custo ainda cabe numa
+    # noite. Custo medido em tools/diag_reanalise.py.
+    "reanalise_25":         {"reanalise": 0.25},
+    "reanalise_80":         {"reanalise": 0.80},
+    # o Reanalyse com busca mais barata que a da coleta - desvio do paper, e o botao de
+    # custo se 0,80 na busca cheia nao couber no tempo de parede
+    "reanalise_80_sims12":  {"reanalise": 0.80, "reanalise_sims": 12},
+    # a soma do que o Apendice G e o H mandam fazer e o repositorio nao fazia
+    "normaliza_e_reanalise": {"normaliza_unroll": True, "reanalise": 0.80},
 
     # ------------------------------------------------------- a frescura do alvo
     # 50k transicoes sao ~49 iteracoes de atraso: o alvo de visitas veio de uma rede
@@ -488,7 +539,9 @@ _PRE_CFG_MUZERO = """BRACOS = {
     # reproduz `muzero/unroll5/seed0` (final 49,26 / melhor 66,05) sob o codigo e a
     # assinatura atuais. So vale rodar se a assinatura do pacote tiver mudado.
     "controle": {},
-    "tudo": {"normaliza_unroll": True, "unroll": 10, "coef_valor": 1.0,
+    # tudo o que o paper manda e o repositorio nao fazia, mais o desenrolar longo.
+    # `coef_valor` saiu daqui: 0,25 E o numero do Apendice H.
+    "tudo": {"normaliza_unroll": True, "reanalise": 0.80, "unroll": 10,
              "memory_size": 200000},
 }
 print(f"braco: {BRACO}  (o padrao e o 07_muzero; aqui se ACRESCENTA uma coisa a ele)")
@@ -714,22 +767,49 @@ NOTEBOOKS = [
             "| **10** | **11,0%** | 55,2% |\n\n"
             "Ou seja: 85% do gradiente de pol\u00edtica treina um caminho que a m\u00e9trica oficial "
             "nunca percorre, e **aumentar o desenrolar dilui ainda mais o \u00fanico termo que "
-            "produz o n\u00famero do contrato**. O pseudoc\u00f3digo do paper n\u00e3o faz isso: ele "
-            "aplica `scale_gradient(loss, 1/K)` aos passos imaginados e deixa o passo 0 "
-            "inteiro. O reposit\u00f3rio j\u00e1 tinha a escala de 1/2 no estado oculto — a que "
-            "controla o gradiente que chega em `h` — mas n\u00e3o a das perdas. Ver §2.31.\n\n"
+            "produz o n\u00famero do contrato**. O paper n\u00e3o faz isso. O Ap\u00eandice G lista "
+            "**duas** escalas de gradiente, textualmente: *\"we scale the loss of each "
+            "head by 1/K\"* e *\"we scale the gradient at the start of the dynamics "
+            "function by 1/2\"*. O reposit\u00f3rio tinha a segunda e n\u00e3o a primeira.\n\n"
+            "Vale notar que a leitura literal da prosa \u2014 escalar os `K+1` termos, "
+            "passo 0 inclu\u00eddo \u2014 n\u00e3o mudaria nada aqui: sob Adam, dividir a perda "
+            "inteira por uma constante \u00e9 quase um no-op, porque o segundo momento "
+            "normaliza; sobraria s\u00f3 um `clipnorm` mordendo menos. O que muda a "
+            "**fatia** do passo 0 \u00e9 deix\u00e1-lo fora da escala, que \u00e9 o que o "
+            "pseudoc\u00f3digo publicado faz e o que `normaliza_unroll` implementa. "
+            "Ver \u00a72.31.\n\n"
             "### Como rodar, em ordem de prioridade\n\n"
             "Cada bra\u00e7o custa ~7 h. Escolha o `BRACO`, rode o ensaio (2 min — ele confere "
             "que `frac_pi_0` saiu no valor esperado, que \u00e9 o jeito de pegar uma chave que "
             "n\u00e3o chegou no `cfg`) e depois o treino. Compare com `07_muzero` **na mesma "
             "semente**; o `sufixo_variante` mantém os bra\u00e7os separados na arena.\n\n"
-            "1. **`normaliza_unroll`** — a hip\u00f3tese principal, e o que o paper faz. \u00c9 de "
-            "gra\u00e7a: mesmo custo por atualiza\u00e7\u00e3o.\n"
-            "2. **`coef_valor_1`** — a hip\u00f3tese secund\u00e1ria. `perda_v \u2248 0,19` em `symlog` "
-            "vira uma banda de `[6,7; 17,5]` na escala real, e \u00e9 esse valor que a \u00e1rvore "
-            "soma no backup; valor ruidoso produz contagem de visitas ruidosa, que \u00e9 um "
-            "alvo que o aluno n\u00e3o consegue fixar. O AlphaZero daqui usa 0,5.\n"
-            "3. **`unroll10_normalizado`** — o desenrolar longo sem diluir o passo 0.\n\n"
+            "1. **`normaliza_unroll`** \u2014 a hip\u00f3tese principal, e a **\u00fanica coisa "
+            "que o Ap\u00eandice G manda fazer e o reposit\u00f3rio n\u00e3o faz**. \u00c9 de gra\u00e7a: "
+            "mesmo custo por atualiza\u00e7\u00e3o. Se voc\u00ea s\u00f3 tem uma execu\u00e7\u00e3o, \u00e9 esta.\n"
+            "2. **`reuso_do_paper`** ou os **`reanalise_*`** \u2014 8 \u00e9pocas \u00d7 256 sobre 1.024 "
+            "passos novos d\u00e3o **2,0 amostras por estado**. O paper usa 0,1 no MuZero puro "
+            "e sobe para 2,0 s\u00f3 no **Reanalyse** (Ap\u00eandice H) \u2014 que refaz a busca com a "
+            "rede atual em 80% das atualiza\u00e7\u00f5es e usa rede alvo para o bootstrap. "
+            "Estamos no re\u00faso do Reanalyse **sem** o Reanalyse (§2.32). Duas sa\u00eddas: "
+            "`reuso_do_paper` volta ao re\u00faso do MuZero puro, de gra\u00e7a, pagando em "
+            "or\u00e7amento de gradiente; os `reanalise_*` ficam com o re\u00faso alto e trazem o "
+            "alvo fresco, pagando em busca \u2014 **1,32\u00d7 a 1,57\u00d7** de tempo de parede, "
+            "medido em `tools/diag_reanalise.py`.\n"
+            "   O custo \u00e9 **sublinear na fra\u00e7\u00e3o**, e isso decide qual rodar: as buscas "
+            "s\u00e3o em lote, ent\u00e3o o n\u00famero de la\u00e7os de \u00e1rvore em Python \u00e9 `epochs_por_iter` "
+            "qualquer que seja a fra\u00e7\u00e3o \u2014 s\u00f3 a largura do lote cresce. Numa **GPU**, "
+            "onde o la\u00e7o domina e a largura \u00e9 quase de gra\u00e7a, `reanalise_80` custa quase "
+            "o mesmo que `reanalise_25`: v\u00e1 direto ao n\u00famero do paper. `reanalise_sims` \u00e9 "
+            "o bot\u00e3o de custo l\u00e1, e \u00e9 desvio do paper.\n"
+            "3. **`unroll10_normalizado`** \u2014 o desenrolar longo sem diluir o passo 0.\n\n"
+            "**`coef_valor_1` caiu de prioridade, e a corre\u00e7\u00e3o \u00e9 minha.** Eu o propus "
+            "argumentando que `perda_v \u2248 0,19` em `symlog` vira uma banda de "
+            "`[6,7; 17,5]` na escala real, e que valor ruidoso produz alvo de visitas "
+            "ruidoso. O Ap\u00eandice H diz o contr\u00e1rio: o paper baixa o alvo de valor "
+            "**para 0,25** contra 1,0 de pol\u00edtica e recompensa, e diz por qu\u00ea \u2014 "
+            "*\"avoid overfitting of the value function\"*. Ou seja, 0,25 j\u00e1 \u00e9 o valor "
+            "do paper, e subir para 1,0 \u00e9 ir contra ele. O bra\u00e7o continua porque a "
+            "hip\u00f3tese \u00e9 test\u00e1vel; deixou de ser a segunda coisa a rodar.\n\n"
             "Os bra\u00e7os `unroll10` e `sims32` t\u00eam **previs\u00e3o pr\u00e9-registrada de n\u00e3o "
             "ajudar** (est\u00e3o no dicion\u00e1rio com a previs\u00e3o escrita ao lado). Rode-os se "
             "quiser o registro da falsifica\u00e7\u00e3o; n\u00e3o os rode esperando ganho.\n\n"

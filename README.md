@@ -370,18 +370,35 @@ arena; os documentos de ablação reportam **média e desvio**, porque lá a per
 de um efeito e não a ordem de um ranking. Os dois números convivem, e cada documento diz qual
 usa.
 
-| algoritmo | sementes | score (last) | amplitude | horas | tabuleiro cheio |
-|---|---:|---:|---:|---:|---:|
-| PPO · `resnet_small` | 3 | **81,50** | ±3,45 | 0,9 | 61,4% |
-| ACKTR · `resnet_small` | 3 | **78,13** | ±19,11 | 0,5 | 60,7% |
-| A2C · `resnet_small` | 3 | **69,61** | ±7,72 | 0,3 | 2,2% |
-| Rainbow · `completo` | 1 | **65,43** | — | 4,0 | 0,0% |
-| DQN · `base` | 3 | **47,11** | ±2,86 | 1,9 | 0,0% |
-| _piso aleatório_ | — | 1,21 | — | — | 0% |
+| algoritmo | sementes | score (last) | melhor ckpt | com busca | amplitude | horas | tabuleiro cheio |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| AlphaZero · `sims32` | 3 | **81,91** | 84,05 | **95,63** (32 sims, n=1) | ±2,20 | 7,1 | 67,3% |
+| PPO · `resnet_small` | 3 | **81,50** | 81,98 | — | ±3,45 | 0,9 | 61,4% |
+| ACKTR · `resnet_small` | 3 | **78,13** | 85,84 | — | ±19,11 | 0,5 | 60,7% |
+| ACER · `resnet_small` | 3 | **77,84** | 85,77 | — | ±14,53 | 1,4 | 13,0% |
+| A2C · `resnet_small` | 3 | **69,61** | 72,94 | — | ±7,72 | 0,3 | 2,2% |
+| Rainbow · `completo` | 3 | **65,43** | 70,51 | — | ±27,01 | 4,0 | 12,0% |
+| MuZero · `unroll5` | 1 | **49,26** | 66,05 | — | — | 6,8 | 0,1% |
+| DQN · `base` | 3 | **47,11** | 51,79 | — | ±2,86 | 1,9 | 0,0% |
+| _piso aleatório_ | — | 1,21 | — | — | — | — | 0% |
 
-Score perfeito no 10×10 é **97**. Sete dos doze algoritmos ainda não têm nenhuma semente na
+Score perfeito no 10×10 é **97**. Quatro dos doze algoritmos ainda não têm nenhuma semente na
 régua atual — ver [`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) para a fila e o custo
 medido de cada um.
+
+**Três colunas, três perguntas.** `score (last)` é o número oficial: o modelo do último
+passo. `melhor ckpt` é o melhor que aquela execução produziu em algum momento — e é otimista
+**por construção**, porque é um máximo sobre ~20 avaliações; quanto mais instável o
+algoritmo, mais ele o favorece. `com busca` é o agente medido com a máquina que ele de fato
+usa para jogar, no mesmo protocolo de 1.000 episódios, e fica fora da curva porque uma jogada
+com 32 simulações gasta dezenas de avaliações de rede contra **uma** do PPO.
+
+Todas as três são **medianas entre sementes**, nunca máximos: o máximo cresce com o número de
+sorteios, então premiaria quem rodou mais sementes em vez de quem é melhor. O painel
+`arena_melhores` desenha as três lado a lado, com o intervalo entre sementes; o raciocínio
+inteiro está em [`docs/COMPARABILITY.md`](docs/COMPARABILITY.md).
+
+![os melhores nas suas melhores tentativas](assets/arena_melhores_light.png)
 
 **Dois resultados que a tabela sozinha não mostra:**
 
