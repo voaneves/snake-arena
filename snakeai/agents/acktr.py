@@ -293,6 +293,20 @@ class ACKTR(A2C):
             eta = eta * (1.0 - cfg.momento)
         t_kfac = time.perf_counter() - t0
 
+        # Quanto do `clipnorm` está de fato mordendo. O Keras clipa **por variável**,
+        # dentro do `apply_gradients`, e sobre a direção já pré-condicionada — então este
+        # número diz se o passo que saiu é o que a fórmula da KL pediu ou o que o clip
+        # deixou passar. Sem ele, `clipnorm` é um mediador silencioso: foi ele que fez
+        # dois braços do §2.36 medirem outra coisa sem avisar. São ~27 normas por
+        # atualização, custo desprezível.
+        teto_g = cfg.max_grad_norm or 0.0
+        if teto_g > 0:
+            normas = tf.stack([tf.norm(n) for n in naturais if n is not None])
+            frac_clipado = float(tf.reduce_mean(
+                tf.cast(normas > teto_g, tf.float32)))
+        else:
+            frac_clipado = 0.0
+
         self.optimizer.learning_rate.assign(float(eta))
         self.optimizer.apply_gradients(zip(naturais, self.model.trainable_variables))
 
@@ -311,7 +325,8 @@ class ACKTR(A2C):
             "pg": float(pg), "vf": float(vl), "ent": float(ent),
             "lr": float(eta), "lr_teto": float(self.lr()), "ent_coef": ent_coef,
             "kl": kl, "kl_alvo": cfg.kl_max, "kl_alvo_efetivo": float(alvo_efetivo),
-            "kl_fator": self._fator_kl, "epochs_done": 1,
+            "kl_fator": self._fator_kl, "frac_clipado": frac_clipado,
+            "epochs_done": 1,
             "kfac_ms": t_kfac * 1e3, "fwd_ms": t_fwd * 1e3,
         }
 
