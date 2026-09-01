@@ -219,7 +219,7 @@ gravada com um `variant` e movida para outra pasta à mão fica com a identidade
 antiga: some do grupo onde o caminho diz que está e reaparece, em silêncio, dentro do grupo
 de outra configuração.
 
-Aconteceu duas vezes neste repositório:
+Aconteceu quatro vezes neste repositório:
 
 * **`a2c/resnet_small_esparso/seed0`** — rodada antes de `A2CConfig.esparso()` existir, saiu
   com `sufixo_variante=""`, virou `a2c/resnet_small/seed0` e foi renomeada à mão. A colisão
@@ -229,15 +229,36 @@ Aconteceu duas vezes neste repositório:
 * **`dqn/base_antigo/seed0`** — a execução pré-correção, deslocada quando o DQN corrigido
   tomou o lugar em `dqn/base/`. Continuava se identificando como `dqn/base/seed0`, ou seja,
   uma execução `comparable=False` compartilhando identidade com o resultado oficial.
+* **`muzero/unroll10+num_simulations32/seed0`** — o `MuZeroAgent` deriva a variante de
+  `unroll` e de mais nada, então a execução saiu carimbada `unroll10` mesmo tendo subido
+  `num_simulations` de 24 para 32. A pasta foi nomeada à mão com a marca certa e o JSON ficou
+  para trás. Aqui a colisão ainda não existia — não há um `unroll10` puro — mas ela seria
+  **inevitável** no dia em que houvesse, e o nome que descrevia a configuração era o da pasta.
+* **`lbc/resnet_small_antes_das_correcoes/seed0`** — a primeira execução do LBC (§2.10 do
+  `LBC.md`), copiada para uma pasta `runs/_falhas/` que não existe em lugar nenhum do código.
+  Este é o caso mais caro dos quatro, e por dois motivos: `load_all` faz `os.walk` em `runs/`
+  inteiro e **não sabe o que é uma pasta de quarentena**, então a cópia era carregada como
+  qualquer outra execução; e como as duas cópias eram byte a byte idênticas, a arena
+  registrava `lbc/resnet_small/seed0` **duas vezes** — a mesma execução, contada duas vezes,
+  como se fossem duas sementes.
 
-Nos dois casos o `history.json` foi corrigido no lugar: `variant`, `config.sufixo_variante`
+Nos quatro casos o `history.json` foi corrigido no lugar: `variant`, `config.sufixo_variante`
 e os caminhos gravados em `meta["artefatos"]`. Curva, `final` e proveniência não foram
 tocados.
 
-O que impede a terceira vez é um teste, `test_every_recorded_run_sits_where_its_identity_says`
+O que impede a quinta vez é um teste, `test_every_recorded_run_sits_where_its_identity_says`
 em `tests/test_record.py`, que varre `runs/` e exige
 `runs/<algo>/<variant>/seed<N>/history.json` igual à tripla de dentro do arquivo. Ele pegou o
-caso 2 sozinho, cinco dias depois de ter sido escrito para o caso 1.
+caso 2 sozinho, cinco dias depois de ter sido escrito para o caso 1, e pegou os casos 3 e 4
+juntos.
+
+**O corolário do caso 4, que é o único realmente novo:** não existe pasta de quarentena
+dentro de `runs/`. Uma execução que não deve competir se declara `comparable=False` com o
+motivo escrito e **continua morando no endereço da própria identidade** — é assim que
+`dqn/base_antigo` e `acktr/resnet_small_regua_antiga` são mantidos, e é o que a arena sabe
+ler: ela lista as execuções fora da arena com o motivo de cada uma, em vez de fingir que não
+existem. Um prefixo `_` numa pasta é uma convenção que só existe na cabeça de quem a criou;
+`os.walk` não a respeita, e o resultado é uma execução fantasma numa mediana.
 
 ## O que isto obriga no artigo
 

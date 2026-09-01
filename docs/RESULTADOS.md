@@ -12,11 +12,14 @@ do próprio controle, na mesma cor, responde outra pergunta.
 | algoritmo | rede | params | sementes | passos | score (last) | melhor ckpt | com busca | passos até 40 | horas | amplitude | mediana/ep | máx | cheio |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | — | 1 | — | 0% |
+| soap · resnet_small | `resnet_small` | 300,036 | 3 | 5,013,504 | **85.55** | 89.22 | — | 753,664 | 0.4 | ±0.89 | 97 | 97 | 72.7% |
 | alphazero · sims32 | `resnet_small` | 180,464 | 3 | 5,000,192 | **81.91** | 84.05 | 95.63 (32 sims) · n=1 | 750,592 | 7.1 | ±2.20 | 97 | 97 | 67.3% |
 | ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | — | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
 | acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | — | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
 | acer · resnet_small | `resnet_small` | 334,878 | 3 | 5,001,216 | **77.84** | 85.77 | — | 1,251,328 | 1.4 | ±14.53 | 86 | 97 | 13.0% |
+| acktr · resnet_small+kl_nominal_momento_descontado | `resnet_small` | 180,464 | 1 | 5,002,240 | **76.45** | 76.45 | — | 2,501,120 | 0.2 | ±0.00 | 86 | 97 | 22.3% |
 | acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | — | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
+| acektr · resnet_small | `resnet_small` | 180,464 | 1 | 5,002,240 | **71.07** | 71.07 | — | 1,500,160 | 0.4 | ±0.00 | 78 | 97 | 17.6% |
 | a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | — | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
 | rainbow · completo | `resnet_small` | 1,196,648 | 3 | 5,000,192 | **65.43** | 70.51 | — | 2,250,240 | 4.0 | ±27.01 | 77 | 97 | 12.0% |
 | ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | — | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
@@ -25,6 +28,8 @@ do próprio controle, na mesma cor, responde outra pergunta.
 | muzero · unroll5 | `resnet_small` | 154,608 | 1 | 5,000,192 | **49.26** | 66.05 | — | 1,500,160 | 6.8 | ±0.00 | 57 | 97 | 0.1% |
 | rainbow · completo+n3+sem_noisy+eps_greedy | `resnet_small` | 662,148 | 1 | 5,000,192 | **49.17** | 49.97 | — | 4,000,000 | 8.0 | ±0.00 | 49 | 90 | 0.0% |
 | dqn · base | `resnet_small` | 333,475 | 3 | 5,000,192 | **47.11** | 51.79 | — | 3,500,032 | 1.9 | ±2.86 | 49 | 89 | 0.0% |
+| muzero · unroll5_normaliza_unroll | `resnet_small` | 154,608 | 1 | 5,000,192 | **42.70** | 62.59 | — | 1,750,016 | 6.6 | ±0.00 | 63 | 85 | 0.0% |
+| muzero · unroll10+num_simulations32 | `resnet_small` | 154,608 | 1 | 5,000,192 | **42.22** | 54.68 | — | 2,750,464 | 9.7 | ±0.00 | 52 | 75 | 0.0% |
 | alphazero · sims32_sem_correcoes | `resnet_small` | 180,464 | 1 | 5,000,192 | **10.62** | 13.03 | — | não chegou | 7.5 | ±0.00 | 5 | 44 | 0.0% |
 | rainbow · completo+n3 | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **0.57** | 0.78 | — | não chegou | 2.6 | ±0.00 | 0 | 6 | 0.0% |
 
@@ -92,10 +97,14 @@ Entram no gráfico, mas **não sustentam comparação**: a amplitude entre
 sementes do PPO neste ambiente é de 19 pontos, maior que quase toda
 diferença entre algoritmos que a tabela mostra.
 
+- `acektr/resnet_small`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl0.002`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl_nominal+kl0.002`: 1 de 3 — faltam 2
+- `acktr/resnet_small+kl_nominal_momento_descontado`: 1 de 3 — faltam 2
 - `alphazero/sims32_sem_correcoes`: 1 de 3 — faltam 2
+- `muzero/unroll10+num_simulations32`: 1 de 3 — faltam 2
 - `muzero/unroll5`: 1 de 3 — faltam 2
+- `muzero/unroll5_normaliza_unroll`: 1 de 3 — faltam 2
 - `rainbow/completo+n3`: 1 de 3 — faltam 2
 - `rainbow/completo+n3+sem_noisy+eps_greedy`: 1 de 3 — faltam 2
 
@@ -109,6 +118,7 @@ e some-las seria pior do que incluí-las.
 
 - `acktr/resnet_small_regua_antiga/seed0`: comparable=False: medida com o protocolo de avaliação anterior a 14/08: sem as chaves de causa de fim, com a maçã do episódio vencedor faltando (score_max 96 num tabuleiro cujo perfeito é 97) e com `win_rate` de outra fórmula. Mantida como registro histórico; a semente 0 na régua atual está em `acktr/resnet_small/seed0`.
 - `dqn/base_antigo/seed0`: comparable=False: treinada antes da correção do truncamento por fome (§1.1 da revisão): a fome entrava no buffer como terminação e o `next_obs` gravado era o do episódio seguinte. 34,3% dos episódios finais terminaram por inanição — o sintoma que a correção ataca. Mantida como registro do 'antes'; refazer com o pacote corrigido.
+- `lbc/resnet_small_antes_das_correcoes/seed0`: comparable=False: primeira execução do LBC, com os padrões anteriores às correções §2.6–§2.9 do docs/LBC.md: logits de comportamento sem padronização, sem região de confiança em volta do gradiente do IMPALA, coeficiente de entropia agendado e bandit decidindo sem evidência. A autópsia está na §2.10 — a softmax da política alvo saturou em 540 k passos (`ent` 5e-6, `entropia_comportamento` 6e-4, `razao_media` 1,0000) e a execução ficou 2,3 M de passos num ponto fixo absorvente, terminando em 0,57 ponto com 100% dos episódios encerrados por fome. Mantida como registro do 'antes'; o braço oficial do LBC sai de uma execução nova com o pacote corrigido.
 - `ppo/resnet_small_fome_esparso/seed0`: comparable=False: observação com 6 canais (fome), fora do contrato de 5; orçamento de gradiente esparso (~2.400 atualizações), que era o padrão quando a ablação foi medida
 - `ppo/resnet_small_fome_esparso/seed1`: comparable=False: observação com 6 canais (fome), fora do contrato de 5; orçamento de gradiente esparso (~2.400 atualizações), que era o padrão quando a ablação foi medida
 - `ppo/resnet_small_fome_esparso/seed2`: comparable=False: observação com 6 canais (fome), fora do contrato de 5; orçamento de gradiente esparso (~2.400 atualizações), que era o padrão quando a ablação foi medida

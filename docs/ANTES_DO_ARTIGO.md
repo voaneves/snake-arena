@@ -17,8 +17,11 @@ depende da tabela final: introdução, trabalhos relacionados, o ambiente, o con
 comparabilidade, o protocolo de avaliação, a metodologia, e — inteiras — as duas ablações
 fechadas: o canal de fome e o orçamento de gradiente.
 
-O que falta é **fila de GPU**: sete algoritmos ainda sem nenhuma semente na régua atual,
-mais duas sementes do Rainbow e as três do braço de controle dele. Nenhum deles depende de uma escolha que ainda não foi feita.
+O que falta é **fila de GPU**, e ela encolheu muito: **um** algoritmo ainda sem nenhuma
+semente na régua atual — o DreamerV3, que nunca rodou —, mais o LBC, cuja única execução é a
+de antes das correções e está arquivada fora da arena. Faltam ainda duas sementes do MuZero,
+duas do ACEKTR e as duas do braço de controle do Rainbow. Nenhum deles depende de uma escolha
+que ainda não foi feita.
 
 Há **uma** pergunta nova, e ela é barata: a correção do DQN mudou duas coisas ao mesmo tempo
 e o efeito líquido foi de −9,8 pontos. Uma ablação de 1,85 h separa as duas. Ela não trava
@@ -90,27 +93,29 @@ como a próxima pergunta sobre esse algoritmo.
 
 ## O que falta, e é só execução
 
-Sete algoritmos × 3 sementes, mais duas sementes do Rainbow e o braço de controle dele. Nenhum depende de decisão
+Oito dos doze algoritmos já têm as três sementes na régua atual. O que resta é: o DreamerV3
+inteiro (3 sementes, custo desconhecido), o LBC inteiro na régua nova (3), duas sementes do
+MuZero, duas do ACEKTR e as duas do braço de controle do Rainbow. Nenhum depende de decisão
 pendente — os quatro sequenciais já têm o truncamento por fome corrigido, e o DQN já conta a
 rede alvo em atualizações de gradiente em vez de passos de ambiente.
 
 | ordem | algoritmo | notebook | estado | custo medido |
 |---:|---|---|---|---|
 | ~~1~~ | ~~A2C~~ | `04_a2c` | ✅ **feito**, nos dois braços | 0,31 h/semente |
-| 2 | DQN | `02_dqn` | 🔄 2 de 3 sementes | 1,85 h/semente |
-| 3 | Rainbow | `03_rainbow` | 🔄 1 de 3 sementes (`n_steps=20`) | 4,0 h/semente |
+| ~~2~~ | ~~DQN~~ | `02_dqn` | ✅ **feito**, 3 sementes | 1,9 h/semente |
+| ~~3~~ | ~~Rainbow~~ | `03_rainbow` | ✅ **feito**, 3 sementes (`n_steps=20`) | 4,0 h/semente |
 | 3b | Rainbow, braço `n_steps=3` | `94_rainbow_nstep3` | 🔄 1 de 3 sementes | 2,6 h/semente |
-| 4 | ACER | `05_acer` | pendente | desconhecido |
-| 5 | DreamerV3 | `09_dreamerv3` | pendente | desconhecido |
-| 6 | AlphaZero | `06_alphazero` | pendente | desconhecido — busca em árvore |
-| 7 | MuZero | `07_muzero` | pendente | desconhecido |
+| ~~4~~ | ~~ACER~~ | `05_acer` | ✅ **feito**, 3 sementes | 1,4 h/semente |
+| 5 | DreamerV3 | `09_dreamerv3` | **pendente — o único que nunca rodou** | desconhecido |
+| ~~6~~ | ~~AlphaZero~~ | `06_alphazero` | ✅ **feito**, 3 sementes | 7,1 h/semente |
+| 7 | MuZero | `07_muzero` | 🔄 1 de 3 sementes (`unroll5`) | 6,8 h/semente |
 
 **Pendente, e é a entrada nova da fila: implementar o Reanalyse.** A primeira execução sob o contrato (`muzero/unroll5/seed0`) terminou em 49,26 com o melhor em 66,05 e a busca estável em 58–60 — o professor está bom, o aluno oscila (§2.31). O Apêndice H do paper explica por quê melhor do que qualquer hipótese minha: este repositório faz **2,0 amostras de gradiente por estado**, que é exatamente o número do MuZero **Reanalyse** (o MuZero puro usa 0,1) — e o Reanalyse existe porque reúso alto precisa de alvo fresco: ele refaz a busca com a rede atual em 80% das atualizações e usa rede alvo para o bootstrap de valor. Não temos nem um nem outro. O Reanalyse **da política** já está implementado (`reanalise`, §2.32) e desligado por padrão, com o custo medido: 1,32× a 1,57× de tempo de parede em CPU, sublinear na fração porque as buscas são em lote — numa GPU 0,80 deve custar quase o mesmo que 0,25. O que falta do Apêndice H é a rede alvo e o refresco do alvo de **valor**, que exigem guardar o estado em `t+n`. Antes de qualquer um deles, porém, há um conserto de **graça**: `normaliza_unroll`, a escala `1/K` do Apêndice G que o repositório não tinha. Se ele resolver, nada disto precisa de GPU. Os braços estão no `92_muzero_ablacoes`.
 
 **Resolvido.** O MuZero ganhou `avaliar_com_busca` no protocolo oficial e os consertos do §2.27–§2.29 — o `MCTS` é o mesmo objeto, então os defeitos eram os mesmos. Como ele nunca rodou sob o contrato, não havia execução de controle a preservar e tudo já nasce ligado. O levantamento de quem tem o quê além da rede pura está em `docs/COMPARABILITY.md`. O que falta aqui é GPU.
-| 8 | LBC | `10_lbc` | pendente | desconhecido — ~4 épocas sobre o rollout, como o PPO |
-| 9 | SOAP | `11_soap` | pendente | desconhecido — PPO com 4 cabeças e uma crença em NumPy |
-| 10 | ACEKTR | `12_acektr` | pendente | ~2,1× o `kfac_ms` do ACKTR, medido em lote pequeno |
+| 8 | LBC | `10_lbc` | 🔄 **0 de 3 na régua atual** — a única execução é a de antes das correções (`resnet_small_antes_das_correcoes`, `comparable=False`) | 0,36 h/semente, medido na execução que falhou |
+| ~~9~~ | ~~SOAP~~ | `11_soap` | ✅ **feito**, 3 sementes — e é o topo da arena (85,55) | 0,4 h/semente |
+| 10 | ACEKTR | `12_acektr` | 🔄 1 de 3 sementes | 0,4 h/semente |
 
 O A2C saiu **muito** mais barato que a estimativa de 0,7 h: 0,31 h por semente, o menor
 custo do repositório. A correção de retracing (`PROCEDENCIA.md`, caso 2) responde por boa

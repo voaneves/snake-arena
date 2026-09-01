@@ -310,8 +310,17 @@ na [§2.10](docs/LBC.md). Vale ler mesmo sem interesse pelo LBC: os três defeit
 mataram (o `τ` sem autoridade sobre logits livres, 128 passos de gradiente sem região de
 confiança, e um bandit decidindo sobre ruído) são **invisíveis na curva de score** e
 evidentes em quatro campos do registro. As correções viraram mais três desvios declarados
-(§2.6 a §2.9). As duas ablações da Fig. 5 do paper —
-população de uma política e seleção aleatória — estão implementadas como configuração
+(§2.6 a §2.9).
+
+Ela está arquivada em `runs/lbc/resnet_small_antes_das_correcoes/seed0`, com
+`comparable=False` e o motivo escrito — o mesmo tratamento de `dqn/base_antigo` e de
+`acktr/resnet_small_regua_antiga`. **Por isso o LBC não tem linha na arena hoje**: a única
+execução que existe é a de antes das correções, e publicá-la como braço do algoritmo seria
+atribuir ao LBC o resultado de um código que não é mais o dele. O braço oficial sai de uma
+execução nova com o pacote corrigido.
+
+As duas ablações da Fig. 5 do paper — população de uma política e seleção aleatória — estão
+implementadas como configuração
 (`n_politicas=1`, `selecao="aleatoria"`) e ganham sufixo próprio na variante.
 
 **Por que busca.** Snake é determinístico, de informação perfeita, tem 3 ações e o
@@ -380,19 +389,23 @@ usa.
 
 | algoritmo | sementes | score (last) | melhor ckpt | com busca | amplitude | horas | tabuleiro cheio |
 |---|---:|---:|---:|---:|---:|---:|---:|
+| SOAP · `resnet_small` | 3 | **85,55** | 89,22 | — | ±0,89 | 0,4 | 72,7% |
 | AlphaZero · `sims32` | 3 | **81,91** | 84,05 | **95,63** (32 sims, n=1) | ±2,20 | 7,1 | 67,3% |
 | PPO · `resnet_small` | 3 | **81,50** | 81,98 | — | ±3,45 | 0,9 | 61,4% |
 | ACKTR · `resnet_small` | 3 | **78,13** | 85,84 | — | ±19,11 | 0,5 | 60,7% |
 | ACER · `resnet_small` | 3 | **77,84** | 85,77 | — | ±14,53 | 1,4 | 13,0% |
+| ACEKTR · `resnet_small` | 1 | **71,07** | 71,07 | — | — | 0,4 | 17,6% |
 | A2C · `resnet_small` | 3 | **69,61** | 72,94 | — | ±7,72 | 0,3 | 2,2% |
 | Rainbow · `completo` | 3 | **65,43** | 70,51 | — | ±27,01 | 4,0 | 12,0% |
 | MuZero · `unroll5` | 1 | **49,26** | 66,05 | — | — | 6,8 | 0,1% |
 | DQN · `base` | 3 | **47,11** | 51,79 | — | ±2,86 | 1,9 | 0,0% |
 | _piso aleatório_ | — | 1,21 | — | — | — | — | 0% |
 
-Score perfeito no 10×10 é **97**. Quatro dos doze algoritmos ainda não têm nenhuma semente na
-régua atual — ver [`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) para a fila e o custo
-medido de cada um.
+Score perfeito no 10×10 é **97**. Dois dos doze algoritmos ainda não têm nenhuma semente na
+régua atual — o **DreamerV3**, que nunca rodou, e o **LBC**, cuja única execução de 5 M passos
+é a que falhou e está arquivada fora da arena (`runs/lbc/resnet_small_antes_das_correcoes/`,
+`comparable=False`). Ver [`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) para a fila e o
+custo medido de cada um.
 
 **Três colunas, três perguntas.** `score (last)` é o número oficial: o modelo do último
 passo. `melhor ckpt` é o melhor que aquela execução produziu em algum momento — e é otimista
@@ -408,7 +421,22 @@ inteiro está em [`docs/COMPARABILITY.md`](docs/COMPARABILITY.md).
 
 ![os melhores nas suas melhores tentativas](assets/arena_melhores_light.png)
 
-**Dois resultados que a tabela sozinha não mostra:**
+**Três resultados que a tabela sozinha não mostra:**
+
+**O SOAP é o primeiro braço a separar do PPO sem ambiguidade de semente.** A mediana de
+85,55 contra 81,50 seria discutível sozinha — a amplitude do PPO neste ambiente é de 3,45
+pontos —, mas a separação não depende da mediana: as três sementes do SOAP marcaram 85,12,
+85,55 e 86,00, e **a pior delas está acima da melhor semente do PPO** (82,32) e da melhor do
+AlphaZero (83,31). Os três conjuntos não se tocam. A amplitude de ±0,89 é a menor de todos os
+braços de três sementes do repositório — o próximo é o AlphaZero, com ±2,20 —, e a fração de
+tabuleiros fechados sobe de 61,4% para 72,7%.
+
+O que dá peso ao número é o controle exato: com `n_opcoes=1` o SOAP **é** o PPO, e
+`tests/test_soap.py` prova as três igualdades numericamente. A diferença é atribuível ao
+latente discreto que atravessa os passos — a resposta que o sexto canal da fome tentou dar e
+não deu (ver [`docs/CANAL_DE_FOME.md`](docs/CANAL_DE_FOME.md)). O que a tabela **não** diz é
+se o mérito é da memória ou das opções: falta o braço `11_soap` com `n_opcoes=1` na mesma
+semente, que é o controle de dentro do algoritmo. Ver [`docs/SOAP.md`](docs/SOAP.md) §4.
 
 O **ACKTR empata com o PPO gastando 1,6% do orçamento de gradiente** — 610 atualizações
 contra 38.273, e 0,51 h contra 0,83 h de parede. O preço é a dispersão: ±19,11 de amplitude

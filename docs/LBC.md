@@ -337,6 +337,14 @@ O que sai disso e vale para além deste algoritmo: **a curva de score não detec
 três defeitos.** O que detecta é `entropia_comportamento` (§2.6), `ent` junto com `pg` (§2.7)
 e `mab_sinal_ruido` junto com `mab_entropia` (§2.9). Estão todos na tabela da §4 agora.
 
+**Onde ela está.** `runs/lbc/resnet_small_antes_das_correcoes/seed0`, com `comparable=False`
+e o caveat inteiro gravado no `history.json` — o mesmo tratamento de `dqn/base_antigo` e de
+`acktr/resnet_small_regua_antiga`. A execução não é apagada porque a autópsia acima só é
+verificável com a curva na mão; e não fica em `runs/lbc/resnet_small/` porque `load_all`
+agrupa por `(algo, variant, seed)` e aquele endereço pertence ao braço oficial, que ainda não
+foi medido. Enquanto for a única execução do LBC, **o algoritmo não tem linha na arena** — o
+que a tabela mostra é a ausência, e não um 0,57 com o nome do LBC em cima.
+
 ---
 
 ## 3. O que comparar com o quê

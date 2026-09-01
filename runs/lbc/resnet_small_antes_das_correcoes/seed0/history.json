@@ -1,6 +1,6 @@
 {
   "algo": "lbc",
-  "variant": "resnet_small",
+  "variant": "resnet_small_antes_das_correcoes",
   "seed": 0,
   "net": "resnet_small",
   "params": 286896,
@@ -16,7 +16,7 @@
     "runs_dir": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs",
     "log_every_steps": 50000,
     "salvar_grafico": true,
-    "sufixo_variante": "",
+    "sufixo_variante": "_antes_das_correcoes",
     "salvar_gif": true,
     "gif_seeds": [
       7,
@@ -3328,8 +3328,8 @@
     "global_step": 3260416
   },
   "busca": {},
-  "comparable": true,
-  "caveat": "",
+  "comparable": false,
+  "caveat": "primeira execução do LBC, com os padrões anteriores às correções §2.6–§2.9 do docs/LBC.md: logits de comportamento sem padronização, sem região de confiança em volta do gradiente do IMPALA, coeficiente de entropia agendado e bandit decidindo sem evidência. A autópsia está na §2.10 — a softmax da política alvo saturou em 540 k passos (`ent` 5e-6, `entropia_comportamento` 6e-4, `razao_media` 1,0000) e a execução ficou 2,3 M de passos num ponto fixo absorvente, terminando em 0,57 ponto com 100% dos episódios encerrados por fome. Mantida como registro do 'antes'; o braço oficial do LBC sai de uma execução nova com o pacote corrigido.",
   "meta": {
     "python": "3.12.3",
     "platform": "Linux-6.1.176-223.369.amzn2023.x86_64-x86_64-with-glibc2.39",
@@ -3350,22 +3350,22 @@
     "atualizacoes": 39168,
     "artefatos": {
       "modelos": {
-        "last": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small/seed0/modelos/last.keras",
-        "best": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small/seed0/modelos/best.keras"
+        "last": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small_antes_das_correcoes/seed0/modelos/last.keras",
+        "best": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small_antes_das_correcoes/seed0/modelos/best.keras"
       },
-      "grafico": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small/seed0/curva.png",
+      "grafico": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small_antes_das_correcoes/seed0/curva.png",
       "gif_s7": {
-        "caminho": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small/seed0/episodio_s7.gif",
+        "caminho": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small_antes_das_correcoes/seed0/episodio_s7.gif",
         "score": 0,
         "fim": "fome"
       },
       "gif_s21": {
-        "caminho": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small/seed0/episodio_s21.gif",
+        "caminho": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small_antes_das_correcoes/seed0/episodio_s21.gif",
         "score": 0,
         "fim": "fome"
       },
       "gif_s42": {
-        "caminho": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small/seed0/episodio_s42.gif",
+        "caminho": "/Workspace/Users/victorneves478@gmail.com/Drafts/snake-arena/runs/lbc/resnet_small_antes_das_correcoes/seed0/episodio_s42.gif",
         "score": 0,
         "fim": "fome"
       }
