@@ -138,7 +138,11 @@ def main(argv=None):
         json.dump(linhas, f, indent=1, ensure_ascii=False)
     print("\ngravado em", destino)
     base = next((l for l in linhas if l["braco"] == "controle"), None)
-    if base:
+    if base and base["razao_mediana"] < 1.5:
+        print(f"\nMEDICAO VAZIA: o controle deu {base['razao_mediana']:.1f}x e nao ha "
+              "estouro a explicar.\nCom uma forma reduzida o fenomeno some (15,3x com "
+              "512 ambientes, 0,9x com 64). Rode na forma do contrato.")
+    elif base:
         for l in linhas:
             if l["braco"] == "controle":
                 continue
@@ -146,7 +150,7 @@ def main(argv=None):
             # razoes: 1,0 e o alvo, entao o que um braco explica e
             # `((controle - 1) - (braco - 1)) / (controle - 1)`. Ler "2,0x contra 15,3x"
             # como "reduziu para 13%" subestima o efeito: o excesso caiu 93%.
-            exc_base = max(base["razao_mediana"] - 1.0, 1e-9)
+            exc_base = base["razao_mediana"] - 1.0
             exc = max(l["razao_mediana"] - 1.0, 0.0)
             frac = 1.0 - exc / exc_base
             veredito = ("EXPLICA quase tudo" if frac > 0.85

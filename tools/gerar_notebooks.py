@@ -608,7 +608,8 @@ some. Lote 8× menor, estouro 17× menor, que é o que a hipótese do momento pr
 Fisher não. Não encolha `ENVS` para economizar: você mediria outra coisa.
 """
 
-DIAG_KL_CODE = '''import time
+DIAG_KL_CODE = '''import gc
+import time
 
 import numpy as np
 
@@ -621,11 +622,15 @@ _ARMS = {k: {**v, "kl_calibrado": False} for k, v in BRACOS.items()}
 if SO_ESTES.strip():
     _ARMS = {k: _ARMS[k] for k in
              [x.strip() for x in SO_ESTES.split(",") if x.strip()]}
+# `controle` primeiro, sempre: as fracoes do resumo sao contra ele, e uma sessao que caia
+# no meio (Colab desconecta, a cota do Kaggle acaba) deixaria a tabela ilegivel sem ele.
+if "controle" in _ARMS:
+    _ARMS = {"controle": _ARMS.pop("controle"), **_ARMS}
 
 print(f"{ITERS} atualizacoes por braco · {ENVS} ambientes · {REDE} · "
       f"kl_calibrado=False em todos")
 print()
-print(f"{'braco':>24} {'KL mediana':>11} {'razao':>8} {'p90':>8} {'min':>6}")
+print(f"{'braco':>24} {'KL mediana':>11} {'razao':>8} {'p90':>8} {'s':>6}")
 _linhas = {}
 for _nome, _extra in _ARMS.items():
     _t0 = time.time()
@@ -643,19 +648,28 @@ for _nome, _extra in _ARMS.items():
     # `cold_iter=100` que este repositorio nao tem) e ficam de fora da mediana
     _v = np.array(_r[20:] or _r)
     _linhas[_nome] = float(np.median(_v))
-    print(f"{_nome:>24} {np.median(np.array(_r[20:] or _r)) * _c.kl_max:>11.5f} "
+    print(f"{_nome:>24} {float(np.median(_v)) * _c.kl_max:>11.5f} "
           f"{_linhas[_nome]:>7.1f}x {np.quantile(_v, 0.9):>7.1f}x "
           f"{time.time() - _t0:>5.0f}s", flush=True)
     del _ag
+    gc.collect()        # sete agentes em sequencia; o traco de cada um segura memoria
 
 _base = _linhas.get("controle")
-if _base and len(_linhas) > 1:
-    print()
+print()
+if _base is None:
+    print("sem o braco `controle`, nao ha contra o que comparar.")
+elif _base < 1.5:
+    # sem estouro no controle nao ha excesso a atribuir, e a divisao por (base-1)
+    # imprimiria um numero absurdo. Quase sempre significa forma reduzida demais.
+    print(f"MEDICAO VAZIA: o controle deu {_base:.1f}x, e nao ha estouro a explicar.")
+    print(f"Com ENVS={ENVS} o fenomeno pode simplesmente nao aparecer — ele foi medido")
+    print("em 15,3x com 512 ambientes e 0,9x com 64. Suba ENVS para 512 e repita.")
+else:
     print("fracao do EXCESSO removida (1,0x e o alvo; o excesso e `razao - 1`):")
     for _n, _q in _linhas.items():
         if _n == "controle":
             continue
-        _f = 1.0 - max(_q - 1, 0) / max(_base - 1, 1e-9)
+        _f = 1.0 - max(_q - 1, 0) / (_base - 1)
         _lado = "ABAIXO do alvo" if _q < 0.8 else "acima" if _q > 1.25 else "no alvo"
         print(f"  {_n:>24}: {_f:6.1%}   (razao {_q:.1f}x, {_lado})")
     print()
