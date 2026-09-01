@@ -630,8 +630,9 @@ if "controle" in _ARMS:
 print(f"{ITERS} atualizacoes por braco · {ENVS} ambientes · {REDE} · "
       f"kl_calibrado=False em todos")
 print()
-print(f"{'braco':>24} {'KL mediana':>11} {'razao':>8} {'p90':>8} {'s':>6}")
-_linhas = {}
+print(f"{'braco':>24} {'KL mediana':>11} {'razao':>8} {'p90':>8} "
+      f"{'no teto':>7} {'eta med':>9} {'s':>6}")
+_linhas, _diag2 = {}, {}
 for _nome, _extra in _ARMS.items():
     _t0 = time.time()
     _c = ACKTRConfig(seed=SEMENTE, net=REDE, num_envs=ENVS, total_steps=10**9,
@@ -639,17 +640,29 @@ for _nome, _extra in _ARMS.items():
                      salvar_gif=False, salvar_grafico=False,
                      ckpt_dir="/tmp/diag_kl", runs_dir="/tmp/diag_kl", **_extra)
     _ag = ACKTR(_c)
-    _r = []
+    _r, _eta, _teto = [], [], []
     for _i in range(ITERS):
         _st = _ag.iterate()
         if _st and _st.get("kl") is not None:
             _r.append(_st["kl"] / max(_st.get("kl_alvo_efetivo") or _c.kl_max, 1e-12))
+            # `escala_kl` devolve `min(lr_max, sqrt(2*kl_max/quad))`. Quando o minimo
+            # escolhe `lr_max`, a regiao de confianca esta SATURADA: o passo deixou de
+            # ser governado por `kl_max` e a KL entregue nao responde mais ao alvo.
+            # Quando eta e minusculo sem estar no teto, `quad` estourou - que e o unico
+            # jeito de a KL sair exatamente zero.
+            _eta.append(_st["lr"])
+            _teto.append(_st["lr_teto"])
     # as 20 primeiras rodam com a media movel do K-FAC ainda crua (o `baselines` tem um
     # `cold_iter=100` que este repositorio nao tem) e ficam de fora da mediana
     _v = np.array(_r[20:] or _r)
+    _e, _t = np.array(_eta[20:] or _eta), np.array(_teto[20:] or _teto)
     _linhas[_nome] = float(np.median(_v))
+    _diag2[_nome] = {"frac_no_teto": float(np.mean(_e >= _t * 0.999)),
+                     "eta_mediano": float(np.median(_e)),
+                     "eta_min": float(_e.min()), "teto": float(np.median(_t))}
     print(f"{_nome:>24} {float(np.median(_v)) * _c.kl_max:>11.5f} "
           f"{_linhas[_nome]:>7.1f}x {np.quantile(_v, 0.9):>7.1f}x "
+          f"{_diag2[_nome]['frac_no_teto']:>7.0%} {_diag2[_nome]['eta_mediano']:>9.2e} "
           f"{time.time() - _t0:>5.0f}s", flush=True)
     del _ag
     gc.collect()        # sete agentes em sequencia; o traco de cada um segura memoria
@@ -661,9 +674,12 @@ if _base is None:
 elif _base < 1.5:
     # sem estouro no controle nao ha excesso a atribuir, e a divisao por (base-1)
     # imprimiria um numero absurdo. Quase sempre significa forma reduzida demais.
-    print(f"MEDICAO VAZIA: o controle deu {_base:.1f}x, e nao ha estouro a explicar.")
-    print(f"Com ENVS={ENVS} o fenomeno pode simplesmente nao aparecer — ele foi medido")
-    print("em 15,3x com 512 ambientes e 0,9x com 64. Suba ENVS para 512 e repita.")
+    print(f"SEM ESTOURO: o controle deu {_base:.1f}x — a regiao de confianca esta")
+    print("entregando o que pede, e nao ha excesso a atribuir a braco nenhum.")
+    print("Isso e um RESULTADO, nao uma falha da medicao. Com 60 atualizacoes o mesmo")
+    print("controle deu 7,4x e com 300 deu 1,2x: o estouro era aquecimento do K-FAC.")
+    print("Compare `KL mediana` entre `controle` e `kl_do_paper`: se as duas forem")
+    print("parecidas apesar de os alvos diferirem 7,5x, o que existe e um PISO.")
 else:
     print("fracao do EXCESSO removida (1,0x e o alvo; o excesso e `razao - 1`):")
     for _n, _q in _linhas.items():
@@ -673,8 +689,25 @@ else:
         _lado = "ABAIXO do alvo" if _q < 0.8 else "acima" if _q > 1.25 else "no alvo"
         print(f"  {_n:>24}: {_f:6.1%}   (razao {_q:.1f}x, {_lado})")
     print()
-    print("Um braco que passa do alvo para BAIXO tambem falsifica a Fisher: um fator")
-    print("que corrige demais nao pode estar corrigindo um erro de curvatura.")
+    print("`no teto` e a fracao de atualizacoes em que eta bateu em `lr_start`. Alto")
+    print("significa REGIAO DE CONFIANCA SATURADA: o passo deixou de ser governado por")
+    print("`kl_max`, e a razao medida nao mede erro de Fisher nenhum - mede o teto.")
+    print("`eta med` minusculo COM `no teto` em 0% e o caso oposto: `quad` estourou e o")
+    print("passo virou nada, que e como a KL sai exatamente zero.")
+
+# O numero precisa sobreviver ao fim da sessao. Este diagnostico nao cria um `registro`
+# (nao ha treino nenhum aqui), entao ele nao entra no .zip da execucao la embaixo — e sem
+# isto o resultado seria print no console, que some quando o Colab desconecta.
+_DIAG = os.path.join(PASTA, "diag_acktr_kl.json")
+with open(_DIAG, "w", encoding="utf-8") as _f:
+    json.dump({"iters": ITERS, "envs": ENVS, "rede": REDE, "semente": SEMENTE,
+               "assinatura_pacote": ASSINATURA_PACOTE,
+               "plataforma": detecta(), "razoes": _linhas, "passo": _diag2,
+               "bracos": {k: v for k, v in _ARMS.items()}}, _f,
+              indent=1, ensure_ascii=False)
+print()
+print("gravado em", _DIAG)
+entregar_arquivo(_DIAG)
 '''
 
 
@@ -683,6 +716,10 @@ BRACOS_ACKTR = [
     "sem_momento", "momento_descontado", "sem_clip", "sem_momento_sem_clip",
     # o alvo do paper, que o repositorio nao usa
     "kl_do_paper", "kl_do_paper_descontado",
+    # o piso da KL: o tronco compartilhado movido pelo valor e pela entropia
+    "so_politica", "sem_entropia",
+    # o teto de eta, e o braco que de fato isola a Fisher
+    "sem_teto", "so_a_fisher",
     # controle
     "controle",
 ]
@@ -701,18 +738,23 @@ _PRE_CFG_ACKTR = """BRACOS = {
     # O baselines faz MomentumOptimizer(lr*(1-momentum), momentum) justamente por isso.
 
     # joga o momento fora - responde a pergunta, mas perde a reducao de variancia.
-    # MEDIDO: 15,3x -> 2,0x, isto e, 93% do excesso.
+    # MEDIDO em GPU: 7,4x -> 3,8x. O momento amplifica ~2x, e nao e a causa.
     "sem_momento":           {"momento": 0.0, "kl_calibrado": False},
     # o conserto do baselines: desconta (1-mu) e mantem o momento. MEDIDO: leva a razao
-    # de 15,3x para 0,1x - ou seja, corrige DEMAIS. O (1-mu) supoe acumulo total (10x),
-    # e o acumulo real e de ~2-3x porque os gradientes so sao parcialmente correlacionados.
+    # a 0,2x - corrige DEMAIS. O (1-mu) supoe acumulo total (10x) e o acumulo real e ~2x.
+    # `kl_calibrado`, que estima o fator por media movel, e a resposta certa.
     "momento_descontado":    {"descontar_momento": True, "kl_calibrado": False},
 
-    # -------------------------------------------- o suspeito numero dois: o clipnorm
+    # ------------------------------------------- o suspeito numero dois: o clipnorm
     # `max_grad_norm=0.5` vem do PPO e o Keras clipa POR VARIAVEL, dentro do
     # apply_gradients - sobre a direcao ja pre-condicionada. No baselines o clip nunca
-    # toca a direcao natural. Distorce a razao entre camadas que e a razao de ser do
-    # K-FAC e invalida o eta que a formula da KL calculou.
+    # toca a direcao natural.
+    #
+    # MEDIDO, e ao contrario do que se esperava: tirar o clip PIORA a razao (7,4x -> 15,3x
+    # com momento; 3,8x -> 12,9x sem). Ele nao era a causa do estouro - era um FREIO
+    # acidental, que encurtava a direcao e derrubava a KL junto. O problema dele e outro:
+    # encurta de forma desigual entre camadas, desfazendo em silencio a razao de ser do
+    # K-FAC, e faz `kl_max` significar coisas diferentes conforme a norma da direcao.
     "sem_clip":              {"max_grad_norm": 0.0, "kl_calibrado": False},
     "sem_momento_sem_clip":  {"momento": 0.0, "max_grad_norm": 0.0,
                               "kl_calibrado": False},
@@ -725,7 +767,37 @@ _PRE_CFG_ACKTR = """BRACOS = {
     "kl_do_paper_descontado":  {"kl_max": 2e-3, "descontar_momento": True,
                                 "kl_calibrado": False},
 
-    # o de hoje, com a calibracao desligada: e ele que produz a razao de 4,4x a 12,4x
+    # ------------------------------------------- o PISO da KL, que e o achado real
+    # Com 300 atualizacoes, `controle` (kl_max=1,5e-2) entrega KL 0,01866 e
+    # `kl_do_paper` (kl_max=2e-3) entrega 0,01848. Pedidos que diferem 7,5x, entregas
+    # que diferem 1%. A KL entregue NAO responde ao alvo: e um PISO, nao um ganho.
+    #
+    # A causa provavel: `escala_kl` calcula `quad = Delta^T grad` sobre o gradiente
+    # COMBINADO (`pg + vf_coef*vl - ent_coef*ent`, acktr.py:258), mas a KL e medida so
+    # na politica. O tronco e compartilhado, entao o valor e a entropia o movem por
+    # conta propria - e essa parte do deslocamento nenhuma formula de KL controla.
+    # Estes dois bracos testam isso: se o piso cair, era o tronco.
+    "so_politica":  {"vf_coef": 0.0, "ent_coef_start": 0.0, "ent_coef_end": 0.0,
+                     "kl_calibrado": False},
+    "sem_entropia": {"ent_coef_start": 0.0, "ent_coef_end": 0.0, "kl_calibrado": False},
+
+    # ------------------------------- o teto de eta, que ninguem estava olhando
+    # `escala_kl` devolve `min(lr_max, sqrt(2*kl_max/quad))`, e `lr_max` e o `lr_start`
+    # anelado. Quando o minimo escolhe `lr_max`, a regiao de confianca esta SATURADA: o
+    # passo deixou de ser governado por `kl_max`, e a razao medida nao diz nada sobre a
+    # Fisher - ela mede o teto. O docstring do acktr.py afirma que `lr_start` "nao
+    # limitou nada", e isso vale para o padrao; com o clip desligado, ele limita 83% das
+    # atualizacoes. Olhe a coluna `no teto` antes de acreditar em qualquer razao.
+    "sem_teto":  {"lr_start": 50.0, "lr_end": 50.0, "kl_calibrado": False},
+
+    # O braco que de fato isola a Fisher: sem momento, sem clip e sem teto, o que sobra
+    # e a formula da KL contra a KL da politica de verdade, e nada mais.
+    "so_a_fisher": {"momento": 0.0, "max_grad_norm": 0.0, "lr_start": 50.0,
+                    "lr_end": 50.0, "kl_calibrado": False},
+
+    # o de hoje, com a calibracao desligada. MEDIDO: 7,4x em GPU (15,3x na CPU do
+    # assistente - a diferenca entre plataformas e do tamanho do efeito medido, que e o
+    # mesmo fenomeno que o docstring do acktr.py ja registrava)
     "controle": {"kl_calibrado": False},
 }
 print(f"braco: {BRACO}  (o padrao e o 08_acktr; aqui se testa de onde vem o estouro)")

@@ -1,21 +1,37 @@
-[
- {
-  "braco": "controle",
-  "n": 40,
-  "kl_alvo": 0.015,
-  "razao_mediana": 15.268909931182861,
-  "razao_p90": 49.53518470128378,
-  "razao_frio": 2.802609776457151,
-  "kl_mediana": 0.22903364896774292
+{
+ "fonte": "GPU do usuario, 512 ambientes, semente 0, kl_calibrado=False",
+ "achado": "o estouro era aquecimento do K-FAC; o que sobra e um PISO na KL entregue",
+ "aviso": "bracos sem clipnorm saturam o teto de eta (lr_start) e nao medem curvatura",
+ "resnet_small_60it": {
+  "controle": 7.4,
+  "sem_momento": 3.8,
+  "momento_descontado": 0.2,
+  "sem_clip": 15.3,
+  "sem_momento_sem_clip": 12.9,
+  "kl_do_paper": 10.8,
+  "kl_do_paper_descontado": 0.5
  },
- {
-  "braco": "sem_momento",
-  "n": 40,
-  "kl_alvo": 0.015,
-  "razao_mediana": 2.0132262880603475,
-  "razao_p90": 4.90221326549848,
-  "razao_frio": 1.2268871068954468,
-  "kl_mediana": 0.03019839432090521,
-  "momento": 0.0
+ "resnet_base_60it": {
+  "controle": 7.0,
+  "sem_momento": 2.8,
+  "momento_descontado": 0.3,
+  "sem_clip": 0.0,
+  "sem_momento_sem_clip": 9.4,
+  "kl_do_paper": 27.0,
+  "kl_do_paper_descontado": 0.6
+ },
+ "resnet_small_300it": {
+  "controle": 1.2,
+  "sem_momento": 3.0,
+  "momento_descontado": 0.2,
+  "sem_clip": 10.4,
+  "sem_momento_sem_clip": 17.5,
+  "kl_do_paper": 9.2,
+  "kl_do_paper_descontado": 0.2
+ },
+ "kl_entregue_300it": {
+  "controle": 0.01866,
+  "kl_do_paper": 0.01848,
+  "nota": "alvos 0,0150 e 0,0020 - diferem 7,5x e entregam a mesma KL"
  }
-]
+}

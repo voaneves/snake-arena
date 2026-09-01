@@ -30,17 +30,27 @@ Como ler
 --------
 `razao` é `KL_medida / KL_pedida`. O que cada braço prevê, se a hipótese dele for a certa:
 
-===================  =========================================================
-braço                se a razão cair para ~1 aqui, a causa é…
-===================  =========================================================
-`sem_momento`        o momento (mas jogando fora a redução de variância)
-`momento_descontado` o momento — e este é o conserto **certo**, o do `baselines`
-`sem_clip`           o `clipnorm` sobre a direção natural
-`sem_momento_sem_clip` os dois juntos
-===================  =========================================================
+O braço que decide é `sem_momento_sem_clip`: sem os dois, o que sobra é a fórmula da KL
+contra a KL da política de verdade. Se ele ficar longe de 1×, o erro é da Fisher.
 
-Se **nenhum** braço trouxer a razão para perto de 1, a explicação da §2 sobrevive à
-tentativa de falsificação e o ACEKTR mantém a premissa.
+**Já foi medido** (512×5, `resnet_small`, 60 atualizações, GPU) e o resultado é um 2×2:
+
+===============  ==================  ====================
+                 `clipnorm` ligado   `clipnorm` desligado
+===============  ==================  ====================
+momento ligado   7,4×                15,3×
+momento desligado 3,8×               **12,9×**
+===============  ==================  ====================
+
+Tirar o clip **piora** (×2,07 e ×3,39): ele não era suspeito, era um freio acidental que
+encurtava a direção e derrubava a KL junto. Tirar o momento ajuda pouco (×0,51 e ×0,84).
+E com os dois desligados sobram **12,9×** — o erro da Fisher aproximada, que é o que a §2
+sempre disse. As duas hipóteses deste script foram falsificadas, e ele fica como o
+instrumento que as falsificou.
+
+Vale repetir com `--iters 300`: as 40 atualizações que entram na mediana ainda estão no
+regime frio do K-FAC (o `baselines` usa `cold_iter=100`, e este repositório não tem cold
+start), e a §2 registra que o estouro é maior no começo.
 
 Uso::
 

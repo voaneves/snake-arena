@@ -13,7 +13,7 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
-| §2.36 o passo da região de confiança do ACKTR não desconta o momento | **medido** — tirar o momento remove **93% do excesso** de KL (15,3× → 2,0× na forma do contrato), e o fenômeno some num lote 8× menor, que é o que a hipótese do momento prevê e a da Fisher não. `escala_kl` devolve η para UM passo e o SGD tem `momentum=0.9`; em regime o deslocamento é até 10× isso, e a KL vai com o quadrado. A premissa do ACEKTR está errada na maior parte: `EKFAC.md` e a §2 precisam ser reescritos, e a comparação ACKTR × ACEKTR refeita com `descontar_momento` dos dois lados |
+| §2.36 a região de confiança do ACKTR: o estouro era aquecimento, e o que sobra é um **piso** | **medido, com três conclusões minhas retiradas** — com 300 atualizações o controle cai de 7,4× para **1,2×** (os 4,4×–12,4× da §2 eram o regime frio do K-FAC, sem `cold_iter`). Mas pedir 0,0150 e pedir 0,0020 entregam a **mesma** KL (0,0187 e 0,0185): a KL não responde ao alvo. Suspeito: `escala_kl` usa o gradiente combinado e a KL mede só a política — o tronco compartilhado é movido pelo valor e pela entropia. Braços `so_politica` e `sem_entropia` |
 | §2.35 o sorteio do replay do MuZero é uniforme e o Apêndice G prioriza | **implementado, desligado** — `P(i) ∝ |ν − z|^α` com `α = β = 1`; `ν` e `z` são fixos na coleta, então a prioridade nunca é atualizada, ao contrário do PER do DQN. Gravada mesmo desligada, porque mede o quanto busca e jogo discordaram. Braço `priorizado` |
 | §2.34 o agendamento de temperatura é o de jogo de tabuleiro, não o de Atari | **implementado, desligado** — com episódios de ~1.200 lances, `temp_passos=30` deixa 97,5% do episódio a τ=0,25 desde a primeira iteração; o Apêndice D, em Atari, amostra o episódio inteiro com τ por passo de treino. Braço `temp_de_treino` |
 | §2.33 o valor e a recompensa do MuZero são regressão escalar, e o Apêndice F usa suporte categórico | **implementado, desligado** — two-hot + entropia cruzada, com o suporte dimensionado pelo domínio (teto 60 real) em vez de copiado do `[-300,300]` de Atari, que daria resolução de ~3 pontos perto de zero. Braços `categorico`, `transformacao_h`, `categorico_h` |
@@ -757,61 +757,47 @@ natural. Direções naturais com `damping = 1e-2` têm norma bem maior que as cr
 clip provavelmente age quase sempre: distorce a razão entre camadas que é a razão de ser do
 K-FAC e invalida o `η` que a fórmula da KL calculou.
 
-**Medido, e a explicação da §2 não sobrevive.** `tools/diag_acktr_kl.py` roda os braços
-com `kl_calibrado=False` — obrigatório, porque ligado ele mede a razão e pede `kl_max/c`, de
-modo que a KL entregue converge para o alvo *qualquer que seja a causa*. Forma do contrato
-(512×5, `resnet_small`), 60 atualizações, semente 0:
+**O estouro era aquecimento, e o que sobra é um piso.** Medindo com 300 atualizações em
+vez de 60 (forma do contrato, `resnet_small`, GPU), o `controle` cai de **7,4× para 1,2×**.
+A região de confiança entrega o que pede. Os 4,4×–12,4× da §2 e os 7,4× da primeira rodada
+eram o **regime frio do K-FAC** — o `baselines` usa `cold_iter = 100` antes de confiar nos
+fatores e este repositório não tem cold start, então as primeiras dezenas de atualizações
+usam uma média móvel imatura.
 
-| braço | KL mediana | razão `KL/alvo` | p90 | primeiras 20 |
-|---|---|---|---|---|
-| `controle` | 0,229 | **15,3×** | 49,5× | 2,8× |
-| `sem_momento` | 0,030 | **2,0×** | 4,9× | 1,2× |
-| `momento_descontado` | 0,0015 | **0,1×** | 0,3× | 0,2× |
+Mas a segunda coluna diz algo que a razão esconde:
 
-Tirar o momento remove **93% do excesso** (`(15,3−1) → (2,0−1)`). O que sobra — 2,0× — é
-tudo o que resta para a Fisher aproximada, o `clipnorm` e a própria aproximação de segunda
-ordem da KL, juntos.
+| braço | `kl_max` pedido | KL entregue (300 it) | razão |
+|---|---|---|---|
+| `controle` | 0,0150 | **0,01866** | 1,2× |
+| `kl_do_paper` | 0,0020 | **0,01848** | 9,2× |
 
-**E o conserto do `baselines` corrige demais.** `descontar_momento` leva a razão a **0,1×**:
-passa do alvo para baixo, por um fator de 10. O motivo é aritmético e vale registrar, porque
-é o que impede de simplesmente adotá-lo: `(1−μ)` supõe acúmulo **total**, `1/(1−μ) = 10×`.
-O acúmulo real aqui é de ~2–3×, porque gradientes sucessivos são só parcialmente
-correlacionados. Descontar 10× de um acúmulo de 3× subcorrige o passo em 3,3×, e a KL, que
-vai com o quadrado, cai ~11×. Bate com o medido.
+**Pedidos que diferem 7,5× entregam KL que difere 1%.** A KL entregue não responde ao alvo:
+o que existe não é um ganho multiplicativo, é um **piso** de ~0,0185 por atualização. O
+`kl_max = 1,5e-2` do repositório está *acima* desse piso, e é só por isso que a razão do
+controle parece boa — não porque a região de confiança esteja funcionando, mas porque ela
+está pedindo mais do que o piso já entrega de graça.
 
-Um braço que passa do alvo **para baixo** também é evidência contra a Fisher, e por um
-argumento independente: um fator que *corrige demais* não pode estar corrigindo um erro de
-curvatura — ele está corrigindo algo cujo tamanho ele superestima, que é exatamente a
-descrição do acúmulo do momento.
+**A causa provável, e o braço que a testa.** `escala_kl` calcula `Δᵀ∇` sobre o gradiente
+**combinado** — `perda = pg + vf_coef·vl − ent_coef·ent` (`acktr.py:258`) — mas a KL é
+medida **só na política**. O tronco é compartilhado: o valor e a entropia o movem por conta
+própria, e essa parte do deslocamento nenhuma fórmula de KL controla. Um piso independente
+do alvo é exatamente o que isso produziria. Os braços `so_politica` (`vf_coef = 0`, entropia
+zerada) e `sem_entropia` isolam as duas contribuições.
 
-**A consequência prática inverte a recomendação.** Não se troca o padrão por
-`descontar_momento`: o fator certo não é `(1−μ)`, é o acúmulo empírico, que varia com a
-correlação dos gradientes e portanto com o ponto do treino. **`kl_calibrado` já estima
-exatamente esse fator por média móvel** — ou seja, o conserto certo já estava no
-repositório, medindo a coisa certa, atribuído à causa errada. O que precisa mudar é a
-documentação, não o código.
+**As três conclusões anteriores minhas, e por que caíram.** (1) "O momento explica 93% do
+excesso" — veio de uma medição em CPU que não replicou. (2) "O resíduo de 12,9× prova que é
+a Fisher" — o braço estava com η **saturado no teto** (`lr_start`), medindo o teto e não a
+curvatura; o instrumento novo mostra `sem_clip` com η preso em 83% das atualizações e
+`η` mediano exatamente 5,00e-01. (3) "O `clipnorm` é um freio acidental" — ele não é freio:
+muda a direção por variável, o que muda `Δᵀ∇` e tira η do teto; removê-lo **desliga** a
+região de confiança em vez de soltá-la. As três vieram de medições curtas demais ou de
+braços cujo passo não estava sob controle da fórmula.
 
-**E há uma segunda evidência, que não foi planejada.** A mesma medição na forma reduzida
-(64×5, `resnet_tiny`) dá razão **0,9×**: o fenômeno simplesmente não aparece. Lote 8×
-menor, estouro 17× menor. Isso é o que a hipótese do momento prevê — lote maior, gradiente
-menos ruidoso, gradientes sucessivos mais correlacionados, mais acúmulo. A hipótese da
-Fisher prevê o contrário ou nada: o erro da aproximação é estrutural, e um lote maior dá uma
-estimativa *melhor* dos fatores. **A dependência do tamanho do lote é, sozinha, um
-discriminante entre as duas.**
-
-**O que isto significa para o ACEKTR.** O `docs/EKFAC.md` e a §2 deste documento existem
-sobre a premissa de que o estouro mede erro da Fisher. Com 93% dele explicado por um fator
-`(1−μ)` ausente, essa premissa está errada na maior parte. O ACEKTR continua sendo uma
-pergunta legítima — autovalores exatos contra a fatoração de Kronecker é uma diferença real —
-mas **a evidência que o motivava não é evidência.** Os dois documentos precisam ser
-reescritos, e a comparação ACKTR × ACEKTR precisa ser refeita com `descontar_momento=True`
-dos dois lados, senão ela mede o momento e não a curvatura.
-
-**Ressalvas, porque uma medição não é três.** São 60 atualizações no **começo** do treino,
-uma semente, em CPU. O §2 registra que o estouro é maior no começo — então este é o pior
-caso, não o típico. Os braços `sem_clip` e `sem_momento_sem_clip` ainda não foram
-medidos, e são eles que dizem se o 2,0× residual é a Fisher ou o `clipnorm`. O `91_acktr_ablacoes` roda os mesmos braços por 5 M
-passos, para ligar a KL ao score.
+**O que o diagnóstico ganhou por causa disso:** a coluna `no teto` (fração de atualizações
+em que η bateu em `lr_start`), o `η` mediano, os braços `sem_teto` e `so_a_fisher` (sem
+momento, sem clip e sem teto — o único que isola a aproximação), e os braços `so_politica` e
+`sem_entropia`. E o aviso de "sem estouro" passou a dizer que isso é **um resultado**, não
+uma falha de medição.
 
 **O que não muda ainda.** Três execuções oficiais do ACKTR estão gravadas e o padrão continua
 `momento=0,9`, `descontar_momento=False`, `max_grad_norm=0,5`, `kl_calibrado=True`. A
