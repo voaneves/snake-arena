@@ -73,8 +73,9 @@ import numpy as np
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ)
 
-from snakeai.agents import ACKTR                             # noqa: E402
-from snakeai.agents.acktr import ACKTRConfig                 # noqa: E402
+# O import do agente é **preguiçoso** de propósito: `--dos-registros` só lê JSON e tem de
+# rodar em qualquer máquina, inclusive numa sem TensorFlow — que é justamente onde alguém
+# quer olhar execuções já gravadas sem poder treinar.
 
 #: `kl_calibrado=False` em todos, senão a realimentação esconde a causa.
 BRACOS = {
@@ -87,6 +88,9 @@ BRACOS = {
 
 
 def mede(nome, extra, iters, net, seed, envs=0, rollout=0):
+    from snakeai.agents import ACKTR                          # noqa: PLC0415
+    from snakeai.agents.acktr import ACKTRConfig              # noqa: PLC0415
+
     forma = {}
     if envs:
         forma["num_envs"] = envs
@@ -115,6 +119,58 @@ def mede(nome, extra, iters, net, seed, envs=0, rollout=0):
             "kl_mediana": float(np.median(kls[20:] or kls)), **extra}
 
 
+def dos_registros(raiz="runs"):
+    """A curva de resposta a partir das execuções **já gravadas** — que é a medição mais
+    robusta disponível, e estava aqui o tempo todo.
+
+    Cada `history.json` do ACKTR tem `kl` e `kl_alvo_efetivo` por ponto da curva, ao longo
+    de 5 M passos. E o `kl_calibrado` **varre o alvo sozinho**: ele move `kl_fator` até o
+    alvo efetivo se acomodar, então execuções com sementes diferentes acabam medindo
+    alvos diferentes. Cinco execuções cobrem 46× de faixa de alvo, com ~1.950
+    atualizações cada — contra as 200 de uma varredura de 10 minutos, cujo IQR/mediana de
+    1,7 engole qualquer diferença entre linhas.
+
+    Execuções com `descontar_momento` ficam de fora: ali o passo é outro mecanismo.
+    """
+    import glob                                                  # noqa: PLC0415
+
+    linhas = []
+    for caminho in sorted(glob.glob(os.path.join(raiz, "acktr", "*", "seed*",
+                                                 "history.json"))):
+        with open(caminho, encoding="utf-8") as f:
+            h = json.load(f)
+        if h.get("config", {}).get("descontar_momento"):
+            continue
+        par = [(p["kl_alvo_efetivo"], p["kl"]) for p in h["curve"]
+               if p.get("kl") is not None and p.get("kl_alvo_efetivo") is not None]
+        if len(par) < 40:
+            continue
+        par = par[len(par) // 5:]              # o primeiro quinto é aquecimento do K-FAC
+        alvo = np.array([q[0] for q in par])
+        kl = np.array([q[1] for q in par])
+        linhas.append({"variante": h["variant"], "semente": h["seed"],
+                       "alvo": float(np.median(alvo)), "kl": float(np.median(kl)),
+                       "n": len(par)})
+    if len(linhas) < 2:
+        print("menos de duas execucoes gravadas com `kl` e `kl_alvo_efetivo`.")
+        return linhas
+    print(f"{'execucao':<34}{'sem':>4}{'alvo':>10}{'entregue':>10}{'razao':>8}{'n':>6}")
+    for l in sorted(linhas, key=lambda x: x["alvo"]):
+        print(f"{l['variante'][:33]:<34}{l['semente']:>4}{l['alvo']:>10.5f}"
+              f"{l['kl']:>10.5f}{l['kl'] / l['alvo']:>7.1f}x{l['n']:>6}")
+    x = np.log10([l["alvo"] for l in linhas])
+    y = np.log10([l["kl"] for l in linhas])
+    inc = float(np.polyfit(x, y, 1)[0])
+    print(f"\n{len(linhas)} execucoes de 5 M passos, alvos cobrindo "
+          f"{10 ** (x.max() - x.min()):.0f}x, entregues cobrindo "
+          f"{10 ** (y.max() - y.min()):.1f}x")
+    print(f"inclinacao log-log: {inc:.2f}   (0 = piso, 1 = responde perfeitamente)")
+    if inc > 0.4:
+        print("  A regiao de confianca RESPONDE ao alvo, com ganho sistematico que")
+        print("  encolhe conforme o alvo cresce. Nao e piso.")
+    return linhas
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--iters", type=int, default=200)
@@ -125,7 +181,14 @@ def main(argv=None):
     ap.add_argument("--envs", type=int, default=0)
     ap.add_argument("--rollout", type=int, default=0)
     ap.add_argument("--bracos", default="", help="lista separada por vírgula")
+    ap.add_argument("--dos-registros", action="store_true",
+                    help="não treina nada: lê a curva de resposta das execuções já "
+                         "gravadas em runs/acktr, que é a medição mais robusta")
     a = ap.parse_args(argv)
+
+    if a.dos_registros:
+        dos_registros(os.path.join(RAIZ, "runs"))
+        return
 
     escolhidos = ([b.strip() for b in a.bracos.split(",") if b.strip()]
                   if a.bracos else list(BRACOS))

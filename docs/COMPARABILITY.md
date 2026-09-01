@@ -206,17 +206,6 @@ notebook — `python tools/tabela_parametros.py` a regera, e um teste falha se e
 | `10_lbc` | lbc | `resnet_small` | 286.896 | — | 286.896 | 1.59× |
 | `11_soap` | soap | `resnet_small` | 300.036 | — | 300.036 | 1.66× |
 | `12_acektr` | acektr | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
-| `02_dqn` | dqn | `resnet_small` | 333.475 | — | 333.475 | 1.85× |
-| `03_rainbow` | rainbow | `resnet_small` | 1.196.648 | — | 1.196.648 | 6.63× |
-| `04_a2c` | a2c | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
-| `05_acer` | acer | `resnet_small` | 334.878 | — | 334.878 | 1.86× |
-| `06_alphazero` | alphazero | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
-| `07_muzero` | muzero | `resnet_small` | 154.608 | 118.485 | 273.093 | 1.51× |
-| `08_acktr` | acktr | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
-| `09_dreamerv3` | dreamerv3 | `dreamer_small` | 198.403 | 3.794.054 | 3.992.457 | 22.12× |
-| `10_lbc` | lbc | `resnet_small` | 286.896 | — | 286.896 | 1.59× |
-| `11_soap` | soap | `resnet_small` | 300.036 | — | 300.036 | 1.66× |
-| `12_acektr` | acektr | `resnet_small` | 180.464 | — | 180.464 | 1.00× |
 
 Como ler:
 

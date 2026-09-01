@@ -671,10 +671,24 @@ for _sem in _sems:
 
 # --- a estatistica que decide: inclinacao em log-log
 print()
-_x = np.log10([p["kl_max"] for p in _pontos])
-_y = np.log10([max(p["kl"], 1e-12) for p in _pontos])
-_incl = float(np.polyfit(_x, _y, 1)[0]) if len(set(_x)) > 1 else float("nan")
-print(f"inclinacao log-log da KL entregue contra a pedida: {_incl:.2f}")
+# A inclinacao SO pode ser lida sobre as linhas em que eta nao saturou. Incluir uma
+# linha com `no teto` alto mistura a resposta ao alvo com a resposta ao TETO, e produz
+# uma inclinacao intermediaria que nao existe. Aconteceu: com as cinco linhas deu 0,44,
+# com as tres validas deu 0,08.
+def _inclinacao(_ps):
+    if len({p["kl_max"] for p in _ps}) < 2:
+        return float("nan")
+    return float(np.polyfit(np.log10([p["kl_max"] for p in _ps]),
+                            np.log10([max(p["kl"], 1e-12) for p in _ps]), 1)[0])
+
+_validos = [p for p in _pontos if p["no_teto"] < 0.10]
+_incl_todos = _inclinacao(_pontos)
+_incl = _inclinacao(_validos)
+print(f"inclinacao log-log da KL entregue contra a pedida: {_incl:.2f}   "
+      f"({len(_validos)} de {len(_pontos)} linhas)")
+if len(_validos) < len(_pontos):
+    print(f"  (com TODAS as linhas daria {_incl_todos:.2f}, e seria leitura errada: as")
+    print(f"   linhas com `no teto` alto respondem ao TETO, nao ao alvo)")
 if _incl > 0.8:
     print("  ~1 -> a regiao de confianca RESPONDE: pedir metade entrega metade.")
 elif _incl < 0.25:
@@ -682,9 +696,26 @@ elif _incl < 0.25:
     print("        qualquer braco mede a distancia ate esse piso, nao curvatura.")
 else:
     print("  entre 0 e 1 -> responde em parte, com ganho sistematico.")
-if max(p["no_teto"] for p in _pontos) > 0.1:
-    print("  ATENCAO: `no teto` alto em alguma linha — ali o passo nao e governado por")
-    print("  `kl_max` e a linha nao entra na leitura. Suba `lr_start` e repita.")
+if len(_validos) < len(_pontos):
+    _fora = [f"{p['kl_max']:g}" for p in _pontos if p["no_teto"] >= 0.10]
+    print(f"  FORA DA LEITURA por `no teto` alto: kl_max = {', '.join(_fora)}. Ali o")
+    print("  passo e governado por `lr_start`, nao por `kl_max`. Para medi-las, suba")
+    print("  `lr_start` e repita — ou ignore-as, se o alvo real do treino for menor.")
+if len(_validos) < 3:
+    print("  POUCAS LINHAS VALIDAS: a inclinacao acima vale pouco. Acrescente alvos")
+    print("  menores, que e onde eta nao satura.")
+# a dispersao decide se as medianas sao distinguiveis entre si
+_disp = np.median([(p["q3"] - p["q1"]) / max(p["kl"], 1e-12) for p in _validos]) \
+    if _validos else float("nan")
+_faixa = (max(p["kl"] for p in _validos) / min(p["kl"] for p in _validos)) \
+    if _validos else float("nan")
+print()
+print(f"IQR/mediana tipico: {_disp:.1f}  ·  as entregues variam {_faixa:.2f}x enquanto os")
+print(f"alvos variam {max(p['kl_max'] for p in _validos) / min(p['kl_max'] for p in _validos):.1f}x"
+      if _validos else "")
+if _validos and _faixa < 2.0 and _disp > 1.0:
+    print("  A variacao entre as linhas e MENOR que a dispersao dentro de cada uma:")
+    print("  as medianas nao sao distinguiveis, o que reforca o veredito de piso.")
 
 print()
 print("aquecimento (mediana da KL por terco da execucao):")
@@ -696,6 +727,8 @@ _DIAG = os.path.join(PASTA, "varredura_kl.json")
 with open(_DIAG, "w", encoding="utf-8") as _f:
     json.dump({"rede": REDE, "envs": ENVS, "iters": ITERS,
                "aquecimento": AQUECIMENTO, "inclinacao_log_log": _incl,
+               "inclinacao_todas_as_linhas": _incl_todos,
+               "linhas_validas": [p["kl_max"] for p in _validos],
                "assinatura_pacote": ASSINATURA_PACOTE, "plataforma": detecta(),
                "pontos": _pontos,
                "tercos": {f"s{_s}_kl{_a}": _t for (_s, _a), _t in _tercos.items()}},

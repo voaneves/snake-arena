@@ -207,13 +207,35 @@ def test_the_capacity_table_matches_what_the_builders_produce():
     capacidade igualada onde não está. Se alguém mexer numa cabeça de rede, este teste
     falha e diz para rodar `python tools/tabela_parametros.py`.
     """
-    from tabela_parametros import coleta, markdown            # noqa: PLC0415
+    import re                                                  # noqa: PLC0415
+    from collections import Counter                            # noqa: PLC0415
+
+    from tabela_parametros import coleta, markdown             # noqa: PLC0415
 
     with open(os.path.join(RAIZ, "docs", "COMPARABILITY.md"), encoding="utf-8") as f:
         doc = f.read()
-    assert markdown(coleta()) in doc, (
+    tabela = markdown(coleta())
+    assert tabela in doc, (
         "a tabela de capacidade divergiu — rode `python tools/tabela_parametros.py` e "
         "cole a saída no `docs/COMPARABILITY.md`"
+    )
+    # `in` sozinho é substring, e substring não vê o que sobrou ao lado. O documento
+    # carregou por meses **duas** cópias da tabela — a válida e um bloco morto de 11
+    # linhas colado num `tabela_parametros.py` anterior — que discordavam entre si no
+    # DreamerV3 (3.530.887 contra 3.794.054, 20,67× contra 22,12×). A asserção acima
+    # passava nas duas, porque a primeira cópia já a satisfazia. As duas conferências
+    # abaixo são o que faltava: que a tabela apareça **uma** vez, e que nenhuma linha de
+    # notebook exista duas vezes no arquivo inteiro — que é como o bloco morto se
+    # manifesta mesmo se alguém o editar até deixar de ser cópia literal.
+    assert doc.count(tabela) == 1, (
+        f"a tabela de capacidade aparece {doc.count(tabela)} vezes no "
+        "`docs/COMPARABILITY.md` — uma cópia envelhece em silêncio; apague as sobrando"
+    )
+    repetidas = [n for n, c in Counter(
+        re.findall(r"^\| `(\d\d_[a-z0-9_]+)` \|", doc, flags=re.M)).items() if c > 1]
+    assert not repetidas, (
+        f"linhas de notebook repetidas na tabela de capacidade: {sorted(repetidas)} — "
+        "é o sinal de um bloco antigo que não foi apagado quando a tabela foi regerada"
     )
 
 
