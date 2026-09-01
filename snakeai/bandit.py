@@ -76,15 +76,19 @@ class BanditUCB:
         Gerador próprio, para reprodutibilidade.
     """
 
-    def __init__(self, n_bracos, c=1.0, janela=64, temperatura=0.1, normalizar=True,
-                 rng=None):
+    def __init__(self, n_bracos, c=1.0, janela=64, temperatura=0.25, normalizar=True,
+                 min_puxadas=8, piso_uniforme=0.1, rng=None):
         if int(n_bracos) < 1:
             raise ValueError("um bandit precisa de pelo menos um braço")
+        if not 0.0 <= float(piso_uniforme) < 1.0:
+            raise ValueError("piso_uniforme tem que estar em [0, 1)")
         self.n = int(n_bracos)
         self.c = float(c)
         self.janela = int(janela)
         self.temperatura = float(temperatura)
         self.normalizar = bool(normalizar)
+        self.min_puxadas = int(min_puxadas)
+        self.piso_uniforme = float(piso_uniforme)
         self.rng = rng if rng is not None else np.random.default_rng(0)
         self._retornos = [deque(maxlen=self.janela) for _ in range(self.n)]
         #: Puxadas desde sempre. Não entra no bônus — serve só para o relatório, porque é
@@ -106,8 +110,8 @@ class BanditUCB:
         ali seria afirmar que ele é ruim — exatamente o contrário do que a ausência de
         dados autoriza.
         """
-        return np.array([np.mean(d) if d else np.nan for d in self._retornos],
-                        dtype=np.float64)
+        return np.array([np.mean(d) if len(d) >= self.min_puxadas else np.nan
+                         for d in self._retornos], dtype=np.float64)
 
     def score(self):
         """`V_k + c·√(log(1 + Σ_{j≠k} N_j) / (1 + N_k))` — o score do LBC (eq. do §4.2).
@@ -121,7 +125,7 @@ class BanditUCB:
         total = n.sum()
 
         if self.normalizar:
-            v = self._normaliza(v)
+            v = self._normaliza(v, self._ruido())
         # Otimismo diante da incerteza: um braço sem visita entra com o melhor valor
         # observado, não com a média. Sem isso, um braço que ninguém puxou compete com
         # valor `NaN` e some do argmax mesmo com o bônus máximo.
@@ -145,7 +149,10 @@ class BanditUCB:
         """
         s = self.score() / max(self.temperatura, 1e-12)
         e = np.exp(s - s.max())
-        return e / e.sum()
+        p = e / e.sum()
+        if self.piso_uniforme > 0.0:
+            p = (1.0 - self.piso_uniforme) * p + self.piso_uniforme / self.n
+        return p
 
     # ------------------------------------------------------------------ escolha
     def amostrar(self, tamanho=None):
@@ -184,10 +191,37 @@ class BanditUCB:
             "mab_p_top": float(p.max()),
             "mab_valor_top": float(v[np.argmax(p)]) if finitos[np.argmax(p)] else float("nan"),
             "mab_bracos_visitados": int(finitos.sum()),
+            #: Diferença entre o melhor e o pior braço em unidades de erro padrão. Abaixo
+            #: de ~2 o bandit não tem evidência para separar braço nenhum, e a seleção
+            #: **deve** estar perto do uniforme — se `mab_entropia` estiver baixa com este
+            #: número baixo, o meta-controlador travou em ruído.
+            "mab_sinal_ruido": float(
+                (np.nanmax(v) - np.nanmin(v)) / self._ruido()) if (
+                    finitos.sum() >= 2 and self._ruido() > 0) else float("nan"),
         }
 
+    def _ruido(self):
+        """Erro padrão **combinado** das médias por braço — a régua do que é diferença real.
+
+        A normalização min–max é cega à incerteza: ela estica a distância entre o pior e o
+        melhor braço para o intervalo inteiro `[0, 1]` *sempre*, mesmo quando essa
+        distância é menor que o próprio erro amostral. No começo do treino, com todos os
+        braços rendendo ~0,02 ponto, o que separa o "melhor" do "pior" é ruído puro — e a
+        normalização o promove a um sinal de amplitude máxima, que a temperatura de 0,1
+        então transforma em quase-`argmax`. Foi assim que a execução `seed0` travou em
+        `mab_p_top = 0,999` no passo 800 mil, com 512 ambientes no mesmo braço e nenhuma
+        evidência nova sobre os outros quinze.
+
+        Este número é o denominador mínimo: enquanto a diferença entre os braços não passar
+        de ~2 erros padrão, os valores normalizados ficam pequenos e o bônus do UCB domina.
+        O bandit só decide quando tem motivo para decidir.
+        """
+        sems = [np.std(d, ddof=1) / np.sqrt(len(d))
+                for d in self._retornos if len(d) >= 2]
+        return float(np.mean(sems)) if sems else 0.0
+
     @staticmethod
-    def _normaliza(v):
+    def _normaliza(v, ruido=0.0):
         """Min–max **entre os braços**, ignorando os não visitados.
 
         Entre os braços, e não contra uma escala fixa, porque a escala do retorno muda
@@ -199,6 +233,9 @@ class BanditUCB:
         if finitos.size == 0:
             return np.zeros_like(v)
         lo, hi = finitos.min(), finitos.max()
-        if hi - lo < 1e-12:
+        # o denominador nunca encolhe abaixo de ~2 erros padrão: sem esse piso, uma
+        # diferença de ruído entre os braços vira um sinal de amplitude 1 — ver `_ruido`
+        escala = max(hi - lo, 2.0 * float(ruido))
+        if escala < 1e-12:
             return np.where(np.isfinite(v), 0.0, np.nan)
-        return (v - lo) / (hi - lo)
+        return (v - lo) / escala

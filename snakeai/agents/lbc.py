@@ -54,11 +54,40 @@ custaria clipping; aqui sai do próprio estimador.
 
 Desvios declarados em relação ao paper
 --------------------------------------
-Três, todos por causa do contrato deste repositório. Estão detalhados em `docs/LBC.md`:
+Quatro. Os três primeiros são o contrato deste repositório; o quarto é uma correção. Todos
+estão detalhados em `docs/LBC.md`:
 
 * **tronco compartilhado** entre as `N` políticas, em vez de `N` redes independentes;
 * **H reduzido a γ**, sem o eixo de *reward shaping* por política;
-* **um bandit**, em vez do conjunto de bandits com `c` diferentes do §4.2.
+* **um bandit**, em vez do conjunto de bandits com `c` diferentes do §4.2;
+* **região de confiança do PPO** em volta do gradiente do IMPALA — clip da razão, clip do
+  valor e parada por KL. Ver `LBCConfig.clip_eps`.
+
+O que a primeira execução ensinou
+---------------------------------
+A `seed0` com os padrões antigos terminou em 0,57 ponto contra 81,5 do PPO. Não foi uma
+questão de ajuste fino: foram três defeitos que se reforçam, e vale registrá-los porque
+cada um deles é invisível na curva de score e evidente no diagnóstico.
+
+1. **O `τ` não tinha autoridade sobre o comportamento.** Ele multiplicava logits livres, que
+   crescem sem limite; com `‖logits‖ ~ 30`, a faixa inteira `[0,25, 4]` produz `argmax`. O
+   espaço de comportamento degenerou num ponto, `μ` virou `π`, `razao_media` ficou em
+   1,0000 e o V-trace deixou de corrigir qualquer coisa. Sinal: `entropia_comportamento`
+   em 3e-4. Correção: padronizar os logits por estado antes de escalar.
+
+2. **Não havia região de confiança nenhuma sobre 128 passos de gradiente por rollout.** A
+   entropia da política alvo caiu para 5e-9 no passo 540 mil e `pg` para 1e-11 — softmax
+   saturada é ponto fixo absorvente, porque ali o gradiente da entropia também é zero. A
+   execução ficou 2,3 M de passos parada. Correção: surrogate clipado + parada por KL +
+   vantagem normalizada, e um coeficiente de entropia realimentado como piso.
+
+3. **O bandit decidia sobre ruído.** A normalização min–max entre braços estica a diferença
+   entre o melhor e o pior para `[0, 1]` mesmo quando essa diferença é menor que o erro
+   amostral; com temperatura 0,1 isso vira `argmax`. `mab_p_top` chegou a 0,999 no passo
+   800 mil, com todos os 512 ambientes no mesmo braço. Correção: piso de ruído no
+   denominador, mínimo de puxadas por braço e piso uniforme na distribuição de seleção.
+
+O diagnóstico completo, com as curvas, está em `docs/LBC.md`.
 
 O que o LBC responde na arena
 -----------------------------
@@ -158,12 +187,13 @@ class MisturaBoltzmann:
     """
 
     def __init__(self, n_politicas, tau_min=0.25, tau_max=4.0, n_faixas=4,
-                 concentracao=9.0, rng=None):
+                 concentracao=9.0, padronizar=True, rng=None):
         if tau_min <= 0 or tau_max <= tau_min:
             raise ValueError("é preciso 0 < tau_min < tau_max")
         self.n_politicas = int(n_politicas)
         self.n_faixas = int(n_faixas)
         self.concentracao = float(concentracao)
+        self.padronizar = bool(padronizar)
         self.rng = rng if rng is not None else np.random.default_rng(0)
 
         bordas = np.geomspace(tau_min, tau_max, self.n_faixas + 1)
@@ -208,7 +238,28 @@ class MisturaBoltzmann:
         return f"τ∈[{lo:.2f}, {hi:.2f}] · ω≈{alvo}"
 
     def comportamento(self, logits, mask, tau, omega):
-        """`μ_ψ(a|s) = Σ_i ω_i softmax(τ_i · logits_i)`, mascarado. `(M, ações)`.
+        """`μ_ψ(a|s) = Σ_i ω_i softmax(τ_i · ẑ_i)`, mascarado. `(M, ações)`.
+
+        **Por que `ẑ` e não `logits`.** No paper, `Φ_h = A_h = Q_h − V_h`: o que entra na
+        softmax é uma *vantagem*, centrada em zero e presa à escala da recompensa. Aqui a
+        rede é um ator-crítico comum e o que sai da cabeça é um logit livre — um parâmetro
+        que não tem escala nenhuma e que **cresce sem limite** enquanto a política aprende
+        a preferir uma ação. Multiplicar esse número por `τ ∈ [0,25, 4]` não controla
+        entropia: com `‖logits‖ ~ 30`, até `τ = 0,25` dá 7,5, que já é `argmax`.
+
+        O efeito é a morte silenciosa do algoritmo: o espaço de comportamento `M_{H,Ψ}`
+        degenera num ponto só — a política gulosa —, `μ` vira `π`, a razão `π/μ` vira 1, o
+        V-trace deixa de corrigir coisa alguma e o LBC passa a ser um A2C caro com um
+        bandit decorativo escolhendo entre dezesseis cópias do mesmo comportamento. Na
+        execução `seed0` isso aparece como `entropia_comportamento = 3e-4` e
+        `razao_media = 1,0000` do passo 540 mil até o fim.
+
+        A correção é padronizar os logits **por estado, sobre as ações válidas**, antes de
+        escalar. Com `ẑ` de média 0 e desvio 1, o `τ` recupera a autoridade que o paper lhe
+        dá: `τ = 0,25` deixa a mistura a 1,07 nat de entropia (o máximo com três ações é
+        1,0986) e `τ = 4` a deixa em 0,008. A faixa inteira do espaço de comportamento
+        volta a existir, e volta a existir **de forma independente do que a rede fez com a
+        escala dos próprios logits**, que é a propriedade que faltava.
 
         A máscara é aplicada **depois** de multiplicar por `τ`, e não antes. Mascarar
         antes multiplicaria o `MASK_NEG` por `τ`: com `τ = 4` o valor sai de −1e9 para
@@ -216,7 +267,14 @@ class MisturaBoltzmann:
         ação letal volta a ter probabilidade não desprezível. É o tipo de bug que não
         levanta exceção — a cobra só passa a bater na parede de vez em quando.
         """
-        z = np.asarray(logits, dtype=np.float32) * tau[:, :, None]
+        z = np.asarray(logits, dtype=np.float32)
+        if self.padronizar:
+            val = mask[:, None, :].astype(np.float32)                  # (M, 1, A)
+            n_val = np.maximum(val.sum(-1, keepdims=True), 1.0)        # (M, 1, 1)
+            media = (z * val).sum(-1, keepdims=True) / n_val           # (M, P, 1)
+            var = (((z - media) * val) ** 2).sum(-1, keepdims=True) / n_val
+            z = (z - media) / np.sqrt(var + 1e-6)
+        z = z * tau[:, :, None]
         z = np.where(mask[:, None, :], z, MASK_NEG)
         z = z - z.max(axis=-1, keepdims=True)
         p = np.exp(z)
@@ -260,6 +318,11 @@ class LBCConfig(BaseConfig):
     concentracao_omega: float = 9.0
 
     # ------------------------------------------------------------------- MAB
+    #: Padroniza os logits por estado antes de escalar por `τ`. **Ligado é o correto** —
+    #: ver `MisturaBoltzmann.comportamento`. Desligar reproduz a degeneração do espaço de
+    #: comportamento que matou a execução `seed0`, e serve como ablação.
+    logits_padronizados: bool = True
+
     #: `"ucb"` é o algoritmo. `"aleatoria"` é a ablação de seleção da Fig. 5 — o mesmo
     #: espaço de comportamento, escolhido no sorteio. Se as duas curvas coincidirem, a
     #: parte *learnable* do LBC não fez nada neste domínio, e isso é um resultado.
@@ -267,29 +330,97 @@ class LBCConfig(BaseConfig):
     ucb_c: float = 1.0
     #: Dureza da softmax que transforma o score do UCB na distribuição de seleção. Com os
     #: valores normalizados em `[0, 1]`, sem ela o bandit não conseguiria concentrar — ver
-    #: `snakeai/bandit.py`.
-    ucb_temperatura: float = 0.1
+    #: `snakeai/bandit.py`. 0,25 e não 0,1: com 0,1 o bandit concentrava 99,9% da massa num
+    #: braço antes de ter evidência para isso.
+    ucb_temperatura: float = 0.25
     #: Retornos por braço na janela do bandit. 64 episódios por braço, com 16 braços, é
     #: cerca de um quarto do que uma iteração de 512 ambientes produz — o bandit enxerga
     #: alguns milhares de passos para trás, não a execução inteira.
     janela_mab: int = 64
+    #: Episódios mínimos na janela antes de o braço ter valor estimado. Abaixo disso ele
+    #: entra como não-visitado (otimista), e não com a média de duas amostras.
+    mab_min_puxadas: int = 8
+    #: Massa reservada ao uniforme na distribuição de seleção. É o que garante que **todo**
+    #: braço continue sendo medido: com 512 ambientes escolhendo ao mesmo tempo, sem piso o
+    #: bandit consegue colocar todos no mesmo braço e deixar de receber dado sobre os
+    #: outros quinze — que é o oposto de manter um espaço de comportamento diverso.
+    mab_piso_uniforme: float = 0.1
 
     # -------------------------------------------------------------- otimização
     lr_start: float = 3e-4
     lr_end: float = 5e-5
     optimizer: str = "adam"
-    max_grad_norm: float = 0.5
+    #: 1,0 e não 0,5 como no PPO **porque a perda é a soma sobre as políticas**. Com três
+    #: cabeças, a norma do gradiente é ~√3 vezes a de uma; manter o teto do PPO faria o
+    #: clip morder em toda iteração e o passo do LBC virar "direção normalizada, tamanho
+    #: fixo" — que é um otimizador diferente do que o PPO usa, e a comparação deixaria de
+    #: medir controle de comportamento.
+    max_grad_norm: float = 1.0
     vf_coef: float = 0.5
     epochs: int = 4
     minibatches: int = 32
 
-    #: **Constante, e de propósito.** Nos outros agentes daqui a entropia decai numa reta;
-    #: aqui quem controla a entropia do comportamento é o `τ` escolhido pelo bandit. Um
-    #: bônus decrescente por cima faria o mesmo trabalho duas vezes e em desacordo — o
-    #: agendamento empurrando para determinístico enquanto o meta-controlador pede
-    #: exploração. O bônus que sobra é pequeno e serve só para o gradiente não colapsar a
-    #: política alvo num pico numérico.
-    ent_coef: float = 0.01
+    # ------------------------------------------------------- região de confiança
+    #: **Quarto desvio declarado** (ver `docs/LBC.md`). O IMPALA faz um passe único sobre
+    #: cada rollout; este repositório dá a todo agente o mesmo orçamento de gradiente
+    #: (`docs/ORCAMENTO_DE_GRADIENTE.md`), o que aqui significa 4 épocas × 32 minilotes =
+    #: 128 passos sobre o mesmo lote. O V-trace autoriza reusar o lote — `μ` está gravado,
+    #: então o *alvo de valor* continua correto a cada época. O que ele **não** faz é
+    #: limitar o quanto a política anda: o gradiente `−logπ·Â` não tem região de confiança
+    #: nenhuma, e aplicá-lo 128 vezes satura a softmax. Foi exatamente isso que aconteceu:
+    #: `ent` caiu de 0,95 para 5e-9 no passo 540 mil e `pg` foi para 1e-11 — ponto fixo
+    #: absorvente, porque no regime saturado o gradiente da entropia também é zero. A
+    #: execução ficou 2,3 M de passos morta antes de qualquer coisa voltar a acontecer.
+    #:
+    #: A correção é o surrogate clipado do PPO em volta do gradiente do IMPALA. No primeiro
+    #: minilote de cada atualização a razão é exatamente 1 e o clip **não muda nada** — o
+    #: gradiente é o do IMPALA, letra por letra. Ele só age depois, limitando o quanto a
+    #: política pode se afastar do estado em que o lote foi coletado. `clip_eps <= 0`
+    #: desliga e reproduz o comportamento antigo.
+    clip_eps: float = 0.2
+    #: Clip do valor, em unidades absolutas, como no PPO. **Desligado (`0`) por padrão
+    #: aqui**, e isso foi medido: com `vf_clip = 0,2` a variância explicada do crítico do
+    #: LBC fica em 0,30, e sem ele sobe para 0,86 no mesmo número de iterações. É o mesmo
+    #: problema que o `PPO` documenta na §2 do seu módulo — um teto absoluto por
+    #: atualização impede o crítico de alcançar a escala do retorno —, só que aqui ele
+    #: morde muito mais: o alvo do PPO é um retorno GAE já suavizado, enquanto o do LBC é o
+    #: `vs` do V-trace, que carrega a escala crua do score (0 a 97). A região de confiança
+    #: que interessa é a da **política**; travar o crítico junto só atrasa a vantagem.
+    vf_clip: float = 0.0
+    #: Parada antecipada por KL, idêntica à do PPO (`target_kl * 1.5`). É a segunda barreira
+    #: e a que pega o caso em que o clip sozinho não segura.
+    target_kl: float = 0.03
+    #: Normaliza a vantagem **por política**, dentro do minilote. O PPO deste repositório
+    #: já faz isso; o LBC não fazia, e a vantagem do V-trace tem escala que muda por ordens
+    #: de grandeza durante o treino (o shaping decai a zero em 25% do orçamento, o score
+    #: cresce de 0 a 80). Sem normalizar, o passo efetivo da política é imprevisível — e é
+    #: o co-autor do colapso de entropia.
+    normalizar_vantagem: bool = True
+
+    #: **Não agendado, e de propósito.** Nos outros agentes daqui a entropia decai numa
+    #: reta; aqui quem controla a entropia do *comportamento* é o `τ` escolhido pelo
+    #: bandit, e um agendamento por cima faria o mesmo trabalho duas vezes e em desacordo.
+    #: Mas constante também não serve: 0,01 fixo não impediu a política alvo de saturar em
+    #: 5e-9, e uma vez saturada nem o bônus de entropia a tira de lá (o gradiente da
+    #: entropia numa softmax saturada é ~0 — o estado é absorvente, não lento).
+    #:
+    #: A saída é **realimentar**: o coeficiente sobe quando a entropia medida está abaixo
+    #: de `ent_alvo` e desce quando está acima. É o mesmo princípio do `α` automático do
+    #: SAC — o alvo é a entropia, o coeficiente é só o preço que se paga por ela. Assim o
+    #: agendamento continua não existindo, e o piso passa a existir.
+    ent_coef: float = 0.02
+    #: Entropia mínima da política alvo, em nats. `None` volta ao coeficiente fixo. 0,15 é
+    #: onde o PPO deste repositório termina por conta própria (0,13–0,14) — o alvo não
+    #: força exploração extra, só proíbe o colapso.
+    ent_alvo: float = 0.15
+    ent_coef_min: float = 1e-4
+    #: Teto alto de propósito: o coeficiente é um **preço**, não um peso escolhido a dedo.
+    #: Se a entropia estiver abaixo do alvo com o teto batido, o controlador perdeu a
+    #: autoridade e o piso deixa de existir — que é o defeito que ele veio consertar.
+    ent_coef_max: float = 0.15
+    #: Fator multiplicativo por iteração. 1,25 leva ~10 iterações para dobrar: rápido o
+    #: bastante para reagir antes da saturação, lento o bastante para não oscilar.
+    ent_ajuste: float = 1.25
 
     #: Shaping potencial, idêntico ao do PPO — é parte do ambiente que todos veem.
     shaping_start: float = 0.5
@@ -311,6 +442,9 @@ class LBCConfig(BaseConfig):
                 f"{self.n_politicas} políticas")
         if self.selecao not in ("ucb", "aleatoria"):
             raise ValueError(f"selecao desconhecida: {self.selecao!r}")
+        if self.ent_alvo is not None and not (
+                0.0 < self.ent_coef_min <= self.ent_coef_max):
+            raise ValueError("é preciso 0 < ent_coef_min <= ent_coef_max")
         if self.canal_fome and self.comparable:
             raise ValueError(
                 "canal_fome=True muda a observação de 5 para 6 canais e portanto a "
@@ -353,11 +487,18 @@ class LBC(AgentBase):
         self.espaco = MisturaBoltzmann(
             cfg.n_politicas, tau_min=cfg.tau_min, tau_max=cfg.tau_max,
             n_faixas=cfg.n_faixas_tau, concentracao=cfg.concentracao_omega,
+            padronizar=cfg.logits_padronizados,
             rng=np.random.default_rng(cfg.seed + 3))
         self.mab = BanditUCB(self.espaco.n_bracos, c=cfg.ucb_c, janela=cfg.janela_mab,
                              temperatura=cfg.ucb_temperatura,
+                             min_puxadas=cfg.mab_min_puxadas,
+                             piso_uniforme=cfg.mab_piso_uniforme,
                              rng=np.random.default_rng(cfg.seed + 4))
         self.rng = np.random.default_rng(cfg.seed + 1)
+
+        #: Coeficiente de entropia **realimentado** — estado do agente, não agendamento.
+        #: Ver `LBCConfig.ent_alvo`.
+        self._ent_coef = float(cfg.ent_coef)
 
         #: Um braço e um `ψ` **por ambiente**, trocados quando o episódio daquele ambiente
         #: acaba. Trocar por iteração em vez de por episódio quebraria a atribuição de
@@ -382,6 +523,10 @@ class LBC(AgentBase):
             marcas.append("selecao_" + cfg.selecao)
         if cfg.n_politicas != type(cfg).n_politicas:
             marcas.append(f"pop{cfg.n_politicas}")
+        if not cfg.logits_padronizados:
+            marcas.append("logits_crus")
+        if cfg.clip_eps <= 0:
+            marcas.append("sem_clip")
         return "+".join([cfg.net] + marcas)
 
     def _novo_otimizador(self):
@@ -559,8 +704,10 @@ class LBC(AgentBase):
         logits = tf.where(mask3, logits, tf.fill(tf.shape(logits), MASK_NEG))
         logp_all = tf.nn.log_softmax(logits)
         um = tf.one_hot(tf.convert_to_tensor(lote["act"]), N_ACTIONS)[:, None, :]
+        logp_all_np = logp_all.numpy()
         logp = tf.reduce_sum(logp_all * um, axis=-1).numpy()          # (T*N, P)
-        valor = valor.numpy().reshape(T, N, P)
+        valor_plano = valor.numpy()                                   # (T*N, P)
+        valor = valor_plano.reshape(T, N, P)
 
         razao = np.exp(logp - np.log(lote["mu"])[:, None]).reshape(T, N, P)
         rho = np.minimum(cfg.rho_barra, razao).astype(np.float32)
@@ -578,6 +725,13 @@ class LBC(AgentBase):
 
         diag = {
             "razao_media": float(razao.mean()),
+            #: Entropia média das políticas alvo, medida fora do grafo de treino. Com o
+            #: `τ` já controlando a entropia do *comportamento*, este número diz se a
+            #: política **avaliada** ainda tem para onde se mover.
+            "entropia_alvo": float(
+                -(np.exp(logp_all_np) * np.where(
+                    np.isfinite(logp_all_np) & (logp_all_np > -1e8),
+                    logp_all_np, 0.0)).sum(-1).mean()),
             #: Fração de amostras em que o peso de importância bateu no teto. Perto de 0
             #: o comportamento está colado nas políticas alvo e o V-trace não está
             #: fazendo nada; perto de 1 a correção está saturada e o gradiente vira o de
@@ -586,12 +740,15 @@ class LBC(AgentBase):
             "ev": variancia_explicada(valor[:, :, self.indice_alvo].ravel(),
                                       vs[:, :, self.indice_alvo].ravel()),
         }
-        return (vs.reshape(T * N, P), adv.reshape(T * N, P), diag)
+        return (vs.reshape(T * N, P), adv.reshape(T * N, P),
+                logp.astype(np.float32), valor_plano.astype(np.float32), diag)
 
     # ----------------------------------------------------------------- update
     @staticmethod
     @tf.function(reduce_retracing=True)
-    def _train_step(model, optimizer, obs, mask, act, adv, vs, ent_coef, vf_coef):
+    def _train_step(model, optimizer, obs, mask, act, logp_ref, adv, vs, val_ref,
+                    clip_eps, vf_clip, ent_coef, vf_coef, normalizar_vantagem,
+                    usar_clip):
         """Um passo de gradiente sobre a **população inteira**, num forward só.
 
         A perda é a **soma** sobre as políticas de uma perda que é a média sobre o lote —
@@ -603,21 +760,50 @@ class LBC(AgentBase):
         que receberia sozinha, e o tronco recebe a soma — que é o que ele de fato deve
         aprender, já que serve às três.
 
+        **A região de confiança.** `adv` já traz o `ρ` do V-trace embutido, então
+        `−logπ·adv` é o gradiente do IMPALA. O que se acrescenta aqui é a casca clipada do
+        PPO em volta dele, com a razão medida contra `logp_ref` — a política do **início da
+        atualização**, e não da época. No primeiro minilote a razão é 1, `min(r·Â, clip(r)·Â)`
+        é `Â`, e o gradiente é o do IMPALA sem alteração alguma; o clip só passa a existir
+        depois, quando a política já andou. É a diferença entre reusar o lote 128 vezes e
+        reusar o lote 128 vezes **sem sair do lugar onde ele foi coletado** — e é o que
+        impede a saturação da softmax que matou a `seed0`.
+
+        A vantagem é normalizada **por política** (eixo 0, mantendo a coluna), e não sobre
+        o tensor inteiro: cada cabeça tem o seu γ e a sua escala de vantagem, e misturá-las
+        faria a cabeça de γ = 0,999 ditar o passo das outras duas.
+
         As estatísticas devolvidas são **por política** (a média entre elas), para que
         `ent` continue legível na mesma escala dos outros agentes: 1,10 é uniforme sobre
         três ações, aqui como no PPO.
         """
         mask3 = tf.expand_dims(mask, 1)
         um = tf.expand_dims(tf.one_hot(act, N_ACTIONS), 1)
+        if normalizar_vantagem:
+            media = tf.reduce_mean(adv, axis=0, keepdims=True)
+            desvio = tf.math.reduce_std(adv, axis=0, keepdims=True)
+            adv = (adv - media) / (desvio + 1e-8)
         with tf.GradientTape() as tape:
             logits, valor = model(obs, training=True)
             logits = tf.where(mask3, logits, tf.fill(tf.shape(logits), MASK_NEG))
             logp_all = tf.nn.log_softmax(logits)
             logp = tf.reduce_sum(logp_all * um, axis=-1)               # (B, P)
 
-            # `adv` já traz o ρ do V-trace embutido: aqui não se corrige de novo.
-            pg_por_politica = -tf.reduce_mean(logp * adv, axis=0)      # (P,)
-            v_por_politica = 0.5 * tf.reduce_mean(tf.square(valor - vs), axis=0)
+            log_razao = logp - logp_ref
+            razao = tf.exp(log_razao)
+            if usar_clip:
+                pg1 = -adv * razao
+                pg2 = -adv * tf.clip_by_value(razao, 1.0 - clip_eps, 1.0 + clip_eps)
+                pg_por_politica = tf.reduce_mean(tf.maximum(pg1, pg2), axis=0)  # (P,)
+
+                v_clip = val_ref + tf.clip_by_value(valor - val_ref, -vf_clip, vf_clip)
+                v_por_politica = 0.5 * tf.reduce_mean(
+                    tf.maximum(tf.square(valor - vs), tf.square(v_clip - vs)), axis=0)
+            else:
+                # ablação: o gradiente do IMPALA cru, sem região de confiança. É o que a
+                # `seed0` rodou, e o que colapsou.
+                pg_por_politica = -tf.reduce_mean(logp * adv, axis=0)
+                v_por_politica = 0.5 * tf.reduce_mean(tf.square(valor - vs), axis=0)
 
             probs = tf.exp(logp_all)
             seguro = tf.where(mask3, logp_all, tf.zeros_like(logp_all))
@@ -630,8 +816,13 @@ class LBC(AgentBase):
 
         grads = tape.gradient(perda, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+        # estimador k3 do KL — não-negativo e de baixa variância, como no PPO
+        kl = tf.reduce_mean(tf.exp(log_razao) - 1.0 - log_razao)
+        clipfrac = tf.reduce_mean(
+            tf.cast(tf.greater(tf.abs(razao - 1.0), clip_eps), tf.float32))
         return (tf.reduce_mean(pg_por_politica), tf.reduce_mean(v_por_politica),
-                tf.reduce_mean(ent_por_politica))
+                tf.reduce_mean(ent_por_politica), kl, clipfrac)
 
     def update(self, lote):
         cfg = self.cfg
@@ -642,36 +833,72 @@ class LBC(AgentBase):
         rng = np.random.default_rng(cfg.seed + self.iteration)
 
         # escalares como tensores — ver a nota em `PPO.update` (§2.6 da revisão)
-        ent_c = tf.constant(cfg.ent_coef, tf.float32)
-        vf_c = tf.constant(cfg.vf_coef, tf.float32)
+        ent_c_valor = float(self._ent_coef)
+        # `vf_clip <= 0` desliga o clip do valor: 1e9 é "sem teto" de forma exata, sem
+        # precisar de um segundo ramo no grafo.
+        teto_v = cfg.vf_clip if cfg.vf_clip > 0 else 1e9
+        escalares = [tf.constant(v, tf.float32) for v in
+                     (cfg.clip_eps, teto_v, ent_c_valor, cfg.vf_coef)]
         tensores = {k: tf.convert_to_tensor(lote[k]) for k in ("obs", "mask", "act")}
 
-        logs = {"pg": [], "vf": [], "ent": []}
+        logs = {"pg": [], "vf": [], "ent": [], "kl": [], "clipfrac": []}
         atualizacoes = 0
+        epocas_feitas = 0
+        parar = False
         diag = {}
+        t_logp_ref = t_val_ref = None
         for _ in range(cfg.epochs):
-            vs, adv, diag = self._alvos(lote)
+            # Os **alvos** são recalculados a cada época (é aí que o V-trace paga: `μ` está
+            # gravado, então cada época recorrige contra a política que existe agora). A
+            # **referência da região de confiança**, não: ela é fixada na primeira época e
+            # vale para a atualização inteira, exatamente como o `old_logp` do PPO. Se ela
+            # fosse recalculada por época, o clip só limitaria o passo *dentro* de cada
+            # época e a política poderia andar 4 × 0,2 sem nada reclamar — que é justamente
+            # o que não pode acontecer.
+            vs, adv, logp, valor, diag = self._alvos(lote)
+            if t_logp_ref is None:
+                t_logp_ref = tf.convert_to_tensor(logp)
+                t_val_ref = tf.convert_to_tensor(valor)
             t_vs = tf.convert_to_tensor(vs)
             t_adv = tf.convert_to_tensor(adv)
             rng.shuffle(idx)
-            for s in range(0, n, mb):
-                sl = tf.convert_to_tensor(idx[s:s + mb])
-                pg, vf, e = self._train_step(
+            for s_ini in range(0, n, mb):
+                sl = tf.convert_to_tensor(idx[s_ini:s_ini + mb])
+                pg, vf, e, kl, cf = self._train_step(
                     self.model, self.optimizer,
                     tf.gather(tensores["obs"], sl), tf.gather(tensores["mask"], sl),
-                    tf.gather(tensores["act"], sl), tf.gather(t_adv, sl),
-                    tf.gather(t_vs, sl), ent_c, vf_c,
+                    tf.gather(tensores["act"], sl), tf.gather(t_logp_ref, sl),
+                    tf.gather(t_adv, sl), tf.gather(t_vs, sl),
+                    tf.gather(t_val_ref, sl), *escalares, cfg.normalizar_vantagem,
+                    cfg.clip_eps > 0,
                 )
                 logs["pg"].append(float(pg))
                 logs["vf"].append(float(vf))
                 logs["ent"].append(float(e))
+                logs["kl"].append(float(kl))
+                logs["clipfrac"].append(float(cf))
                 atualizacoes += 1
+                if cfg.target_kl and float(kl) > cfg.target_kl * 1.5:
+                    parar = True
+                    break
+            epocas_feitas += 1
+            if parar:
+                break
 
         saida = {k: float(np.mean(v)) for k, v in logs.items()}
         saida.update(diag)
+
+        # Realimentação do coeficiente de entropia. Roda **depois** do update e vale para a
+        # iteração seguinte: o que se mede aqui é a entropia que o passo já produziu.
+        if cfg.ent_alvo is not None and logs["ent"]:
+            fator = (cfg.ent_ajuste if saida["ent"] < cfg.ent_alvo
+                     else 1.0 / cfg.ent_ajuste)
+            self._ent_coef = float(np.clip(self._ent_coef * fator,
+                                           cfg.ent_coef_min, cfg.ent_coef_max))
+
         saida["lr"] = float(self.lr())
-        saida["ent_coef"] = cfg.ent_coef
-        saida["epochs_done"] = cfg.epochs
+        saida["ent_coef"] = ent_c_valor
+        saida["epochs_done"] = epocas_feitas
         saida["atualizacoes"] = int(atualizacoes)
         return saida
 

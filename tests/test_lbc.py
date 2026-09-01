@@ -211,9 +211,39 @@ def test_one_hot_weights_degenerate_to_a_single_policy():
     omega[:, 1] = 1.0
 
     mu = e.comportamento(logits, mask, tau, omega)
-    z = logits[:, 1, :] - logits[:, 1, :].max(-1, keepdims=True)
+    # os logits são padronizados por estado antes de escalar por `τ` (ver `docs/LBC.md`
+    # §2.6): a referência tem que passar pela mesma transformação, senão o teste estaria
+    # medindo a padronização e não a degeneração de `ω`
+    l = logits[:, 1, :]
+    l = (l - l.mean(-1, keepdims=True)) / np.sqrt(l.var(-1, keepdims=True) + 1e-6)
+    z = l - l.max(-1, keepdims=True)
     esperado = np.exp(z) / np.exp(z).sum(-1, keepdims=True)
     assert mu == pytest.approx(esperado, abs=1e-6)
+
+
+def test_standardization_gives_tau_authority_over_any_logit_scale():
+    """O defeito que matou a primeira execução: `τ` multiplicava logits livres, que crescem
+    sem limite. Com `‖logits‖ ~ 30` a faixa inteira de `τ` produz `argmax` e o espaço de
+    comportamento degenera num ponto — `docs/LBC.md` §2.6."""
+    rng = np.random.default_rng(0)
+    mask = np.ones((2048, 3), dtype=bool)
+
+    def entropia(escala, padronizar, tau_valor):
+        logits = rng.normal(0, escala, size=(2048, 1, 3)).astype(np.float32)
+        e = MisturaBoltzmann(1, padronizar=padronizar)
+        t = np.full((2048, 1), tau_valor, np.float32)
+        w = np.ones((2048, 1), np.float32)
+        mu = e.comportamento(logits, mask, t, w)
+        return float(-(mu * np.log(mu + 1e-12)).sum(1).mean())
+
+    # sem padronizar, a escala dos logits engole a faixa inteira de `τ`
+    assert entropia(30.0, False, 0.25) < 0.25
+
+    # padronizando, a faixa de `τ` cobre de quase-uniforme (log 3 = 1,0986) a quase-guloso,
+    # e cobre igual seja qual for a escala que a rede tenha alcançado
+    for escala in (1.0, 5.0, 30.0):
+        assert entropia(escala, True, 0.25) > 1.0
+        assert entropia(escala, True, 4.0) < 0.25
 
 
 def test_a_small_tau_explores_and_a_large_tau_exploits():
@@ -393,12 +423,74 @@ def test_the_hunger_truncation_bootstraps_with_each_policys_own_gamma():
     assert saidas[0][1] == 0.0, "só os truncados recebem bootstrap"
 
 
-def test_the_entropy_bonus_does_not_decay():
+def test_the_entropy_bonus_is_not_scheduled():
     """Nos outros agentes daqui a entropia decai numa reta. Aqui quem controla a entropia
     do comportamento é o `τ` escolhido pelo bandit; um agendamento por cima faria o mesmo
-    trabalho duas vezes e em desacordo."""
-    ag = LBC(cfg(total_steps=1000))
+    trabalho duas vezes e em desacordo. Com `ent_alvo=None` o coeficiente é constante — e
+    o que **não** pode existir é dependência do passo global."""
+    ag = LBC(cfg(total_steps=1000, ent_alvo=None))
     inicio = ag.iterate()["ent_coef"]
     ag.global_step = 900
     fim = ag.iterate()["ent_coef"]
     assert inicio == fim == ag.cfg.ent_coef
+
+
+def test_the_entropy_coefficient_is_a_price_paid_for_a_floor():
+    """Com `ent_alvo`, o coeficiente é realimentado pela entropia **medida**, e não pelo
+    passo: sobe quando a política está abaixo do alvo, desce quando está acima. É o piso que
+    faltava — `docs/LBC.md` §2.8."""
+    # alvo inatingível: a entropia medida fica sempre abaixo, o preço só pode subir
+    sobe = LBC(cfg(total_steps=10 ** 6, ent_alvo=1.09, ent_coef=0.01))
+    antes = sobe.iterate()["ent_coef"]
+    for _ in range(3):
+        sobe.iterate()
+    assert sobe._ent_coef > antes
+
+    # alvo já satisfeito na inicialização (política ~uniforme): o preço tem que cair
+    desce = LBC(cfg(total_steps=10 ** 6, ent_alvo=1e-4, ent_coef=0.01))
+    antes = desce.iterate()["ent_coef"]
+    for _ in range(3):
+        desce.iterate()
+    assert desce._ent_coef < antes
+
+    # e nunca sai da faixa declarada
+    assert sobe.cfg.ent_coef_min <= sobe._ent_coef <= sobe.cfg.ent_coef_max
+
+
+def test_the_kl_brake_actually_cuts_the_update_short():
+    """O modo de falha da primeira execução: 128 passos de gradiente por rollout sem freio
+    nenhum saturam a softmax, e softmax saturada é ponto fixo absorvente — `docs/LBC.md`
+    §2.7. A parada por KL é o freio; este teste é sobre ele estar ligado ao pedal.
+
+    Não é um teste sobre o *valor* do KL numa configuração de brinquedo (com 8 ambientes e
+    4 iterações a política mal se move, e a divergência só aparece depois de ~20). É sobre a
+    parada existir, ser observável em `epochs_done`, e respeitar o teto declarado.
+    """
+    # teto impossível de violar: as 4 épocas rodam inteiras
+    solto = LBC(cfg(total_steps=10 ** 6, target_kl=1e9))
+    assert solto.iterate()["epochs_done"] == solto.cfg.epochs
+
+    # teto impossível de respeitar: para assim que o KL deixa de ser zero. São dois
+    # minilotes e não um porque no primeiro a razão é **exatamente** 1 — `logp_ref` acabou
+    # de ser medido na mesma rede —, e KL zero não viola teto nenhum. É a mesma aritmética
+    # do PPO, e é o que garante que o gradiente do primeiro passo seja o do IMPALA cru.
+    travado = LBC(cfg(total_steps=10 ** 6, target_kl=1e-12))
+    saida = travado.iterate()
+    assert saida["epochs_done"] == 1
+    assert saida["atualizacoes"] == 2
+
+    # e no padrão o KL medido nunca passa do teto declarado
+    padrao = LBC(cfg(total_steps=10 ** 6))
+    for _ in range(4):
+        assert padrao.iterate()["kl"] <= padrao.cfg.target_kl * 1.5 + 1e-6
+
+
+def test_turning_the_trust_region_off_restores_the_raw_impala_gradient():
+    """`clip_eps = 0` é a ablação: o gradiente `−logπ·Â` cru, que é o que a `seed0` rodou.
+    Ela tem que ser alcançável por configuração, aparecer no nome da variante e não quebrar
+    o passo — senão não dá para medir quanto a região de confiança vale."""
+    ag = LBC(cfg(total_steps=10 ** 6, clip_eps=0.0, normalizar_vantagem=False))
+    saida = ag.iterate()
+    assert "sem_clip" in ag.variant
+    assert np.isfinite(saida["pg"]) and np.isfinite(saida["vf"])
+    assert saida["clipfrac"] == pytest.approx(0.0, abs=1.0)   # só não pode dar NaN

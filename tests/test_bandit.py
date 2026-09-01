@@ -156,8 +156,10 @@ def test_normalization_makes_the_selection_independent_of_the_reward_scale():
 def test_without_normalization_the_scale_decides_how_greedy_the_bandit_is():
     """O controle do teste anterior: com a fórmula crua do paper, mudar só a escala do
     retorno leva a seleção de praticamente uniforme a praticamente determinística."""
-    quase_uniforme = _entropia_da_selecao(0.001, normalizar=False)
-    quase_guloso = _entropia_da_selecao(1.0, normalizar=False)
+    # `piso_uniforme=0` porque o que se mede aqui é a fórmula crua do paper, e o piso é
+    # um acréscimo deste repositório (ver `docs/LBC.md` §2.9).
+    quase_uniforme = _entropia_da_selecao(0.001, normalizar=False, piso_uniforme=0.0)
+    quase_guloso = _entropia_da_selecao(1.0, normalizar=False, piso_uniforme=0.0)
     assert quase_uniforme > 1.0          # log 3 = 1,0986
     assert quase_guloso < 0.1
 

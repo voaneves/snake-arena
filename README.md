@@ -159,7 +159,7 @@ teste que prova que a implementação faz o que o paper diz — está em
 | **ACKTR** — A2C com gradiente natural via K-FAC e região de confiança | [📎](https://arxiv.org/abs/1708.05144) | `08_acktr.ipynb` | 4 notebooks quebrados | ✅ K-FAC em Keras 3, região **calibrada** por padrão, 19 testes de curvatura |
 | **ACEKTR** — ACKTR com EK-FAC: a base do K-FAC, os autovalores **medidos** | [📎](https://arxiv.org/abs/1806.03884) | `12_acektr.ipynb` | novo | ✅ implementado, 21 testes; com a medição desligada é **bit a bit** o ACKTR |
 | **DreamerV3** — modelo do mundo, ator treinado no sonho | [📎](https://arxiv.org/abs/2301.04104) | `09_dreamerv3.ipynb` | novo | ✅ RSSM categórico, symlog, two-hot, 28 testes |
-| **LBC** — controle de comportamento aprendido: mistura de Boltzmann sobre uma população, V-trace, seleção por bandit | [📎](https://arxiv.org/abs/2305.05239) | `10_lbc.ipynb` | novo | ✅ implementado, 44 testes (agente + meta-controlador) |
+| **LBC** — controle de comportamento aprendido: mistura de Boltzmann sobre uma população, V-trace, seleção por bandit | [📎](https://arxiv.org/abs/2305.05239) | `10_lbc.ipynb` | novo | ✅ implementado, 48 testes (agente + meta-controlador) |
 | **SOAP** — opções discretas com crença para a frente, vantagem de opção propagada | [📎](https://arxiv.org/abs/2407.18913) | `11_soap.ipynb` | novo | ✅ implementado, 24 testes; com `n_opcoes=1` **é** o PPO, e o teste prova |
 | ↳ **ACKTR sem calibrar** — `kl_max` volta a ser alvo nominal | — | `98_acktr_kl_nominal.ipynb` | — | ✅ braço de controle: a mesma semente deu 83,91 e 64,53 em hardwares diferentes |
 | ↳ **Rainbow com a janela de 3** — o `n_steps` canônico do paper | — | `94_rainbow_nstep3.ipynb` | — | ✅ braço de controle: **0,57 contra 65,43**, e 100% dos episódios terminando por fome |
@@ -303,7 +303,14 @@ mesma rede, mesmo ambiente, mesmo orçamento, e — de propósito — o **mesmo 
 política avaliada**, para que a diferença entre as curvas não inclua fator de desconto. Três
 desvios em relação ao paper estão declarados e explicados em
 [`docs/LBC.md`](docs/LBC.md): tronco compartilhado entre as políticas, `H` reduzido ao γ, e
-um bandit em vez do conjunto de bandits do §4.2. As duas ablações da Fig. 5 do paper —
+um bandit em vez do conjunto de bandits do §4.2.
+
+A primeira execução de 5 M passos falhou — 0,57 ponto contra 81,5 do PPO — e a autópsia está
+na [§2.10](docs/LBC.md). Vale ler mesmo sem interesse pelo LBC: os três defeitos que a
+mataram (o `τ` sem autoridade sobre logits livres, 128 passos de gradiente sem região de
+confiança, e um bandit decidindo sobre ruído) são **invisíveis na curva de score** e
+evidentes em quatro campos do registro. As correções viraram mais três desvios declarados
+(§2.6 a §2.9). As duas ablações da Fig. 5 do paper —
 população de uma política e seleção aleatória — estão implementadas como configuração
 (`n_politicas=1`, `selecao="aleatoria"`) e ganham sufixo próprio na variante.
 
@@ -437,7 +444,7 @@ declara qual é qual.
 | [`docs/ORCAMENTO_DE_GRADIENTE.md`](docs/ORCAMENTO_DE_GRADIENTE.md) | a ablação de orçamento nas duas famílias, a previsão pré-registrada que falhou, saturação × limitação por orçamento |
 | [`docs/CANAL_DE_FOME.md`](docs/CANAL_DE_FOME.md) | o sexto canal de observação, e por que ele sai da arena |
 | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | por que o PUCT do AlphaZero colapsa quando o valor aprendido é positivo, e os dois consertos |
-| [`docs/LBC.md`](docs/LBC.md) | o LBC: as três peças, os cinco desvios declarados em relação ao paper, e o que olhar no log |
+| [`docs/LBC.md`](docs/LBC.md) | o LBC: as três peças, os nove desvios declarados em relação ao paper, a autópsia da primeira execução (§2.10) e o que olhar no log |
 | [`docs/SOAP.md`](docs/SOAP.md) | o SOAP: por que opções num jogo que parece markoviano, o controle de uma opção, e como detectar colapso |
 | [`docs/EKFAC.md`](docs/EKFAC.md) | o EK-FAC: o que exatamente ele corrige no K-FAC, o controle bit a bit, e a previsão sobre a região de confiança do ACKTR |
 | [`docs/PROCEDENCIA.md`](docs/PROCEDENCIA.md) | qual código produziu cada execução, e como auditar isso em dois comandos |

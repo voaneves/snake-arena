@@ -178,6 +178,165 @@ um braço mais que ~2,7× a probabilidade de outro. O bandit ficaria preso perto
 acusasse. A temperatura padrão é 0,1 — uma diferença de 20% do intervalo entre o pior e o
 melhor braço vale ~7× em probabilidade.
 
+### 2.6 Os logits são padronizados antes de escalar por `τ`
+
+No paper, o que entra na softmax de temperatura é `Φ_h = A_h = Q_h − V_h` — uma
+**vantagem**, centrada em zero e presa à escala da recompensa. Aqui a rede é um ator-crítico
+comum e o que sai da cabeça é um logit livre: um parâmetro sem escala, que cresce sem limite
+enquanto a política aprende a preferir uma ação.
+
+A consequência é que `τ` deixa de controlar coisa alguma. Medido diretamente, com três ações
+e `τ` percorrendo a faixa inteira `[0,25, 4]`:
+
+| escala dos logits | `τ = 0,25` | `τ = 1` | `τ = 4` |
+|---|---|---|---|
+| `‖logits‖ ≈ 1` | 1,079 | 0,871 | 0,335 |
+| `‖logits‖ ≈ 5` | 0,797 | 0,281 | 0,072 |
+| `‖logits‖ ≈ 30` | **0,181** | 0,046 | 0,012 |
+| padronizado, qualquer escala | **1,068** | 0,741 | 0,164 |
+
+(entropia da mistura em nats; o máximo com três ações é 1,0986)
+
+Com os logits em escala 30 — que é onde uma política treinada chega — a faixa inteira de `τ`
+produz entropia abaixo de 0,19. **O espaço de comportamento `M_{H,Ψ}` degenera num ponto: a
+política gulosa.** E aí a cadeia inteira desmonta em silêncio: `μ` vira `π`, a razão `π/μ`
+vira 1, o V-trace passa a corrigir nada, e o bandit escolhe entre dezesseis cópias do mesmo
+comportamento. Nada disso levanta exceção e nada disso aparece na curva de score.
+
+A correção é padronizar `z` por estado, **sobre as ações válidas**, antes de multiplicar por
+`τ` (`logits_padronizados=True`, o padrão). Centrar é fiel ao paper — a vantagem já é
+centrada. Normalizar o desvio é o desvio declarado, e é o que devolve ao `τ` a autoridade que
+ele tem lá: com `ẑ` de média 0 e desvio 1, `τ = 0,25` deixa a mistura quase uniforme e
+`τ = 4` quase gulosa, **independentemente do que a rede fez com a escala dos próprios
+logits**.
+
+`logits_padronizados=False` reproduz a degeneração e serve de ablação (variante
+`+logits_crus`).
+
+### 2.7 Uma região de confiança do PPO em volta do gradiente do IMPALA
+
+O IMPALA faz **um** passe sobre cada rollout. Este repositório dá a todo agente o mesmo
+orçamento de gradiente (`docs/ORCAMENTO_DE_GRADIENTE.md`), o que aqui significa 4 épocas ×
+32 minilotes = 128 passos sobre o mesmo lote de 16.384 amostras.
+
+O V-trace autoriza parte disso, e a `§1.4` explica por quê: `μ` está gravado, então o *alvo
+de valor* continua correto a cada época. O que ele **não** faz — e o docstring antigo do
+módulo afirmava que fazia — é limitar o quanto a política anda. O gradiente `−logπ·Â` não tem
+região de confiança nenhuma: aplicá-lo 128 vezes sobre o mesmo lote satura a softmax, e
+softmax saturada é **ponto fixo absorvente**, porque ali o gradiente da entropia também é
+zero. Não é uma convergência lenta que se resolve esperando; é um buraco.
+
+A correção é o surrogate clipado do PPO por cima:
+
+```
+L = − min( r·Â , clip(r, 1−ε, 1+ε)·Â ) ,   r = π_θ(a|s) / π_ref(a|s)
+```
+
+com `π_ref` fixada no **início da atualização** (não da época — senão a política poderia
+andar 4 × ε sem nada reclamar), mais a parada por KL em `target_kl · 1,5`, idêntica à do PPO.
+No primeiro minilote `r = 1`, `min(r·Â, clip(r)·Â) = Â`, e o gradiente é o do IMPALA letra por
+letra. O clip só passa a existir depois, quando a política já se afastou do estado em que o
+lote foi coletado.
+
+Junto vêm duas coisas menores e do mesmo tipo:
+
+* **vantagem normalizada por política** (`normalizar_vantagem`), por minilote e no eixo do
+  lote, mantendo a coluna: cada cabeça tem o seu γ e a sua escala, e misturá-las faria a de
+  γ = 0,999 ditar o passo das outras duas. O PPO deste repositório já normalizava; o LBC não.
+* **`max_grad_norm = 1,0`** e não 0,5, porque a perda é a **soma** sobre três políticas e a
+  norma do gradiente é ~√3 vezes a de uma cabeça. Manter o teto do PPO faria o clip morder em
+  toda iteração, e o passo do LBC viraria "direção normalizada, tamanho fixo" — um otimizador
+  diferente do que o PPO usa, o que contaminaria a comparação.
+
+`clip_eps = 0` desliga tudo isso e reproduz o gradiente cru (variante `+sem_clip`).
+
+**O clip do valor fica desligado** (`vf_clip = 0`), e isso foi medido: com `vf_clip = 0,2` a
+variância explicada do crítico fica em 0,30 e sem ele sobe para 0,86 no mesmo número de
+iterações. É o problema que o módulo do PPO já documenta — um teto absoluto por atualização
+impede o crítico de alcançar a escala do retorno — só que aqui morde muito mais, porque o
+alvo do PPO é um retorno GAE suavizado e o do LBC é o `vs` do V-trace, com a escala crua do
+score. A região de confiança que interessa é a da política.
+
+### 2.8 O coeficiente de entropia é realimentado, não agendado
+
+Nos outros agentes daqui a entropia decai numa reta. Aqui não pode: quem controla a entropia
+do *comportamento* é o `τ` escolhido pelo bandit, e um agendamento por cima faria o mesmo
+trabalho duas vezes e em desacordo — a reta empurrando para determinístico enquanto o
+meta-controlador pede exploração.
+
+Mas constante também não serve, e a `seed0` provou: 0,01 fixo não impediu a política alvo de
+saturar. E uma vez saturada, o bônus de entropia não a tira de lá, pelo motivo da §2.7.
+
+A saída é realimentar: o coeficiente **sobe** quando a entropia medida está abaixo de
+`ent_alvo` e **desce** quando está acima, por um fator de 1,25 por iteração, preso em
+`[1e-4, 0,15]`. É o princípio do `α` automático do SAC — o alvo é a entropia, o coeficiente é
+só o preço que se paga por ela. O agendamento continua não existindo; o piso passa a existir.
+`ent_alvo = 0,15` é onde o PPO deste repositório termina por conta própria (0,13–0,14): o
+alvo não força exploração extra, só proíbe o colapso. `ent_alvo=None` volta ao fixo.
+
+### 2.9 O bandit precisa de evidência antes de decidir
+
+A normalização da §2.4 é cega à incerteza: ela estica a distância entre o pior e o melhor
+braço para o intervalo inteiro `[0, 1]` **sempre**, inclusive quando essa distância é menor
+que o próprio erro amostral. No começo do treino, com todos os braços rendendo ~0,02 ponto, o
+que separa o "melhor" do "pior" é ruído puro — e a normalização o promove a sinal de amplitude
+máxima, que a temperatura de 0,1 da §2.5 então transforma em quase-`argmax`.
+
+Três correções, todas na mesma direção:
+
+* **piso de ruído no denominador** — a escala da normalização nunca encolhe abaixo de ~2
+  erros padrão combinados. Enquanto os braços não se separarem mais do que isso, os valores
+  normalizados ficam pequenos e o bônus do UCB domina;
+* **mínimo de puxadas** (`mab_min_puxadas = 8`) antes de um braço ter valor estimado — abaixo
+  disso ele entra como não-visitado (otimista), e não com a média de duas amostras;
+* **piso uniforme** (`mab_piso_uniforme = 0,1`) na distribuição de seleção, e temperatura
+  0,25 em vez de 0,1. Com 512 ambientes escolhendo ao mesmo tempo, sem piso o bandit consegue
+  colocar todos no mesmo braço e deixar de receber dado sobre os outros quinze.
+
+Medido num bandit de 16 braços **indistinguíveis** (mesma média, só ruído), 4.000 puxadas:
+
+| | `p_top` | entropia da seleção (máx. 2,77) |
+|---|---|---|
+| antes | 0,45 | 1,48 |
+| depois | 0,32 | **2,23** |
+
+E num bandit em que o braço 3 é de fato melhor, os dois o encontram (`top = 3`), com o novo
+mantendo 30% da massa fora dele para continuar medindo os outros.
+
+O novo campo `mab_sinal_ruido` no registro é a diferença entre o melhor e o pior braço em
+unidades de erro padrão: abaixo de ~2 o bandit **não tem** evidência para separar braço
+nenhum, e `mab_entropia` baixa junto com ele é a assinatura de um meta-controlador travado em
+ruído.
+
+---
+
+## 2.10 A autópsia da primeira execução
+
+A `seed0` com os padrões antigos terminou em **0,57 ponto** contra 81,5 do PPO, com 100% dos
+episódios terminando por fome — a cobra andando em círculo. Não foi ajuste fino: foram os três
+defeitos acima, e eles se reforçam.
+
+| passo | `train_score` | `ent` | `entropia_comportamento` | `razao_media` | `mab_p_top` | `pg` |
+|---|---|---|---|---|---|---|
+| 147 k | 15,1 | 0,119 | 0,129 | 0,74 | 0,28 | −0,60 |
+| 475 k | 12,9 | 0,010 | 0,141 | 0,86 | 0,66 | −0,09 |
+| **540 k** | 2,4 | **5e-6** | **6e-4** | **1,00** | 0,28 | −5e-7 |
+| 800 k | 0,02 | 3e-9 | 3e-4 | 1,00 | **0,999** | 6e-10 |
+| 1,5 M | 0,01 | 1e-9 | 4e-4 | 1,00 | 0,17 | **0** |
+| 3,26 M | 13,4 | 0,026 | 0,073 | 0,60 | 0,85 | −0,39 |
+| 5,0 M | 0,53 | 3e-4 | 4e-3 | 1,00 | 0,76 | −9e-6 |
+
+A leitura, linha a linha: entre 147 k e 475 k o algoritmo **estava funcionando**. Em 540 k a
+entropia da política alvo cai seis ordens de grandeza e `pg` vai junto — a softmax saturou, e
+com ela o gradiente da entropia. A execução fica **2,3 M de passos morta**, com score 0,01, e
+`razao_media = 1,0000` o tempo todo: `μ` é `π`, o V-trace não corrige nada, e o bandit escolhe
+entre dezesseis cópias do mesmo comportamento greedy — em 800 k com 99,9% da massa num braço
+só, sobre evidência que não existia.
+
+O que sai disso e vale para além deste algoritmo: **a curva de score não detecta nenhum dos
+três defeitos.** O que detecta é `entropia_comportamento` (§2.6), `ent` junto com `pg` (§2.7)
+e `mab_sinal_ruido` junto com `mab_entropia` (§2.9). Estão todos na tabela da §4 agora.
+
 ---
 
 ## 3. O que comparar com o quê
@@ -212,6 +371,12 @@ nada. Quatro números no registro existem para isso:
 | `mab_entropia` | cai ao longo do treino, sem zerar | grudada em `log 16 = 2,77` = o bandit nunca decidiu; a curva deveria coincidir com a da seleção aleatória, e se **não** coincidir há algo errado em outro lugar |
 | `omega_entropia` | passeia entre 0 e `log 3` | presa em `log 3` = a mistura nunca concentra e o mapeamento híbrido degenerou no uniforme; presa em 0 = degenerou em política única (o caso Agent57) |
 | `tau_medio` | sobe ao longo do treino | plano = o eixo de entropia não está sendo usado |
+| `entropia_comportamento` | acima de ~0,2 durante o treino inteiro | abaixo de 1e-3 = o espaço de comportamento degenerou num ponto e o `τ` perdeu autoridade (§2.6). É o primeiro número a olhar |
+| `ent` (entropia da política alvo) | acima de `ent_alvo`, ou perto dele | abaixo de 1e-4 = a softmax saturou; junto com `pg → 0` é ponto fixo absorvente e a execução não volta sozinha (§2.7) |
+| `kl` | abaixo de `target_kl` (0,03) | acima de 0,1 = a região de confiança não está segurando; acima de 1 é o regime que matou a `seed0` |
+| `clipfrac` | 0,05 a 0,25 | perto de 1 = todo minilote está sendo clipado, o passo é grande demais |
+| `mab_sinal_ruido` | cresce com o treino | abaixo de ~2 **com `mab_entropia` baixa** = o bandit decidiu sobre ruído (§2.9) |
+| `ent_coef` | passeia dentro de `[1e-4, 0,15]` | colado no teto com `ent` abaixo do alvo = o controlador perdeu autoridade e o piso não existe |
 
 `ev` (variância explicada) é lido como nos outros agentes: mede o crítico da política
 **avaliada**, não a média da população.
@@ -223,6 +388,11 @@ nada. Quatro números no registro existem para isso:
 Nada nesta seção é afirmação — é a lista do que o repositório ainda não sabe sobre este
 algoritmo.
 
+* **Se as correções da §2.6 a §2.9 bastam.** Elas foram validadas em escala reduzida
+  (`resnet_tiny`, 64 ambientes, 60–120 iterações): o espaço de comportamento fica vivo
+  (`entropia_comportamento` ~0,55 contra 3e-4), o KL fica em 0,02–0,03 contra 0,45–1,01 do
+  código antigo, `ev` sobe para 0,86 e o bandit não trava. Isso mostra que os **mecanismos**
+  de falha foram fechados; **não** mostra qual score sai de 5 M passos.
 * **Se o LBC ganha do PPO aqui.** Snake 10×10 com máscara de ação é um domínio de
   exploração fácil: o PPO já fecha ~90% dos tabuleiros. O LBC foi feito para jogos de
   Atari com exploração dura, e o resultado honesto pode perfeitamente ser "não compensa
