@@ -1,0 +1,21 @@
+[
+ {
+  "braco": "controle",
+  "n": 40,
+  "kl_alvo": 0.015,
+  "razao_mediana": 15.268909931182861,
+  "razao_p90": 49.53518470128378,
+  "razao_frio": 2.802609776457151,
+  "kl_mediana": 0.22903364896774292
+ },
+ {
+  "braco": "sem_momento",
+  "n": 40,
+  "kl_alvo": 0.015,
+  "razao_mediana": 2.0132262880603475,
+  "razao_p90": 4.90221326549848,
+  "razao_frio": 1.2268871068954468,
+  "kl_mediana": 0.03019839432090521,
+  "momento": 0.0
+ }
+]

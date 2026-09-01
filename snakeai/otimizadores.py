@@ -78,5 +78,9 @@ def cria_otimizador(nome, learning_rate, clipnorm=None, weight_decay=1e-4, **kw)
     if nome == "lion":
         return keras.optimizers.Lion(beta_1=0.9, beta_2=0.99, **comum, **kw)
     if nome == "sgd":
-        return keras.optimizers.SGD(momentum=0.9, nesterov=True, **comum, **kw)
+        # `setdefault` e não literal: o ACKTR precisa medir o momento como variável
+        # (§2.36), e um literal aqui daria `got multiple values for 'momentum'`.
+        kw.setdefault("momentum", 0.9)
+        kw.setdefault("nesterov", True)
+        return keras.optimizers.SGD(**comum, **kw)
     raise ValueError(f"otimizador desconhecido: {nome!r}. Use um de {OTIMIZADORES}")

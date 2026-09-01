@@ -13,6 +13,10 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
+| §2.36 o passo da região de confiança do ACKTR não desconta o momento | **medido** — tirar o momento remove **93% do excesso** de KL (15,3× → 2,0× na forma do contrato), e o fenômeno some num lote 8× menor, que é o que a hipótese do momento prevê e a da Fisher não. `escala_kl` devolve η para UM passo e o SGD tem `momentum=0.9`; em regime o deslocamento é até 10× isso, e a KL vai com o quadrado. A premissa do ACEKTR está errada na maior parte: `EKFAC.md` e a §2 precisam ser reescritos, e a comparação ACKTR × ACEKTR refeita com `descontar_momento` dos dois lados |
+| §2.35 o sorteio do replay do MuZero é uniforme e o Apêndice G prioriza | **implementado, desligado** — `P(i) ∝ |ν − z|^α` com `α = β = 1`; `ν` e `z` são fixos na coleta, então a prioridade nunca é atualizada, ao contrário do PER do DQN. Gravada mesmo desligada, porque mede o quanto busca e jogo discordaram. Braço `priorizado` |
+| §2.34 o agendamento de temperatura é o de jogo de tabuleiro, não o de Atari | **implementado, desligado** — com episódios de ~1.200 lances, `temp_passos=30` deixa 97,5% do episódio a τ=0,25 desde a primeira iteração; o Apêndice D, em Atari, amostra o episódio inteiro com τ por passo de treino. Braço `temp_de_treino` |
+| §2.33 o valor e a recompensa do MuZero são regressão escalar, e o Apêndice F usa suporte categórico | **implementado, desligado** — two-hot + entropia cruzada, com o suporte dimensionado pelo domínio (teto 60 real) em vez de copiado do `[-300,300]` de Atari, que daria resolução de ~3 pontos perto de zero. Braços `categorico`, `transformacao_h`, `categorico_h` |
 | §2.32 o reúso de amostra do MuZero está no regime do **Reanalyse**, sem o Reanalyse | **implementado, desligado por padrão** — 2,0 amostras por estado é o número do Apêndice H, onde ele vem acompanhado de refazer a busca com a rede atual e de rede alvo; `reanalise` traz o primeiro (só a política, só o passo 0). Custo medido: 1,32×–1,57× em CPU, sublinear porque as buscas são em lote |
 | §2.31 a perda do MuZero soma os `K+1` passos do desenrolar **sem peso**, e o reúso de amostra está no regime do Reanalyse sem o Reanalyse | **levantado, com conserto opcional pronto** — o passo 0, o único que a métrica oficial mede, vale 14,5% da perda de política com `unroll=5`; `normaliza_unroll` traz o `scale_gradient(loss, 1/K)` do paper e o põe em ~46%. Padrão **desligado** até a medição; braços no `92_muzero_ablacoes` |
 | §2.30 o desenrolar de K passos do MuZero atravessava a morte da cobra | **corrigido** — 25% das amostras treinavam a dinâmica contra a recompensa de outra partida; a máscara também recuperou os 31% de passos que eram descartados |
@@ -717,6 +721,160 @@ Marcar por `eps_start > 0` sozinho seria pior que não marcar — sob `noisy=Tru
 execução não teve. Aquela execução foi renomeada para
 `completo+n3+sem_noisy+eps_greedy`, com o motivo gravado em `meta["variante_corrigida"]`;
 o teste é `test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not`.
+
+### 2.36 ✔ O passo da região de confiança do ACKTR não desconta o momento
+`acktr.py:272-273` · `otimizadores.py:81` · `kfac.py:342-356`
+
+**A §2 deste documento e o docstring do `acktr.py` concluem que a KL medida sai 4,4× a
+12,4× acima do alvo porque a Fisher aproximada subestima a curvatura.** Essa conclusão é a
+premissa do ACEKTR — o EK-FAC existe aqui para corrigir exatamente esse erro. Há uma
+explicação concorrente que não foi considerada, e ela é aritmética.
+
+`escala_kl` devolve `η = √(2·kl_max / Δᵀ∇)`: o passo tal que **uma** atualização `ηΔ`
+induz `kl_max`. Ele é atribuído como `learning_rate` de um `SGD(momentum=0.9,
+nesterov=True)` (`optimizer = "sgd"`, `acktr.py:161` → `otimizadores.py:81`). Com momento,
+o deslocamento em regime não é `ηΔ`: é até `ηΔ/(1−μ) = 10·ηΔ`. Na aproximação quadrática a
+KL vai com o **quadrado** do passo, então o estouro fica entre 1× (gradientes
+descorrelacionados) e 100× (perfeitamente correlacionados). Os 4,4×–12,4× medidos
+correspondem a uma amplificação de passo de 2,1×–3,5×, que é exatamente o que um momento de
+0,9 sobre gradientes parcialmente correlacionados produz.
+
+O `baselines` original faz `MomentumOptimizer(lr·(1−momentum), momentum)` — o fator
+`(1−μ)` está lá justamente para cancelar isto.
+
+**E o padrão temporal também casa.** O docstring nota que o estouro é *maior no começo e
+diminui ao longo do treino*, e usa isso como evidência a favor da Fisher ("o erro encolhe
+conforme a média móvel dos fatores amadurece"). Mas gradientes sucessivos são muito mais
+correlacionados no começo do treino, quando a política se move consistentemente numa
+direção, e vão descorrelacionando depois — o que prevê a mesma curva. Os dois mecanismos
+explicam os mesmos dados.
+
+**Um segundo suspeito, no mesmo lugar:** o `clipnorm = 0.5` herdado do PPO
+(`ppo.py:185-186`, `max_grad_norm` do `PPOConfig`) é aplicado pelo Keras **por variável,
+dentro do `apply_gradients`** — ou seja, sobre a direção **já pré-condicionada**. No
+`baselines`, o `max_grad_norm` só existe no caminho SGD "cold", nunca sobre a direção
+natural. Direções naturais com `damping = 1e-2` têm norma bem maior que as cruas, então o
+clip provavelmente age quase sempre: distorce a razão entre camadas que é a razão de ser do
+K-FAC e invalida o `η` que a fórmula da KL calculou.
+
+**Medido, e a explicação da §2 não sobrevive.** `tools/diag_acktr_kl.py` roda os braços
+com `kl_calibrado=False` — obrigatório, porque ligado ele mede a razão e pede `kl_max/c`, de
+modo que a KL entregue converge para o alvo *qualquer que seja a causa*. Forma do contrato
+(512×5, `resnet_small`), 60 atualizações, semente 0:
+
+| braço | KL mediana | razão `KL/alvo` | p90 | primeiras 20 |
+|---|---|---|---|---|
+| `controle` | 0,229 | **15,3×** | 49,5× | 2,8× |
+| `sem_momento` | 0,030 | **2,0×** | 4,9× | 1,2× |
+| `momento_descontado` | 0,0015 | **0,1×** | 0,3× | 0,2× |
+
+Tirar o momento remove **93% do excesso** (`(15,3−1) → (2,0−1)`). O que sobra — 2,0× — é
+tudo o que resta para a Fisher aproximada, o `clipnorm` e a própria aproximação de segunda
+ordem da KL, juntos.
+
+**E o conserto do `baselines` corrige demais.** `descontar_momento` leva a razão a **0,1×**:
+passa do alvo para baixo, por um fator de 10. O motivo é aritmético e vale registrar, porque
+é o que impede de simplesmente adotá-lo: `(1−μ)` supõe acúmulo **total**, `1/(1−μ) = 10×`.
+O acúmulo real aqui é de ~2–3×, porque gradientes sucessivos são só parcialmente
+correlacionados. Descontar 10× de um acúmulo de 3× subcorrige o passo em 3,3×, e a KL, que
+vai com o quadrado, cai ~11×. Bate com o medido.
+
+Um braço que passa do alvo **para baixo** também é evidência contra a Fisher, e por um
+argumento independente: um fator que *corrige demais* não pode estar corrigindo um erro de
+curvatura — ele está corrigindo algo cujo tamanho ele superestima, que é exatamente a
+descrição do acúmulo do momento.
+
+**A consequência prática inverte a recomendação.** Não se troca o padrão por
+`descontar_momento`: o fator certo não é `(1−μ)`, é o acúmulo empírico, que varia com a
+correlação dos gradientes e portanto com o ponto do treino. **`kl_calibrado` já estima
+exatamente esse fator por média móvel** — ou seja, o conserto certo já estava no
+repositório, medindo a coisa certa, atribuído à causa errada. O que precisa mudar é a
+documentação, não o código.
+
+**E há uma segunda evidência, que não foi planejada.** A mesma medição na forma reduzida
+(64×5, `resnet_tiny`) dá razão **0,9×**: o fenômeno simplesmente não aparece. Lote 8×
+menor, estouro 17× menor. Isso é o que a hipótese do momento prevê — lote maior, gradiente
+menos ruidoso, gradientes sucessivos mais correlacionados, mais acúmulo. A hipótese da
+Fisher prevê o contrário ou nada: o erro da aproximação é estrutural, e um lote maior dá uma
+estimativa *melhor* dos fatores. **A dependência do tamanho do lote é, sozinha, um
+discriminante entre as duas.**
+
+**O que isto significa para o ACEKTR.** O `docs/EKFAC.md` e a §2 deste documento existem
+sobre a premissa de que o estouro mede erro da Fisher. Com 93% dele explicado por um fator
+`(1−μ)` ausente, essa premissa está errada na maior parte. O ACEKTR continua sendo uma
+pergunta legítima — autovalores exatos contra a fatoração de Kronecker é uma diferença real —
+mas **a evidência que o motivava não é evidência.** Os dois documentos precisam ser
+reescritos, e a comparação ACKTR × ACEKTR precisa ser refeita com `descontar_momento=True`
+dos dois lados, senão ela mede o momento e não a curvatura.
+
+**Ressalvas, porque uma medição não é três.** São 60 atualizações no **começo** do treino,
+uma semente, em CPU. O §2 registra que o estouro é maior no começo — então este é o pior
+caso, não o típico. Os braços `sem_clip` e `sem_momento_sem_clip` ainda não foram
+medidos, e são eles que dizem se o 2,0× residual é a Fisher ou o `clipnorm`. O `91_acktr_ablacoes` roda os mesmos braços por 5 M
+passos, para ligar a KL ao score.
+
+**O que não muda ainda.** Três execuções oficiais do ACKTR estão gravadas e o padrão continua
+`momento=0,9`, `descontar_momento=False`, `max_grad_norm=0,5`, `kl_calibrado=True`. A
+calibração já absorve o fator empiricamente — o que estava errado era a **atribuição**, e é
+ela que este achado corrige.
+
+### 2.34 ✔ O agendamento de temperatura é o de jogo de tabuleiro, não o de Atari
+`muzero.py:temperatura` · Apêndice D
+
+O Apêndice D descreve **dois** agendamentos, e o repositório implementou o primeiro:
+
+> *Using a variation of this scheme, in the Atari domain actions are sampled from the visit
+> count distribution **throughout the duration of each game, instead of just the first k
+> moves**. (…) `T` is decayed as a function of the number of training steps of the network.
+> Specifically, for the first 500k training steps a temperature of 1 is used, for the next
+> 250k steps a temperature of 0.5 and for the remaining 250k a temperature of 0.25.*
+
+`temp_passos = 30` é o esquema de jogo de tabuleiro: τ = 1 nos 30 primeiros lances, τ = 0,25
+depois. Num jogo de tabuleiro, 30 lances é uma fração grande da partida. Aqui, o agente bom
+faz episódios de **~1.200 a 1.500 lances** — então 30 lances são **2,5% do episódio**, e os
+outros 97,5% são jogados a τ = 0,25 **desde a primeira iteração**, quando o paper estaria a
+τ = 1,0 no episódio inteiro. Num jogo de recompensa esparsa, é muito menos exploração do que
+o paper prescreve para o domínio parecido.
+
+`temp_esquema = "treino"` traz o segundo: escalar, episódio inteiro, degraus por fração do
+orçamento. Fica desligado por padrão, com braço `temp_de_treino` no `92`. **O mesmo vale
+para o AlphaZero** (`alphazero.py:temp_passos`), onde a §2.29 introduziu o agendamento por
+lance — lá o argumento é mais forte, porque o AlphaZero *é* o algoritmo de jogo de
+tabuleiro; mas os episódios são igualmente longos, e o número merece ser medido.
+
+### 2.33 ✔ O valor e a recompensa são regressão escalar, e o paper usa suporte categórico
+`nets/muzero.py:build_predicao,build_dinamica` · `muzero.py:_dois_quentes,_perda_escalar` ·
+Apêndice F
+
+O Apêndice F não faz regressão escalar. Ele aplica a transformação invertível
+`h(x) = sign(x)(√(|x|+1) − 1 + εx)` ao alvo, projeta o resultado num **suporte discreto**
+com two-hot — *"a target of 3.7 would be represented as a weight of 0.3 on the support for
+3 and a weight of 0.7 on the support for 4"* — e treina cabeças **softmax** com entropia
+cruzada, lendo o número de volta pela esperança e invertendo a escala. Aqui as duas cabeças
+eram `Dense(1)` com erro quadrático, e a transformação era o `symlog` do DreamerV3.
+
+Por que pode importar, e não é só fidelidade: §2.31 mediu `perda_v ≈ 0,19` em `symlog`, o
+que vira uma banda de `[6,7; 17,5]` na escala real — e é esse valor que a árvore soma no
+backup. Um MSE tem gradiente proporcional ao erro e escala dependente do alvo; uma entropia
+cruzada sobre suporte fixo tem gradiente limitado e calibra uma **distribuição** em vez de
+um ponto. É a mesma razão pela qual o C51 existe no lado off-policy deste repositório.
+
+**Dimensionar, não copiar.** O paper usa 601 átomos em `[-300, 300]`, porque um retorno de
+Atari é grande. Transplantar esses números daria espaçamento de 1,0 em espaço `h`, isto é
+**~3 pontos de resolução perto de zero**, num jogo cujo valor medido vive entre 0 e ~11 — a
+cabeça categórica seria mais grosseira que a escalar. O suporte aqui é definido por um teto
+na **escala real** (`teto_suporte = 60`) e transformado, o que dá a mesma faixa para as duas
+transformações e resolução de ~0,07 perto de zero e ~0,78 perto de 10.
+
+**Uma armadilha que o teste agora protege:** `LIMITE_SYMLOG = 6,0` vale ~402 na escala real
+(`e⁶ − 1`), mas `h` cresce como `√x`, então o mesmo 6,0 cortaria o valor em **47** — um teto
+que este jogo encosta. `h` ganhou o seu próprio `LIMITE_H = 19,5`, e o teste confere que os
+dois descrevem a mesma fronteira real. Um limite errado aqui não levanta exceção nenhuma:
+só devolve um valor sistematicamente baixo para a árvore somar.
+
+Braços `categorico`, `transformacao_h`, `categorico_h` no `92_muzero_ablacoes`. Tudo
+desligado por padrão — há uma execução de controle a preservar, e o §2.31 tem um conserto de
+graça que ataca o mesmo sintoma e vem primeiro.
 
 ### 2.32 ✔ O reúso de amostra está no regime do Reanalyse, sem o Reanalyse
 `muzero.py:_aprender,_reanalisar` · `tools/diag_reanalise.py` · Apêndice H

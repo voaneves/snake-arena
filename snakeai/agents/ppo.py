@@ -182,8 +182,12 @@ def make_optimizer(cfg, model):
     Na prática isso quebrava o segundo `PPO(...)` da sessão: retomar de um checkpoint, ou
     simplesmente rodar a célula de treino duas vezes no Colab.
     """
+    # `max_grad_norm <= 0` desliga o clip. Faz falta no ACKTR: o Keras clipa **por
+    # variável, dentro do `apply_gradients`**, ou seja sobre a direção já
+    # pré-condicionada — e no `baselines` o clip nunca toca a direção natural (§2.36).
+    teto = cfg.max_grad_norm if (cfg.max_grad_norm or 0) > 0 else None
     opt = cria_otimizador(getattr(cfg, "optimizer", "adam"), cfg.lr_start,
-                          clipnorm=cfg.max_grad_norm)
+                          clipnorm=teto, **(getattr(cfg, "opt_extra", None) or {}))
     opt.build(model.trainable_variables)
     return opt
 

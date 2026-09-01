@@ -460,6 +460,8 @@ BRACOS_MUZERO = [
     # o regime de reúso: sair dele de graça, ou ficar nele com alvo fresco
     "reuso_do_paper", "reanalise_25", "reanalise_80", "reanalise_80_sims12",
     "normaliza_e_reanalise",
+    # o que o Apêndice F e o Apêndice D mandam e o repositório não fazia
+    "categorico", "transformacao_h", "categorico_h", "temp_de_treino", "priorizado",
     # o valor — este **contra** o paper
     "coef_valor_1",
     # a frescura do alvo
@@ -535,6 +537,30 @@ _PRE_CFG_MUZERO = """BRACOS = {
     # enquanto a rede pura oscila entre 33 e 66. Melhorar o professor alarga o vao.
     "sims32":               {"num_simulations": 32, "sims_avaliacao": 32},
 
+    # ------------------------------------------ Apendice F: cabeca categorica
+    # O paper nao faz regressao escalar no valor nem na recompensa: projeta o alvo num
+    # suporte discreto com two-hot e treina com entropia cruzada. Aqui a cabeca sempre
+    # foi Dense(1) com erro quadratico. O suporte e dimensionado pelo dominio (teto 60
+    # na escala real), e nao copiado do [-300,300] de Atari, que daria resolucao de ~3
+    # pontos perto de zero num jogo cujo valor vive entre 0 e ~11. Ver §2.33.
+    "categorico":           {"n_suporte": 121},
+    # a transformacao do paper (R2D2) no lugar do symlog do DreamerV3 que esta la
+    "transformacao_h":      {"transformacao": "h"},
+    "categorico_h":         {"n_suporte": 121, "transformacao": "h"},
+
+    # -------------------------------- Apendice D: o agendamento de Atari, nao o de
+    # jogo de tabuleiro. Episodios aqui tem ~1200 lances, entao `temp_passos=30` poe
+    # 97,5% do episodio em tau=0,25 desde a primeira iteracao. O paper, em Atari,
+    # amostra o episodio INTEIRO com tau decaindo por passo de treino. Ver §2.34.
+    "temp_de_treino":       {"temp_esquema": "treino"},
+
+    # ---------------------------- Apendice G: replay priorizado, alpha=beta=1
+    # P(i) ~ |v_i - z_i|^alpha: a distancia entre o valor que a BUSCA achou na raiz e o
+    # retorno que o jogo entregou. Fixa na coleta - nao e o erro da rede, entao nao ha
+    # atualizacao de prioridade como no PER do DQN. Hoje o sorteio e uniforme, que e o
+    # que o paper faz nos jogos de tabuleiro; em Atari ele prioriza. Ver §2.35.
+    "priorizado":           {"per": 1.0},
+
     # ---------------------------------------------------------- controle e soma
     # reproduz `muzero/unroll5/seed0` (final 49,26 / melhor 66,05) sob o codigo e a
     # assinatura atuais. So vale rodar se a assinatura do pacote tiver mudado.
@@ -553,9 +579,152 @@ for _k, _v in sorted(BRACOS[BRACO].items()) or [("(nada)", "controle")]:
 #: `param_braco` do spec aponta para uma destas entradas. Cada uma e a lista do
 #: `@param`, o braco pre-selecionado e o dicionario que a celula de parametros carrega.
 #: A conferencia em `monta_notebook` garante que a lista e o dicionario nao divirjam.
+DIAG_KL_MD = """## Diagnóstico da KL — 15 minutos antes de gastar 3 horas
+
+**Rode esta célula antes de escolher um braço.** A pergunta deste notebook é sobre a KL
+**por atualização**, não sobre o score no fim — e ela se responde em ~3 min por braço numa
+T4, contra 0,5 h de treino completo por braço. O treino serve para *confirmar* o que aqui
+aparecer, e para ligar a KL ao score.
+
+`escala_kl` devolve `η = √(2·kl_max / Δᵀ∇)`: o passo tal que **uma** atualização `ηΔ`
+induz `kl_max`. A razão `KL_medida / KL_pedida` deveria ser ~1. A execução de 5 M mediu
+**4,4× a 12,4×**, e a revisão atribuiu isso à Fisher aproximada — que é a premissa do
+ACEKTR. Esta célula testa as duas explicações concorrentes que não são a Fisher.
+
+`kl_calibrado = False` em todos os braços, e isso **não é detalhe**: ligado, ele mede a
+razão e pede `kl_max/c`, de modo que a KL entregue converge para o alvo *qualquer que seja
+a causa*. Medir com ele ligado responderia sempre "está calibrado".
+
+| se a razão cair para ~1 em… | a causa é… |
+|---|---|
+| `sem_momento` | o momento — mas o braço joga fora a redução de variância junto |
+| `momento_descontado` | o momento, com o conserto do `baselines` (`lr = η·(1−μ)`) |
+| `sem_clip` | o `clipnorm` do PPO caindo sobre a direção já pré-condicionada |
+| **nenhum** | a Fisher aproximada — a §2 sobrevive e o ACEKTR mantém a premissa |
+
+**A forma importa.** Medido em CPU: na forma do contrato (512×5, `resnet_small`) o
+`controle` dá 15,3×; numa forma reduzida (64×5, `resnet_tiny`) dá **0,9×** — o fenômeno
+some. Lote 8× menor, estouro 17× menor, que é o que a hipótese do momento prevê e a da
+Fisher não. Não encolha `ENVS` para economizar: você mediria outra coisa.
+"""
+
+DIAG_KL_CODE = '''import time
+
+import numpy as np
+
+ITERS = 60      # @param {type:"integer"}
+ENVS = 512      # @param {type:"integer"}
+SO_ESTES = ""   # @param {type:"string"}
+
+# `kl_calibrado=False` entra aqui e nao vem do BRACOS: a calibracao esconde a causa.
+_ARMS = {k: {**v, "kl_calibrado": False} for k, v in BRACOS.items()}
+if SO_ESTES.strip():
+    _ARMS = {k: _ARMS[k] for k in
+             [x.strip() for x in SO_ESTES.split(",") if x.strip()]}
+
+print(f"{ITERS} atualizacoes por braco · {ENVS} ambientes · {REDE} · "
+      f"kl_calibrado=False em todos")
+print()
+print(f"{'braco':>24} {'KL mediana':>11} {'razao':>8} {'p90':>8} {'min':>6}")
+_linhas = {}
+for _nome, _extra in _ARMS.items():
+    _t0 = time.time()
+    _c = ACKTRConfig(seed=SEMENTE, net=REDE, num_envs=ENVS, total_steps=10**9,
+                     eval_every_steps=10**9, log_every_steps=10**9,
+                     salvar_gif=False, salvar_grafico=False,
+                     ckpt_dir="/tmp/diag_kl", runs_dir="/tmp/diag_kl", **_extra)
+    _ag = ACKTR(_c)
+    _r = []
+    for _i in range(ITERS):
+        _st = _ag.iterate()
+        if _st and _st.get("kl") is not None:
+            _r.append(_st["kl"] / max(_st.get("kl_alvo_efetivo") or _c.kl_max, 1e-12))
+    # as 20 primeiras rodam com a media movel do K-FAC ainda crua (o `baselines` tem um
+    # `cold_iter=100` que este repositorio nao tem) e ficam de fora da mediana
+    _v = np.array(_r[20:] or _r)
+    _linhas[_nome] = float(np.median(_v))
+    print(f"{_nome:>24} {np.median(np.array(_r[20:] or _r)) * _c.kl_max:>11.5f} "
+          f"{_linhas[_nome]:>7.1f}x {np.quantile(_v, 0.9):>7.1f}x "
+          f"{time.time() - _t0:>5.0f}s", flush=True)
+    del _ag
+
+_base = _linhas.get("controle")
+if _base and len(_linhas) > 1:
+    print()
+    print("fracao do EXCESSO removida (1,0x e o alvo; o excesso e `razao - 1`):")
+    for _n, _q in _linhas.items():
+        if _n == "controle":
+            continue
+        _f = 1.0 - max(_q - 1, 0) / max(_base - 1, 1e-9)
+        _lado = "ABAIXO do alvo" if _q < 0.8 else "acima" if _q > 1.25 else "no alvo"
+        print(f"  {_n:>24}: {_f:6.1%}   (razao {_q:.1f}x, {_lado})")
+    print()
+    print("Um braco que passa do alvo para BAIXO tambem falsifica a Fisher: um fator")
+    print("que corrige demais nao pode estar corrigindo um erro de curvatura.")
+'''
+
+
+BRACOS_ACKTR = [
+    # os dois suspeitos que nao sao a Fisher, e as combinacoes
+    "sem_momento", "momento_descontado", "sem_clip", "sem_momento_sem_clip",
+    # o alvo do paper, que o repositorio nao usa
+    "kl_do_paper", "kl_do_paper_descontado",
+    # controle
+    "controle",
+]
+
+BRACO_PADRAO_ACKTR = "momento_descontado"
+
+_PRE_CFG_ACKTR = """BRACOS = {
+    # `kl_calibrado=False` em TODOS: ligado, ele mede a razao e pede `kl_max/c`, de modo
+    # que a KL entregue converge para o alvo QUALQUER que seja a causa. Medir com ele
+    # ligado responderia sempre "esta calibrado". Ver §2.36.
+
+    # ------------------------------------------------- o suspeito numero um: o momento
+    # `escala_kl` devolve eta tal que UM passo `eta*Delta` induz `kl_max`. Ele e
+    # atribuido como learning_rate de um SGD(momentum=0.9, nesterov=True): em regime o
+    # deslocamento e ate `eta*Delta/(1-mu)` = 10x isso, e a KL vai com o QUADRADO.
+    # O baselines faz MomentumOptimizer(lr*(1-momentum), momentum) justamente por isso.
+
+    # joga o momento fora - responde a pergunta, mas perde a reducao de variancia.
+    # MEDIDO: 15,3x -> 2,0x, isto e, 93% do excesso.
+    "sem_momento":           {"momento": 0.0, "kl_calibrado": False},
+    # o conserto do baselines: desconta (1-mu) e mantem o momento. MEDIDO: leva a razao
+    # de 15,3x para 0,1x - ou seja, corrige DEMAIS. O (1-mu) supoe acumulo total (10x),
+    # e o acumulo real e de ~2-3x porque os gradientes so sao parcialmente correlacionados.
+    "momento_descontado":    {"descontar_momento": True, "kl_calibrado": False},
+
+    # -------------------------------------------- o suspeito numero dois: o clipnorm
+    # `max_grad_norm=0.5` vem do PPO e o Keras clipa POR VARIAVEL, dentro do
+    # apply_gradients - sobre a direcao ja pre-condicionada. No baselines o clip nunca
+    # toca a direcao natural. Distorce a razao entre camadas que e a razao de ser do
+    # K-FAC e invalida o eta que a formula da KL calculou.
+    "sem_clip":              {"max_grad_norm": 0.0, "kl_calibrado": False},
+    "sem_momento_sem_clip":  {"momento": 0.0, "max_grad_norm": 0.0,
+                              "kl_calibrado": False},
+
+    # ------------------------------------------------ o alvo de KL do paper de verdade
+    # Wu et al. usam 0,001-0,002; aqui `kl_max` e 1,5e-2, uma regiao 7-15x mais larga.
+    # O `98_acktr_kl_nominal` ja mede isso COM a calibracao; aqui e sem, e junto com o
+    # conserto do momento - que e a combinacao que o baselines de fato roda.
+    "kl_do_paper":             {"kl_max": 2e-3, "kl_calibrado": False},
+    "kl_do_paper_descontado":  {"kl_max": 2e-3, "descontar_momento": True,
+                                "kl_calibrado": False},
+
+    # o de hoje, com a calibracao desligada: e ele que produz a razao de 4,4x a 12,4x
+    "controle": {"kl_calibrado": False},
+}
+print(f"braco: {BRACO}  (o padrao e o 08_acktr; aqui se testa de onde vem o estouro)")
+for _k, _v in sorted(BRACOS[BRACO].items()):
+    print(f"   {_k} = {_v!r}")
+
+"""
+
+
 ABLACOES = {
     "alphazero": (BRACOS_ABLACAO, BRACO_PADRAO, _PRE_CFG_ABLACAO),
     "muzero": (BRACOS_MUZERO, BRACO_PADRAO_MUZERO, _PRE_CFG_MUZERO),
+    "acktr": (BRACOS_ACKTR, BRACO_PADRAO_ACKTR, _PRE_CFG_ACKTR),
 }
 
 
@@ -917,6 +1086,67 @@ NOTEBOOKS = [
                   "Compare com `03_rainbow` na mesma semente. **Uma semente de cada lado** "
                   "— o tamanho do efeito não está estabelecido, a diferença qualitativa "
                   "está. Ver `docs/REVISAO_ALGORITMOS.md` §2.25.",
+    },
+    {
+        "arquivo": "91_acktr_ablacoes.ipynb",
+        "titulo": "ACKTR — de onde vem o estouro da região de confiança",
+        "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
+                    "snakeai/agents/acktr.py"],
+        "agente": "ACKTR",
+        "config": "ACKTRConfig",
+        "param_braco": "acktr",
+        "celulas_extra": [{"md": DIAG_KL_MD, "codigo": DIAG_KL_CODE,
+                           "titulo": "Diagnóstico da KL"}],
+        "resumo":
+            "**Antes de rodar qualquer braço daqui, rode `tools/diag_acktr_kl.py`.** "
+            "A pergunta deste notebook é sobre a KL **por atualização**, não sobre o "
+            "score no fim — e ela se responde em ~3 min por braço numa T4, contra 0,5 h "
+            "de treino completo. Este notebook existe para *confirmar* o que o "
+            "diagnóstico apontar, com a curva oficial junto.\n\n"
+            "---\n\n"
+            "### O problema\n\n"
+            "`escala_kl` devolve `η = √(2·kl_max / Δᵀ∇)`: o passo tal que **uma** "
+            "atualização `ηΔ` induz `kl_max`. A KL medida sai de **4,4× a 12,4×** disso "
+            "(quintis de uma execução de 5 M). A revisão atribui a diferença à Fisher "
+            "aproximada subestimar a curvatura — e **essa atribuição é a premissa do "
+            "ACEKTR**, que existe para corrigi-la com autovalores exatos.\n\n"
+            "Há dois outros suspeitos no mesmo lugar, e nenhum é a Fisher:\n\n"
+            "1. **O momento.** `η` é atribuído como `learning_rate` de um "
+            "`SGD(momentum=0.9, nesterov=True)`. Com momento, o deslocamento em regime é "
+            "até `ηΔ/(1−μ) = 10·ηΔ`, e a KL vai com o **quadrado** do passo. Os "
+            "4,4×–12,4× medidos correspondem a uma amplificação de 2,1×–3,5× — "
+            "exatamente o que um momento de 0,9 sobre gradientes parcialmente "
+            "correlacionados produz. O `baselines` original escreve "
+            "`MomentumOptimizer(lr·(1−momentum), momentum)`, e o fator `(1−μ)` está lá "
+            "justamente para cancelar isto.\n"
+            "2. **O `clipnorm`.** O `max_grad_norm = 0,5` herdado do PPO é aplicado pelo "
+            "Keras **por variável, dentro do `apply_gradients`** — sobre a direção já "
+            "pré-condicionada. No `baselines` o clip só existe no caminho SGD *cold* e "
+            "nunca toca a direção natural. Direções naturais com `damping = 1e-2` têm "
+            "norma bem maior que as cruas, então o clip provavelmente age quase sempre: "
+            "distorce a razão entre camadas que é a razão de ser do K-FAC.\n\n"
+            "### O que decide entre eles\n\n"
+            "O padrão temporal **não** decide: a revisão nota que o estouro é maior no "
+            "começo e usa isso a favor da Fisher (\"o erro encolhe conforme a média "
+            "móvel dos fatores amadurece\"), mas gradientes sucessivos também são muito "
+            "mais correlacionados no começo do treino, quando a política se move numa "
+            "direção só. Os dois mecanismos preveem a mesma curva. **Só a intervenção "
+            "separa.**\n\n"
+            "`kl_calibrado = False` em **todos** os braços, e isso não é detalhe: ligado, "
+            "ele mede a razão e pede `kl_max/c`, de modo que a KL entregue converge para "
+            "o alvo *qualquer que seja a causa*. Medir com ele ligado responderia sempre "
+            "\"está calibrado\".\n\n"
+            "### Como ler o resultado\n\n"
+            "| se a razão `KL/alvo` cair para ~1 em… | a causa é… |\n"
+            "|---|---|\n"
+            "| `sem_momento` | o momento — mas este braço joga fora a redução de variância |\n"
+            "| `momento_descontado` | o momento, e **este é o conserto certo** (o do `baselines`) |\n"
+            "| `sem_clip` | o `clipnorm` sobre a direção natural |\n"
+            "| `sem_momento_sem_clip` | os dois juntos |\n"
+            "| **nenhum** | a Fisher aproximada — a §2 sobrevive e o ACEKTR mantém a premissa |\n\n"
+            "O braço padrão é `momento_descontado` porque é o único que, se estiver "
+            "certo, é também o conserto que se quer manter. Três sementes oficiais do "
+            "ACKTR estão gravadas: **nada aqui vira padrão sem medição.**",
     },
     {
         "arquivo": "98_acktr_kl_nominal.ipynb",

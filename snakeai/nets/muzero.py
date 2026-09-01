@@ -81,7 +81,8 @@ def build_representacao(board_size=10, preset="resnet_small", nome="h"):
     return keras.Model(inp, x, name="representacao")
 
 
-def build_dinamica(board_size=10, preset="resnet_small", n_actions=N_ACTIONS, nome="g"):
+def build_dinamica(board_size=10, preset="resnet_small", n_actions=N_ACTIONS,
+                   nome="g", n_suporte=0):
     """`(estado, ação) → (estado', recompensa)`.
 
     A ação entra como **planos constantes** concatenados ao estado — um plano de uns no
@@ -106,12 +107,16 @@ def build_dinamica(board_size=10, preset="resnet_small", n_actions=N_ACTIONS, no
     r = layers.Activation("relu", name=f"{nome}_ra")(r)
     r = layers.Flatten(name=f"{nome}_rf")(r)
     r = layers.Dense(64, activation="relu", name=f"{nome}_rd")(r)
-    recompensa = layers.Dense(1, name="recompensa")(r)
+    # `n_suporte > 0` troca a cabeça escalar por logits sobre um suporte discreto —
+    # o Apêndice F do MuZero. A saída deixa de ser um número e passa a ser uma
+    # distribuição; quem lê converte por esperança. Ver §2.33.
+    recompensa = layers.Dense(max(1, n_suporte), name="recompensa")(r)
 
     return keras.Model([s, a], [novo, recompensa], name="dinamica")
 
 
-def build_predicao(board_size=10, preset="resnet_small", n_actions=N_ACTIONS, nome="f"):
+def build_predicao(board_size=10, preset="resnet_small", n_actions=N_ACTIONS,
+                   nome="f", n_suporte=0):
     """`estado oculto → (logits de política, valor)`."""
     largura, _ = PRESETS[preset]
     s = keras.Input(shape=(board_size, board_size, largura), name="estado")
@@ -129,6 +134,6 @@ def build_predicao(board_size=10, preset="resnet_small", n_actions=N_ACTIONS, no
     v = layers.Activation("relu", name=f"{nome}_va")(v)
     v = layers.Flatten(name=f"{nome}_vf")(v)
     v = layers.Dense(128, activation="relu", name=f"{nome}_vd")(v)
-    valor = layers.Dense(1, name="valor")(v)
+    valor = layers.Dense(max(1, n_suporte), name="valor")(v)
 
     return keras.Model(s, [logits, valor], name="predicao")

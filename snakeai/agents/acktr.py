@@ -160,6 +160,25 @@ class ACKTRConfig(A2CConfig):
 
     optimizer: str = "sgd"
 
+    # ------------------------------------------------------------------------------
+    # §2.36 — os dois suspeitos do estouro da KL que não são a Fisher.
+    # ------------------------------------------------------------------------------
+
+    #: Momento do SGD que aplica a direção natural. `escala_kl` devolve `η` tal que **um**
+    #: passo `ηΔ` induz `kl_max`; com momento, o deslocamento em regime é até `ηΔ/(1−μ)`,
+    #: e a KL vai com o **quadrado** disso. Medir `momento = 0` isola o efeito.
+    momento: float = 0.9
+    #: `lr = η·(1−μ)`, que é o que o `baselines` faz (`MomentumOptimizer(lr*(1-momentum),
+    #: momentum)`). É o conserto **certo**, porque preserva a redução de variância do
+    #: momento em vez de jogá-la fora junto com o estouro.
+    descontar_momento: bool = False
+
+    @property
+    def opt_extra(self):
+        """Repassado a `cria_otimizador`. O `nesterov` acompanha o momento: com `μ = 0`
+        ele não tem o que antecipar, e deixá-lo ligado só confunde a leitura do braço."""
+        return {"momentum": self.momento, "nesterov": self.momento > 0}
+
 
 class ACKTR(A2C):
     """A2C + K-FAC. Ver o docstring do módulo para o porquê da herança direta."""
@@ -267,6 +286,11 @@ class ACKTR(A2C):
         naturais = self.kfac.precondiciona(grads)
         alvo_efetivo = cfg.kl_max / self._fator_kl if cfg.kl_calibrado else cfg.kl_max
         eta = self.kfac.escala_kl(naturais, grads, alvo_efetivo, self.lr())
+        if cfg.descontar_momento and cfg.momento > 0:
+            # `escala_kl` dimensiona UM passo. Com momento, o deslocamento acumulado é
+            # `η/(1−μ)` vezes a direção — então pedir `η·(1−μ)` devolve à atualização em
+            # regime o tamanho que a fórmula da KL calculou.
+            eta = eta * (1.0 - cfg.momento)
         t_kfac = time.perf_counter() - t0
 
         self.optimizer.learning_rate.assign(float(eta))

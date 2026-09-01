@@ -120,8 +120,18 @@ class MuZeroConfig(BaseConfig):
     #: valor na escala **real**, porque o backup soma `recompensa + γ·valor`.
     valor_symlog: bool = True
 
-    #: §2.29 — temperatura por lance do episódio (o agendamento do paper) e alvo de
-    #: política sem temperar. Ver as notas homônimas em `alphazero.py`.
+    #: §2.29 — temperatura por lance do episódio e alvo de política sem temperar. Ver as
+    #: notas homônimas em `alphazero.py`.
+    #:
+    #: **Atenção ao qual dos dois agendamentos do paper isto é** (§2.34). O Apêndice D
+    #: descreve dois: nos jogos de tabuleiro, τ = 1 nos primeiros `k` lances e frio
+    #: depois; em **Atari** — *"a variation of this scheme"* — as ações são amostradas da
+    #: contagem de visitas *"throughout the duration of each game, instead of just the
+    #: first k moves"*, com τ decaindo por **passo de treino** (1,0 na primeira metade,
+    #: 0,5 no terceiro quarto, 0,25 no último). `temp_passos` é o primeiro. Snake tem
+    #: episódios de ~1.200 lances, então ele deixa 97,5% de cada episódio em τ = 0,25
+    #: desde a primeira iteração — muito menos exploração do que o paper faria em Atari,
+    #: num jogo de recompensa esparsa. `temp_esquema` traz o segundo.
     temp_passos: int = 30
     temp_alvo: float = 1.0
     #: Fecha o último passo da janela de coleta, que hoje teria alvo sem bootstrap.
@@ -180,10 +190,28 @@ class MuZeroConfig(BaseConfig):
     temp_inicio: float = 1.0
     temp_fim: float = 0.25
     temp_frac: float = 0.5
+    #: `"lance"` usa `temp_passos` (o esquema de jogo de tabuleiro, o que está aqui hoje).
+    #: `"treino"` é o de Atari: amostra durante o episódio inteiro, com τ em degraus por
+    #: fração do orçamento. Ver §2.34.
+    temp_esquema: str = "lance"
 
     # ------------------------------------------------------------------------------
     # Reanalyse (Apêndice H). Ver §2.32.
     # ------------------------------------------------------------------------------
+
+    #: Expoente `α` do replay priorizado do Apêndice G — `P(i) ∝ p_i^α`, com
+    #: `p_i = |ν_i − z_i|`: a distância entre o valor que a **busca** encontrou na raiz e
+    #: o retorno de n passos que o jogo de fato entregou. `0` sorteia uniforme, que é o
+    #: que este repositório sempre fez (e é o que o paper faz nos jogos de tabuleiro; em
+    #: Atari ele prioriza, com `α = β = 1`).
+    #:
+    #: Repare que as duas quantidades são fixas no instante da coleta, então a prioridade
+    #: **não é atualizada** depois — ao contrário da do DQN, que segue o erro TD atual.
+    #: Isso torna a implementação bem mais simples e é o que o paper especifica.
+    per: float = 0.0
+    #: Expoente `β` da correção de viés de amostragem. `w_i = (1/N · 1/P(i))^β`, e o paper
+    #: usa `β = 1` — correção total, sem o *annealing* que o PER do DQN faz.
+    per_beta: float = 1.0
 
     #: Fração de cada minilote cujo alvo de política do **passo 0** é refeito com a rede
     #: atual, antes do passo de gradiente. `0,8` é o número do paper; `0` desliga.
@@ -211,6 +239,37 @@ class MuZeroConfig(BaseConfig):
     #: menor que o da coleta.
     reanalise_sims: int = 0
 
+    # ------------------------------------------------------------------------------
+    # Apêndice F — a cabeça categórica e a transformação de escala. Ver §2.33.
+    # ------------------------------------------------------------------------------
+
+    #: Átomos do suporte discreto do valor e da recompensa. `0` mantém a cabeça escalar
+    #: com erro quadrático, que é o que este repositório sempre teve.
+    #:
+    #: O paper não faz regressão escalar: ele projeta o alvo num **suporte discreto** com
+    #: two-hot (um alvo de 3,7 vira peso 0,3 no átomo 3 e 0,7 no átomo 4) e treina a
+    #: cabeça com **entropia cruzada**, lendo o número de volta pela esperança da softmax.
+    #: São 601 átomos para uma faixa de `[-300, 300]` em Atari; aqui a faixa é a do
+    #: `symlog`, `[-LIMITE, +LIMITE]`, então 121 átomos dão o mesmo espaçamento relativo.
+    #:
+    #: Por que isto pode importar aqui: com a cabeça escalar, `perda_v` é um MSE cuja
+    #: escala depende do alvo e cujo gradiente cresce com o erro — e §2.31 mediu o valor
+    #: em `[6,7; 17,5]` de banda na escala real, que é o número que a árvore soma no
+    #: backup. Entropia cruzada sobre um suporte fixo tem gradiente limitado e calibra
+    #: uma distribuição em vez de um ponto.
+    n_suporte: int = 0
+    #: Teto do suporte, **na escala real**. O paper usa 601 átomos em `[-300, 300]`
+    #: porque um retorno de Atari é grande; copiar esses números aqui daria resolução de
+    #: ~3 pontos perto de zero, num jogo cujo valor medido vive entre 0 e ~11. Dimensionar
+    #: pelo domínio é o que preserva o espírito: com 60 e 121 átomos, a resolução perto de
+    #: zero fica em ~0,07 e perto de 10 em ~0,75, para as duas transformações.
+    teto_suporte: float = 60.0
+    #: `"symlog"` é o que está aqui desde §2.28 (DreamerV3). `"h"` é a do paper —
+    #: `h(x) = sign(x)(√(|x|+1) − 1 + εx)`, do R2D2, com `ε = 0,001`. As duas comprimem;
+    #: a `h` cresce como √x e a `symlog` como log x, então a `h` preserva mais resolução
+    #: longe de zero, que é onde o valor deste jogo vive quando o agente é bom.
+    transformacao: str = "symlog"
+
     #: **0,25 é o valor do paper**, não um chute: o Apêndice H baixa o alvo de valor para
     #: 0,25 contra 1,0 de política e recompensa, e diz por quê — "avoid overfitting of the
     #: value function". Subir isto é ir contra o paper, não em direção a ele.
@@ -229,8 +288,16 @@ class MuZero(AgentBase):
         keras.utils.set_random_seed(cfg.seed)
 
         self.h = build_representacao(cfg.board_size, cfg.net)
-        self.g = build_dinamica(cfg.board_size, cfg.net)
-        self.f = build_predicao(cfg.board_size, cfg.net)
+        self.g = build_dinamica(cfg.board_size, cfg.net, n_suporte=cfg.n_suporte)
+        self.f = build_predicao(cfg.board_size, cfg.net, n_suporte=cfg.n_suporte)
+        # os átomos vivem na escala **transformada**, e são constantes do grafo
+        if cfg.n_suporte > 0:
+            teto = float(self._comprime(tf.constant(cfg.teto_suporte)).numpy())
+            self.atomos = tf.constant(
+                np.linspace(-teto, teto, cfg.n_suporte, dtype=np.float32))
+            self.passo_suporte = float(2 * teto / (cfg.n_suporte - 1))
+        else:
+            self.atomos, self.passo_suporte = None, 0.0
         self.largura = PRESETS[cfg.net][0]
 
         self.optimizer = keras.optimizers.Adam(cfg.lr, clipnorm=cfg.max_grad_norm)
@@ -260,6 +327,8 @@ class MuZero(AgentBase):
         self._buf_r = np.zeros((M, K), dtype=np.float32)
         #: Quais passos do desenrolar são reais. Ver a nota em `collect`.
         self._buf_vivo = np.zeros((M, K + 1), dtype=np.float32)
+        #: `|ν − z|` do Apêndice G, gravado na coleta e nunca mais tocado.
+        self._buf_prio = np.zeros(M, dtype=np.float32)
         self._pos, self._cheio = 0, 0
 
     def _variaveis(self):
@@ -303,27 +372,96 @@ class MuZero(AgentBase):
         x = tf.clip_by_value(x, -MuZero.LIMITE_SYMLOG, MuZero.LIMITE_SYMLOG)
         return tf.sign(x) * tf.math.expm1(tf.abs(x))
 
+    #: `ε` da transformação do paper. Existe para `h` ser invertível e ter derivada
+    #: limitada longe de zero; sem ele a inversa explode.
+    EPS_H = 1e-3
+    #: O teto do `symexp` vale ~402 na escala real (`e⁶ − 1`). `h` cresce como √x, então
+    #: o **mesmo** teto real pede um limite diferente: `h(402) ≈ 19,5`. Reusar o 6,0 aqui
+    #: cortaria o valor em 47 — um teto que este jogo pode encostar, e um corte que não
+    #: levanta exceção nenhuma: só devolve um valor sistematicamente baixo para a árvore.
+    LIMITE_H = 19.5
+
+    @staticmethod
+    def _h(x):
+        """`sign(x)(√(|x|+1) − 1 + εx)` — R2D2, e o que o Apêndice F do MuZero usa."""
+        return tf.sign(x) * (tf.sqrt(tf.abs(x) + 1.0) - 1.0) + MuZero.EPS_H * x
+
+    @staticmethod
+    def _h_inv(x):
+        """A inversa fechada de `_h`. Vale a pena escrever a conta porque errá-la não
+        levanta exceção nenhuma — só devolve um valor sistematicamente torto para a
+        árvore somar no backup."""
+        x = tf.clip_by_value(x, -MuZero.LIMITE_H, MuZero.LIMITE_H)
+        e = MuZero.EPS_H
+        a = tf.abs(x)
+        raiz = tf.sqrt(1.0 + 4.0 * e * (a + 1.0 + e))
+        return tf.sign(x) * (tf.square((raiz - 1.0) / (2.0 * e)) - 1.0)
+
+    def _comprime(self, x):
+        return self._h(x) if self.cfg.transformacao == "h" else self._symlog(x)
+
+    def _descomprime(self, x):
+        return self._h_inv(x) if self.cfg.transformacao == "h" else self._symexp(x)
+
+    def _do_suporte(self, saida):
+        """Saída da cabeça → escalar **na escala transformada**.
+
+        É a única costura entre a cabeça escalar e a categórica: com `n_suporte = 0` ela
+        só tira a dimensão sobrando; com suporte, é a esperança da softmax sobre os
+        átomos. Todo o resto do agente continua vendo um escalar.
+        """
+        if self.cfg.n_suporte <= 0:
+            return tf.squeeze(saida, -1)
+        return tf.reduce_sum(tf.nn.softmax(saida) * self.atomos, -1)
+
+    def _dois_quentes(self, x):
+        """Escalar na escala transformada → alvo two-hot `(..., n_suporte)`.
+
+        Um alvo de 3,7 num suporte de passo 1 vira 0,3 no átomo 3 e 0,7 no átomo 4 — a
+        projeção que faz a esperança da distribuição reproduzir o número exato.
+        """
+        n = self.cfg.n_suporte
+        x = tf.clip_by_value(x, self.atomos[0], self.atomos[-1])
+        pos = (x - self.atomos[0]) / self.passo_suporte
+        baixo = tf.floor(pos)
+        peso = pos - baixo
+        i = tf.cast(baixo, tf.int32)
+        return (tf.one_hot(i, n) * (1.0 - peso)[..., None]
+                + tf.one_hot(tf.minimum(i + 1, n - 1), n) * peso[..., None])
+
+    def _perda_escalar(self, saida, alvo):
+        """Entropia cruzada com suporte; erro quadrático sem. Mesma assinatura, para o
+        laço do desenrolar não precisar saber qual dos dois está ligado."""
+        if self.cfg.n_suporte <= 0:
+            return tf.square(tf.squeeze(saida, -1) - alvo)
+        return -tf.reduce_sum(self._dois_quentes(alvo) * tf.nn.log_softmax(saida), -1)
+
+    def _recompensa_real(self, r):
+        """A recompensa que o backup soma. Espelha `alvo_r` em `_passo`: comprimida só
+        quando há suporte."""
+        return self._descomprime(r) if self.cfg.n_suporte > 0 else r
+
     def _valor_real(self, valor):
         """A escala que o MCTS precisa: ele soma `recompensa + γ·valor`, e a recompensa
         é a que a rede `g` prevê, na escala do mundo."""
-        return self._symexp(valor) if self.cfg.valor_symlog else valor
+        return self._descomprime(valor) if self.cfg.valor_symlog else valor
 
     @tf.function(reduce_retracing=True)
     def _repr_predicao(self, obs, mask):
         s = self.h(obs, training=False)
         logits, valor = self.f(s, training=False)
         logits = tf.where(mask, logits, tf.fill(tf.shape(logits), MASK_NEG))
-        return s, tf.nn.softmax(logits), self._valor_real(tf.squeeze(valor, -1))
+        return s, tf.nn.softmax(logits), self._valor_real(self._do_suporte(valor))
 
     @tf.function(reduce_retracing=True)
     def _predicao(self, s):
         logits, valor = self.f(s, training=False)
-        return tf.nn.softmax(logits), self._valor_real(tf.squeeze(valor, -1))
+        return tf.nn.softmax(logits), self._valor_real(self._do_suporte(valor))
 
     @tf.function(reduce_retracing=True)
     def _dinamica_tf(self, s, planos):
         novo, r = self.g([s, planos], training=False)
-        return novo, tf.squeeze(r, -1)
+        return novo, self._recompensa_real(self._do_suporte(r))
 
     def _planos_de_acao(self, acoes, n):
         b = self.cfg.board_size
@@ -411,6 +549,11 @@ class MuZero(AgentBase):
         metade do orçamento inteiro é jogada com τ = 1, inclusive nas posições apertadas.
         """
         cfg = self.cfg
+        if cfg.temp_esquema == "treino":
+            # Apêndice D, Atari: os degraus são por passo de TREINO e valem para o
+            # episódio inteiro. Um escalar, e de propósito — o lance não entra na conta.
+            f = self.frac()
+            return 1.0 if f < 0.5 else (0.5 if f < 0.75 else 0.25)
         if cfg.temp_passos > 0:
             return np.where(self.env.steps < cfg.temp_passos,
                             cfg.temp_inicio, cfg.temp_fim).astype(np.float64)
@@ -531,6 +674,9 @@ class MuZero(AgentBase):
             np.stack([_janela(z, k) for k in range(K + 1)], axis=-1).reshape(-1, K + 1),
             np.stack([_janela(rew_b, k) for k in range(K)], axis=-1).reshape(-1, K),
             vivo_k.reshape(-1, K + 1),
+            # `|ν − z|`: o quanto a busca e o jogo discordaram naquele estado. Não é o
+            # erro da rede — é o erro do alvo, e por isso não muda depois.
+            np.abs(v_b - z).reshape(-1),
         )
 
         self.global_step += T * N
@@ -544,7 +690,7 @@ class MuZero(AgentBase):
             "memoria": self._cheio,
         }
 
-    def _guardar(self, obs, mask, act, pi, z, r, vivo):
+    def _guardar(self, obs, mask, act, pi, z, r, vivo, prio=None):
         k = len(obs)
         idx = (self._pos + np.arange(k)) % self.cfg.memory_size
         self._buf_obs[idx] = obs
@@ -554,6 +700,7 @@ class MuZero(AgentBase):
         self._buf_z[idx] = z
         self._buf_r[idx] = r
         self._buf_vivo[idx] = vivo
+        self._buf_prio[idx] = 0.0 if prio is None else prio
         self._pos = int((self._pos + k) % self.cfg.memory_size)
         self._cheio = min(self._cheio + k, self.cfg.memory_size)
 
@@ -565,7 +712,7 @@ class MuZero(AgentBase):
         return tf.reduce_sum(x * m) / tf.maximum(tf.reduce_sum(m), 1.0)
 
     @tf.function(reduce_retracing=True)
-    def _passo(self, obs, mask, act, pi_alvo, z, r_alvo, vivo, coef_v, coef_r):
+    def _passo(self, obs, mask, act, pi_alvo, z, r_alvo, vivo, w, coef_v, coef_r):
         K = tf.shape(act)[1]
         with tf.GradientTape() as tape:
             s = self.h(obs, training=True)
@@ -573,12 +720,23 @@ class MuZero(AgentBase):
             logits = tf.where(mask, logits, tf.fill(tf.shape(logits), MASK_NEG))
             logp = tf.nn.log_softmax(logits)
 
-            alvo_v = self._symlog(z) if self.cfg.valor_symlog else z
+            alvo_v = self._comprime(z) if self.cfg.valor_symlog else z
+            # a recompensa só é comprimida quando há suporte: sem ele a cabeça é uma
+            # regressão na escala do mundo, como sempre foi. Com suporte, alvo e átomos
+            # têm de morar na mesma escala — senão a projeção two-hot satura no primeiro
+            # átomo e a cabeça aprende a prever a borda.
+            alvo_r = self._comprime(r_alvo) if self.cfg.n_suporte > 0 else r_alvo
             # o passo 0 fica separado: é o único que a métrica oficial mede, e sem
             # instrumentá-lo não dá para saber se a destilação falha nele ou nos passos
             # imaginados — a soma sozinha esconde os dois casos
-            perda_pi_0 = -tf.reduce_mean(tf.reduce_sum(pi_alvo[:, 0] * logp, -1))
-            perda_v = tf.reduce_mean(tf.square(tf.squeeze(valor, -1) - alvo_v[:, 0]))
+            # `w` é o peso de importância do replay priorizado; sem PER ele é 1 em toda
+            # linha e a média ponderada é a média. Ele entra como PESO DA MÁSCARA nos
+            # passos do desenrolar, o que é exatamente a mesma conta e evita um segundo
+            # caminho de redução para manter em pé.
+            perda_pi_0 = -self._media_mascarada(
+                tf.reduce_sum(pi_alvo[:, 0] * logp, -1), w)
+            perda_v = self._media_mascarada(
+                self._perda_escalar(valor, alvo_v[:, 0]), w)
             perda_pi_k = tf.constant(0.0)
             perda_r = tf.constant(0.0)
             peso = (1.0 / self.cfg.unroll) if self.cfg.normaliza_unroll else 1.0
@@ -599,14 +757,14 @@ class MuZero(AgentBase):
                 # (precisa estar vivo lá, `vivo[:, k]`) e produz alvos do instante
                 # `t+k+1` (`vivo[:, k + 1]`).
                 perda_pi_k += peso * self._media_mascarada(
-                    -tf.reduce_sum(pi_alvo[:, k + 1] * logp_k, -1), vivo[:, k + 1])
+                    -tf.reduce_sum(pi_alvo[:, k + 1] * logp_k, -1), vivo[:, k + 1] * w)
                 perda_v += peso * self._media_mascarada(
-                    tf.square(tf.squeeze(valor_k, -1) - alvo_v[:, k + 1]), vivo[:, k + 1])
+                    self._perda_escalar(valor_k, alvo_v[:, k + 1]), vivo[:, k + 1] * w)
                 # a âncora do modelo no mundo real: sem ela a dinâmica pode inventar
                 # qualquer física internamente consistente — e treiná-la contra a
                 # recompensa de outra partida é pior que não treinar
                 perda_r += peso * self._media_mascarada(
-                    tf.square(tf.squeeze(rec, -1) - r_alvo[:, k]), vivo[:, k])
+                    self._perda_escalar(rec, alvo_r[:, k]), vivo[:, k] * w)
 
             perda_pi = perda_pi_0 + perda_pi_k
             perda = perda_pi + coef_v * perda_v + coef_r * perda_r
@@ -677,9 +835,26 @@ class MuZero(AgentBase):
             self.optimizer.learning_rate.assign(lr)
         saidas = []
         refeitos = 0
+        probs = None
+        if cfg.per > 0:
+            p = np.power(self._buf_prio[:self._cheio] + 1e-6, cfg.per)
+            soma = p.sum()
+            # com o buffer recém-criado, ou num trecho em que busca e jogo concordaram
+            # exatamente, `p` pode somar zero — e aí o sorteio proporcional não existe.
+            # Cair para o uniforme é o comportamento certo, e silencioso de propósito.
+            probs = (p / soma) if soma > 0 else None
         n_reanalise = int(round(cfg.reanalise * cfg.batch_size))
         for _ in range(cfg.epochs_por_iter):
-            i = self.rng.integers(0, self._cheio, size=cfg.batch_size)
+            if probs is None:
+                i = self.rng.integers(0, self._cheio, size=cfg.batch_size)
+                w = np.ones(cfg.batch_size, np.float32)
+            else:
+                i = self.rng.choice(self._cheio, size=cfg.batch_size, p=probs)
+                # `w = (1/(N·P))^β`, normalizado pelo máximo do lote — a mesma convenção
+                # do `memory/replay.py` deste repositório. Sem normalizar, a escala da
+                # perda passaria a depender de qual amostra caiu no lote.
+                w = np.power(1.0 / (self._cheio * probs[i]), cfg.per_beta)
+                w = (w / w.max()).astype(np.float32)
             # antes da leitura do lote, e escrevendo no buffer: o alvo refeito vale para
             # este passo de gradiente **e** para os sorteios futuros que caírem na mesma
             # linha. É o que faz a taxa de refresco compor em vez de se perder.
@@ -693,6 +868,7 @@ class MuZero(AgentBase):
                 tf.convert_to_tensor(self._buf_z[i]),
                 tf.convert_to_tensor(self._buf_r[i]),
                 tf.convert_to_tensor(self._buf_vivo[i]),
+                tf.convert_to_tensor(w),
                 cfg.coef_valor, cfg.coef_recompensa,
             )
             saidas.append((float(p), float(v), float(r), float(p0)))

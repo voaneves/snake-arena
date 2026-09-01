@@ -394,7 +394,9 @@ def _passo_isolado(cfg):
         tf.convert_to_tensor(ag._buf_obs[i]), tf.convert_to_tensor(ag._buf_mask[i]),
         tf.convert_to_tensor(ag._buf_act[i]), tf.convert_to_tensor(ag._buf_pi[i]),
         tf.convert_to_tensor(ag._buf_z[i]), tf.convert_to_tensor(ag._buf_r[i]),
-        tf.convert_to_tensor(ag._buf_vivo[i]), cfg.coef_valor, cfg.coef_recompensa)
+        tf.convert_to_tensor(ag._buf_vivo[i]),
+        tf.ones(cfg.batch_size, tf.float32),        # sem PER, todo peso é 1
+        cfg.coef_valor, cfg.coef_recompensa)
     return float(p), float(p0), ag
 
 
@@ -544,3 +546,196 @@ def test_reanalyse_never_swaps_the_learned_dynamics_for_the_real_one():
     assert ag._busca_reanalise() is ag._busca_reanalise()
     assert ag._busca_reanalise() is not ag.mcts
     assert ag.mcts.num_simulations == 8, "a busca da coleta não é tocada"
+
+
+# ------------------------------------- §2.33 · cabeça categórica e transformação de escala
+def test_the_scalar_head_is_still_the_default():
+    """Nada disto liga sozinho: há uma execução de controle a preservar."""
+    assert MuZeroConfig().n_suporte == 0
+    assert MuZeroConfig().transformacao == "symlog"
+    ag = MuZero(cfg_min(batch_size=16))
+    assert ag.atomos is None
+    assert ag.f.output_shape[1][-1] == 1, "cabeça de valor escalar"
+    assert ag.g.output_shape[1][-1] == 1, "cabeça de recompensa escalar"
+
+
+def test_the_categorical_head_emits_logits_over_the_support():
+    ag = MuZero(cfg_min(batch_size=16, n_suporte=121))
+    assert ag.f.output_shape[1][-1] == 121
+    assert ag.g.output_shape[1][-1] == 121
+    assert ag.atomos.shape == (121,)
+
+
+def test_two_hot_reproduces_the_target_exactly_through_its_expectation():
+    """É a propriedade que define a projeção: um alvo de 3,7 vira 0,3 no átomo 3 e 0,7 no
+    4 justamente para que a esperança devolva 3,7. Errar isto não levanta exceção — só
+    treina a cabeça contra um número que não é o alvo."""
+    ag = MuZero(cfg_min(batch_size=16, n_suporte=121))
+    alvo = tf.constant([-4.0, -1.5, -0.033, 0.0, 0.7, 2.5, 4.0])
+    th = ag._dois_quentes(alvo)
+    assert np.allclose(th.numpy().sum(-1), 1.0, atol=1e-5), "é uma distribuição"
+    assert (th.numpy() > 1e-9).sum(-1).max() <= 2, "no máximo dois átomos, daí o nome"
+    volta = tf.reduce_sum(th * ag.atomos, -1)
+    assert np.allclose(volta.numpy(), alvo.numpy(), atol=1e-4)
+
+
+def test_the_support_is_sized_by_the_domain_and_not_copied_from_atari():
+    """601 átomos em [-300,300] dariam ~3 pontos de resolução perto de zero, num jogo cujo
+    valor medido vive entre 0 e ~11. As duas transformações cobrem a MESMA faixa real."""
+    for t in ("symlog", "h"):
+        ag = MuZero(cfg_min(batch_size=16, n_suporte=121, transformacao=t))
+        reais = ag._descomprime(ag.atomos).numpy()
+        assert reais[0] == pytest.approx(-60.0, rel=1e-3)
+        assert reais[-1] == pytest.approx(60.0, rel=1e-3)
+        assert reais[61] - reais[60] < 0.3, f"{t}: resolução perto de zero"
+
+
+def test_the_categorical_loss_is_cross_entropy_and_is_minimal_at_the_target():
+    ag = MuZero(cfg_min(batch_size=16, n_suporte=121))
+    alvo = tf.constant([0.0, 1.0, -2.0])
+    perfeito = tf.math.log(ag._dois_quentes(alvo) + 1e-9)
+    uniforme = tf.zeros_like(perfeito)
+    assert float(tf.reduce_mean(ag._perda_escalar(uniforme, alvo))) == pytest.approx(
+        float(np.log(121)), rel=1e-3), "sem informação, a CE é ln(n)"
+    assert (float(tf.reduce_mean(ag._perda_escalar(perfeito, alvo)))
+            < float(tf.reduce_mean(ag._perda_escalar(uniforme, alvo))))
+
+
+def test_the_paper_transform_round_trips_and_has_its_own_ceiling():
+    """`h` cresce como √x e o `symexp` como exp, então reusar o limite do symlog cortaria
+    o valor em 47 na escala real — um teto que este jogo encosta, e um corte silencioso."""
+    x = tf.constant([-400.0, -97.0, -20.0, -1.0, 0.0, 1.0, 20.0, 97.0, 400.0])
+    assert np.allclose(MuZero._h_inv(MuZero._h(x)).numpy(), x.numpy(), rtol=1e-4, atol=1e-2)
+    assert MuZero.LIMITE_H > MuZero.LIMITE_SYMLOG
+    # os dois tetos descrevem a MESMA fronteira real
+    teto_h = float(MuZero._h_inv(tf.constant(MuZero.LIMITE_H)))
+    teto_s = float(MuZero._symexp(tf.constant(MuZero.LIMITE_SYMLOG)))
+    assert teto_h == pytest.approx(teto_s, rel=0.05)
+
+
+def test_the_tree_reads_value_and_reward_on_the_real_scale_with_a_categorical_head():
+    """O backup soma `recompensa + γ·valor`, e as duas saem de cabeças categóricas na
+    escala comprimida. Se a volta não acontecer, a árvore soma unidades diferentes."""
+    for kw in ({"n_suporte": 121}, {"n_suporte": 121, "transformacao": "h"}):
+        ag = MuZero(cfg_min(batch_size=16, num_simulations=4, **kw))
+        _s, pri, val = ag._repr_predicao(tf.convert_to_tensor(ag.obs),
+                                         tf.convert_to_tensor(ag.mask))
+        assert np.all(np.isfinite(val.numpy()))
+        assert np.allclose(pri.numpy().sum(-1), 1.0, atol=1e-4)
+        assert np.abs(val.numpy()).max() < 61.0, "dentro do suporte"
+        ag.iterate()
+
+
+def test_training_runs_with_every_combination_of_head_and_transform():
+    for kw in ({}, {"n_suporte": 121}, {"transformacao": "h"},
+               {"n_suporte": 121, "transformacao": "h"}):
+        ag = MuZero(cfg_min(batch_size=16, **kw))
+        ag.iterate()
+        st = ag.iterate()
+        for c in ("perda_pi", "perda_v", "perda_r"):
+            assert np.isfinite(st[c]), f"{kw}: {c}"
+
+
+# ------------------------------------------- §2.34 · o agendamento de temperatura de Atari
+def test_the_board_game_temperature_schedule_is_still_the_default():
+    assert MuZeroConfig().temp_esquema == "lance"
+
+
+def test_the_atari_schedule_steps_by_training_progress_and_not_by_move():
+    """O Apêndice D tem dois agendamentos. O de Atari amostra o episódio INTEIRO, com τ em
+    degraus por passo de treino — e é o que cabe num jogo de ~1.200 lances, onde
+    `temp_passos=30` deixa 97,5% do episódio frio desde a primeira iteração."""
+    ag = MuZero(cfg_min(batch_size=16, temp_esquema="treino", total_steps=1000))
+    for frac, esperado in ((0.0, 1.0), (0.49, 1.0), (0.5, 0.5), (0.74, 0.5),
+                           (0.75, 0.25), (0.99, 0.25)):
+        ag.global_step = int(frac * ag.cfg.total_steps)
+        t = ag.temperatura()
+        assert np.isscalar(t) or np.ndim(t) == 0, "vale para o episódio inteiro"
+        assert float(t) == pytest.approx(esperado)
+
+
+def test_the_move_schedule_leaves_almost_the_whole_episode_cold():
+    """O número que motiva o §2.34: com episódios longos, `temp_passos` quase não age."""
+    ag = MuZero(cfg_min(batch_size=16, temp_passos=30))
+    ag.env.steps[:] = 500                      # meio de um episódio típico do agente bom
+    assert np.all(ag.temperatura() == ag.cfg.temp_fim)
+    ag.env.steps[:] = 5
+    assert np.all(ag.temperatura() == ag.cfg.temp_inicio)
+
+
+# ------------------------------------------- §2.35 · replay priorizado do Apêndice G
+def test_uniform_sampling_is_still_the_default():
+    assert MuZeroConfig().per == 0.0
+    assert MuZeroConfig().per_beta == 1.0
+
+
+def test_the_priority_is_the_gap_between_the_search_and_the_game():
+    """`p = |ν − z|`: o quanto o valor que a BUSCA achou na raiz discordou do retorno que o
+    jogo entregou. Não é o erro da rede — e por isso é fixo no instante da coleta."""
+    ag = MuZero(cfg_min(batch_size=16))
+    ag.collect()
+    p = ag._buf_prio[: ag._cheio]
+    assert np.all(p >= 0.0) and np.any(p > 0.0)
+    # gravada mesmo com o PER desligado: é diagnóstico de graça
+    assert ag.cfg.per == 0.0
+
+
+def test_priorities_are_never_updated_after_collection():
+    """Ao contrário do PER do DQN, que segue o erro TD atual. As duas quantidades do
+    Apêndice G são fixas, e é isso que torna esta implementação simples."""
+    ag = MuZero(cfg_min(batch_size=16, per=1.0))
+    ag.collect()
+    antes = ag._buf_prio.copy()
+    for _ in range(3):
+        ag._aprender()
+    assert np.array_equal(antes, ag._buf_prio)
+
+
+def test_prioritized_sampling_favours_the_rows_where_search_and_game_disagreed():
+    ag = MuZero(cfg_min(batch_size=16, per=1.0, memory_size=400))
+    ag.collect()
+    n = ag._cheio
+    ag._buf_prio[:n] = 1e-6
+    alvos = np.arange(5)
+    ag._buf_prio[alvos] = 100.0
+    p = np.power(ag._buf_prio[:n] + 1e-6, 1.0)
+    probs = p / p.sum()
+    sorteados = ag.rng.choice(n, size=4000, p=probs)
+    fatia = np.isin(sorteados, alvos).mean()
+    assert fatia > 0.9, f"as 5 linhas de prioridade alta levaram só {fatia:.1%} dos sorteios"
+
+
+def test_importance_weights_are_normalised_so_the_loss_scale_does_not_wander():
+    """Sem normalizar, a escala da perda passaria a depender de qual amostra caiu no lote —
+    e o passo do otimizador junto."""
+    ag = MuZero(cfg_min(batch_size=16, per=1.0))
+    ag.collect()
+    n = ag._cheio
+    p = np.power(ag._buf_prio[:n] + 1e-6, ag.cfg.per)
+    probs = p / p.sum()
+    i = ag.rng.choice(n, size=16, p=probs)
+    w = np.power(1.0 / (n * probs[i]), ag.cfg.per_beta)
+    w = w / w.max()
+    assert w.max() == pytest.approx(1.0) and np.all(w > 0)
+    # e o peso é MENOR onde a probabilidade de sorteio foi maior — é essa a correção
+    assert np.corrcoef(probs[i], w)[0, 1] < 0
+
+
+def test_the_weight_is_the_mask_weight_so_no_per_means_no_change():
+    """Com `per=0` todo peso é 1, e a média ponderada tem de dar exatamente a média — senão
+    ligar o PER mudaria o resultado mesmo desligado."""
+    x = tf.constant([[2.0], [4.0]])
+    m = tf.constant([[1.0], [1.0]])
+    assert float(MuZero._media_mascarada(x, m)) == pytest.approx(3.0)
+    dobro = MuZero._media_mascarada(x, tf.constant([[2.0], [2.0]]))
+    assert float(dobro) == pytest.approx(3.0), "escalar o peso todo não muda a média"
+
+
+def test_training_runs_with_prioritised_replay():
+    for kw in ({"per": 1.0}, {"per": 0.6, "per_beta": 0.4},
+               {"per": 1.0, "n_suporte": 121}):
+        ag = MuZero(cfg_min(batch_size=16, **kw))
+        ag.iterate()
+        st = ag.iterate()
+        for c in ("perda_pi", "perda_v", "perda_r"):
+            assert np.isfinite(st[c]), f"{kw}: {c}"

@@ -203,3 +203,72 @@ def test_calibration_is_off_by_default():
     """A execução base já existe e foi feita sem isto. O padrão não pode mudar embaixo
     dela — senão a comparação entre as duas viraria outra coisa."""
     assert ACKTRConfig().kl_calibrado is True
+
+
+# --------------------------------- §2.36 · os dois suspeitos que não são a Fisher
+def acktr_min(**kw):
+    """Alias local: os testes deste arquivo usam `cfg`, e o nome curto deixa os braços
+    do §2.36 legíveis lado a lado."""
+    return cfg(**kw)
+
+
+def test_the_defaults_are_untouched():
+    """Três sementes oficiais estão gravadas: nada disto vira padrão sem medição."""
+    c = ACKTRConfig()
+    assert c.momento == 0.9 and c.descontar_momento is False
+    assert c.max_grad_norm == 0.5 and c.kl_calibrado is True
+
+
+def test_momentum_is_configurable_and_carries_nesterov_with_it():
+    """Com `μ = 0` o Nesterov não tem o que antecipar; deixá-lo ligado só confunde a
+    leitura do braço."""
+    for mu, nest in ((0.9, True), (0.0, False), (0.5, True)):
+        ag = ACKTR(acktr_min(momento=mu))
+        assert float(ag.optimizer.momentum) == pytest.approx(mu)
+        assert ag.optimizer.nesterov is nest
+
+
+def test_a_zero_grad_norm_removes_the_clip_from_the_natural_direction():
+    """O Keras clipa por variável dentro do `apply_gradients` — ou seja, sobre a direção
+    já pré-condicionada. No `baselines` o clip nunca toca a direção natural."""
+    assert ACKTR(acktr_min()).optimizer.clipnorm == pytest.approx(0.5)
+    assert ACKTR(acktr_min(max_grad_norm=0.0)).optimizer.clipnorm is None
+
+
+def test_discounting_the_momentum_shrinks_the_step_by_exactly_one_minus_mu():
+    """`escala_kl` dimensiona UM passo; com momento o deslocamento acumulado é `η/(1−μ)`
+    vezes a direção. Pedir `η·(1−μ)` devolve à atualização em regime o tamanho que a
+    fórmula da KL calculou — e é o que o `baselines` escreve."""
+    passos = {}
+    for kw in ({}, {"descontar_momento": True}):
+        ag = ACKTR(acktr_min(kl_calibrado=False, **kw))
+        ag.iterate()
+        passos[bool(kw)] = float(ag.optimizer.learning_rate)
+    assert passos[True] == pytest.approx(passos[False] * (1.0 - 0.9), rel=1e-4)
+
+
+def test_discounting_does_nothing_when_there_is_no_momentum_to_discount():
+    ag = ACKTR(acktr_min(kl_calibrado=False, momento=0.0, descontar_momento=True))
+    ag.iterate()
+    base = ACKTR(acktr_min(kl_calibrado=False, momento=0.0))
+    base.iterate()
+    assert float(ag.optimizer.learning_rate) == pytest.approx(
+        float(base.optimizer.learning_rate), rel=1e-4)
+
+
+def test_every_arm_of_the_kl_experiment_builds_and_trains():
+    from tools.diag_acktr_kl import BRACOS                       # noqa: PLC0415
+    for nome, extra in BRACOS.items():
+        ag = ACKTR(acktr_min(kl_calibrado=False, **extra))
+        st = ag.iterate()
+        assert np.isfinite(st["kl"]), nome
+
+
+def test_the_experiment_never_measures_with_the_calibration_on():
+    """Ligada, a calibração mede a razão e pede `kl_max/c`: a KL entregue converge para o
+    alvo **qualquer que seja a causa**, e o experimento responderia sempre a mesma coisa."""
+    from tools.diag_acktr_kl import BRACOS, mede                 # noqa: PLC0415
+    import inspect                                               # noqa: PLC0415
+    fonte = inspect.getsource(mede)
+    assert "kl_calibrado=False" in fonte
+    assert not any("kl_calibrado" in e and e.get("kl_calibrado") for e in BRACOS.values())
