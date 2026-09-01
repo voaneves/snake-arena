@@ -328,12 +328,29 @@ diferente:
 
 | sinal | saudável | o que significa se sair errado |
 |---|---|---|
-| `frac_pi_0` | **~46% com `normaliza_unroll`, ~1/(K+1) sem** | é a fatia da perda de política que pertence ao passo 0 — o único que a métrica oficial mede. É o número que este notebook existe para mexer; se o braço escolhido liga o peso e ele continua em 1/(K+1), a chave não chegou no config |
+| `frac_pi_0` | **~46% com `normaliza_unroll` sozinho** — ver a ressalva abaixo | é a fatia da perda de política que pertence ao passo 0, o único que a métrica oficial mede |
 | `perda_pi_0` | caindo, abaixo de `ln 3 = 1,099` | colada em 1,099 é o passo 0 não aprendendo nada da busca |
-| `perda_r` | caindo para perto de zero | é a única âncora do estado oculto no mundo; se não cai, a dinâmica está inventando física |
-| `perda_v` | finita e caindo | em `symlog`; o MCTS lê o valor na escala real |
+| `reanalises` | `round(reanalise × batch_size) × epochs_por_iter`, exato | é o Reanalyse tendo de fato acontecido. Zero com `reanalise > 0` é a chave não ter chegado |
+| `perda_r` | caindo para perto do piso | é a única âncora do estado oculto no mundo; se não cai, a dinâmica está inventando física |
+| `perda_v` | finita e caindo | escala comprimida; o MCTS lê o valor na escala real |
 | `v_busca` | positivo e crescendo devagar | é o que a árvore soma no backup |
 | `fome` | não colado em 100% | 100% de fome com score 0 é a cobra andando em círculo |
+
+**Os pisos mudam de escala com a cabeça categórica, e isso assusta quem compara com o
+controle.** Com `n_suporte = 0` as cabeças são regressão quadrática e `perda_v ≈ 0,04`,
+`perda_r ≈ 0,03`. Com `n_suporte = 121` elas viram entropia cruzada: começam em
+`ln 121 = 4,80` **por termo** e caem para o piso do alvo two-hot, que não é zero — um alvo
+contínuo dividido entre dois átomos vizinhos tem entropia média `0,50`. Com
+`normaliza_unroll` e `K = 5` isso dá `perda_v` **descendo de ~9,6 para ~1,0** e `perda_r`
+para **~0,03** (a recompensa é 0 em ~95% dos passos, e o zero cai num átomo exato, de piso
+0). Um `perda_v` de 3 no ensaio é uma cabeça a meio caminho, não uma cabeça quebrada.
+
+**Ressalva sobre `frac_pi_0`, medida e não suposta.** O número ~46% vale para
+`normaliza_unroll` **sozinho** (medido: 44,4%). Ligar o Reanalyse e a cabeça categórica
+juntos o derruba para ~24% — e não é a chave faltando: com o alvo do passo 0 refeito pela
+rede atual, `perda_pi_0` cai muito mais rápido que os passos imaginados (0,25 contra 0,79
+por termo), então a *fatia* encolhe porque o numerador aprendeu, não porque o denominador
+foi diluído. A célula sabe disso e só cobra o número onde ele é limpo.
 
 Ela **não** valida a configuração — são ~20 mil passos de ambiente, 0,4% do orçamento, numa
 rede menor. Serve para pegar o que é catastrófico e independente de arquitetura: `NaN`,
@@ -353,10 +370,24 @@ _cfg_ensaio.update(net="resnet_tiny", num_envs=32, rollout=16, batch_size=256,
 _ens = MuZero(MuZeroConfig(**_cfg_ensaio))
 
 _alvo = 1.0 / (cfg.unroll + 1)
+# `frac_pi_0` so e um numero previsivel quando NADA alem do peso mexe no passo 0. O
+# Reanalyse refaz o alvo do passo 0 com a rede atual e a cabeca categorica troca a escala
+# das perdas: nos dois casos a fatia cai por ter aprendido, nao por ter sido diluida.
+_limpo = cfg.reanalise <= 0 and cfg.n_suporte <= 0
+_esperado = 0.46 if cfg.normaliza_unroll else _alvo
+# o esperado do Reanalyse sai do config DO ENSAIO, nao do treino: esta celula reduz o
+# `batch_size`, e cobrar o numero do treino acusaria uma falha que nao existe
+_rea_esperado = (int(round(_ens.cfg.reanalise * _ens.cfg.batch_size))
+                 * _ens.cfg.epochs_por_iter)
 print(f"unroll={cfg.unroll}  normaliza_unroll={cfg.normaliza_unroll}  "
-      f"-> frac_pi_0 esperada: {'~46%' if cfg.normaliza_unroll else f'~{_alvo:.1%}'}")
+      f"reanalise={cfg.reanalise}  n_suporte={cfg.n_suporte}")
+print(f"-> frac_pi_0 esperada: {_esperado:.1%}" if _limpo else
+      "-> frac_pi_0: sem valor esperado limpo neste braco (ver a ressalva acima)")
+if cfg.n_suporte > 0:
+    print(f"-> cabeca categorica: perda_v e perda_r comecam perto de ln {cfg.n_suporte} "
+          f"= {float(np.log(cfg.n_suporte)):.2f} por termo e caem para o piso two-hot")
 print(f"{'iter':>5} {'busca':>7} {'perda_pi':>9} {'perda_pi_0':>11} {'frac_pi_0':>10} "
-      f"{'perda_v':>8} {'perda_r':>8} {'v_busca':>8} {'fome':>6}")
+      f"{'perda_v':>8} {'perda_r':>8} {'v_busca':>8} {'reanal':>7} {'fome':>6}")
 _nan = float("nan")
 for _i in range(1, 41):
     _st = _ens.iterate()
@@ -367,16 +398,27 @@ for _i in range(1, 41):
           f"{_st.get('perda_pi', _nan):>9.4f} {_st.get('perda_pi_0', _nan):>11.4f} "
           f"{_st.get('frac_pi_0', _nan):>9.1%} {_st.get('perda_v', _nan):>8.4f} "
           f"{_st.get('perda_r', _nan):>8.4f} {_st.get('valor_busca', _nan):>8.3f} "
-          f"{_r.get('frac_fome', _nan):>6.1%}")
+          f"{_st.get('reanalises', 0):>7} {_r.get('frac_fome', _nan):>6.1%}")
 
 _f = _st.get("frac_pi_0", _nan)
-_esperado = 0.46 if cfg.normaliza_unroll else _alvo
+_falhas = []
+if _limpo and abs(_f - _esperado) > 0.12:
+    _falhas.append(f"frac_pi_0={_f:.1%} longe do esperado ({_esperado:.1%}) — "
+                   "confira se a chave do braco chegou no cfg")
+if _st.get("reanalises", 0) != _rea_esperado:
+    _falhas.append(f"reanalises={_st.get('reanalises', 0)} != {_rea_esperado} esperados")
+for _k in ("perda_pi", "perda_v", "perda_r", "valor_busca"):
+    if not np.isfinite(_st.get(_k, _nan)):
+        _falhas.append(f"{_k} nao e finito")
 print()
-if abs(_f - _esperado) > 0.12:
-    print(f"ATENCAO: frac_pi_0={_f:.1%} longe do esperado ({_esperado:.1%}). "
-          "Confira se a chave do braco chegou no cfg.")
+if _falhas:
+    print("ATENCAO:")
+    for _m in _falhas:
+        print("  -", _m)
 else:
-    print(f"frac_pi_0={_f:.1%} bate com o esperado ({_esperado:.1%}).")
+    print(f"mecanica sa: frac_pi_0={_f:.1%}"
+          + (f" (esperado {_esperado:.1%})" if _limpo else " (sem alvo limpo)")
+          + f", reanalises={_st.get('reanalises', 0)}, perdas finitas.")
 
 del _ens
 '''
@@ -455,6 +497,9 @@ for _k, _v in sorted(BRACOS[BRACO].items()):
 # resposta, é o que produziu a oscilação. Estes braços **acrescentam** coisas.
 # ---------------------------------------------------------------------------------
 BRACOS_MUZERO = [
+    # a configuração definitiva: tudo que o paper manda e o repositório não fazia,
+    # menos o que a medição já falsificou. Ver §2.37.
+    "definitiva",
     # a hipótese principal e as suas variações
     "normaliza_unroll", "unroll10_normalizado", "unroll2_normalizado",
     # o regime de reúso: sair dele de graça, ou ficar nele com alvo fresco
@@ -474,9 +519,76 @@ BRACOS_MUZERO = [
     "controle", "tudo",
 ]
 
-BRACO_PADRAO_MUZERO = "normaliza_unroll"
+BRACO_PADRAO_MUZERO = "definitiva"
 
 _PRE_CFG_MUZERO = """BRACOS = {
+    # ================================================================================
+    # A CONFIGURACAO DEFINITIVA (§2.37). Nao e uma ablacao: e a soma do que o paper
+    # manda, menos o que a medicao ja falsificou. Nao atribui efeito a chave nenhuma -
+    # os bracos de uma chave so, abaixo, continuam existindo para isso.
+    #
+    # O que a medicao mudou desde que os outros bracos foram escritos:
+    #
+    #   * `normaliza_unroll` FEZ o que prometia e NAO bastou. Levou frac_pi_0 de 14,5%
+    #     para 46% e fechou o vao professor-aluno na faixa do meio (|gap| medio 18,45
+    #     -> 3,47), mas o final caiu de 49,26 para 42,70: a divergencia so andou de
+    #     2,75 M para 3,75 M e virou queda monotona em vez de oscilacao.
+    #   * `unroll10` e `sims32` confirmaram as duas previsoes pre-registradas: o braco
+    #     combinado terminou em 42,22 (melhor 54,68), pior que o controle nos dois
+    #     numeros. `unroll` fica em 5, que e o K do paper.
+    #   * O contraste que faltava: o AlphaZero, com A MESMA arvore, o mesmo gamma,
+    #     n_step, epochs_por_iter, lr, dirichlet e agendamento de temperatura, leva o
+    #     PROFESSOR a 94,60 e termina em 83,31 sem oscilar. O MuZero para o professor
+    #     em 60-63. A unica diferenca estrutural e que a arvore dele anda numa `g`
+    #     APRENDIDA. Ou seja: o professor E o gargalo - e a receita do paper para um
+    #     modelo aprendido em regime de pouco dado sao exatamente os Apendices F e H.
+    #
+    # Custo estimado: ~9-10 h (6,8 h do controle mais o Reanalyse). Retome do
+    # checkpoint; o notebook foi feito para isso.
+    # ================================================================================
+    "definitiva": {
+        # Apendice G, a escala 1/K que faltava. Fica porque fez o que prometia -
+        # medido, nao suposto - mesmo nao tendo bastado sozinho.
+        "normaliza_unroll": True,
+        # Apendice H. O alvo de politica do passo 0 refeito com a rede ATUAL e escrito
+        # de volta no buffer. E o mecanismo, nao o numero de reuso: 2,0 amostras por
+        # estado ja e o do Reanalyse. Um alvo velho do AlphaZero continua valido (a
+        # busca dele anda no simulador de verdade); um alvo velho do MuZero saiu de uma
+        # `g` que ja mudou - e um alvo de outro MDP. 0,80 e o numero do paper, e numa
+        # GPU custa quase o mesmo que 0,25 (o laco de arvore e sublinear na fracao).
+        "reanalise": 0.80,
+        # Cobrir o episodio. 50k transicoes / 64 ambientes = 781 passos por ambiente, e
+        # o episodio chega a ~1.400: a janela deixa de conter um episodio inteiro por
+        # volta de 1,3 M e vira uma fatia deslizante de UMA fase do jogo. O AlphaZero,
+        # que nao colapsa, cobre 1,68 episodios (100k/64 = 1.562 sobre ~930).
+        # 150.000/64 = 2.344 sobre ~1.400 = 1,67 - a mesma cobertura, escolhida pela
+        # aritmetica e nao por ser um numero redondo. Custa ~310 MB de RAM de host.
+        "memory_size": 150_000,
+        # Apendice F, as duas partes. A recompensa e 0 em ~95% dos passos e +-1 no
+        # resto; regressao quadratica sobre isso puxa a cabeca para a media condicional
+        # (~0,05), e a recompensa e a UNICA ancora que liga o estado oculto ao mundo.
+        # Entropia cruzada sobre suporte discreto representa "exatamente zero" como um
+        # atomo so. Suporte dimensionado pelo dominio (teto 60 real), nao copiado do
+        # [-300,300] de Atari.
+        "n_suporte": 121,
+        "transformacao": "h",
+    },
+    # O QUE FICOU DE FORA, DE PROPOSITO:
+    #   * `per` (Apendice G, Atari): a prioridade e |v - z| fixa na coleta e nunca
+    #     atualizada. Numa janela de 150k uma linha vive ~146 iteracoes carregando a
+    #     mesma prioridade, e o Reanalyse reescreve `pi` mas NAO a prioridade. A
+    #     interacao nao foi medida. Primeiro braco de seguimento.
+    #   * `temp_esquema="treino"` (Apendice D): o AlphaZero roda o MESMO agendamento
+    #     (temp_passos=30, temp_fim=0,25, dirichlet_alpha=1,0) e nao estagna. A
+    #     exploracao esta exonerada pela comparacao, e o problema medido esta no ultimo
+    #     terco - este botao reescreve a primeira metade.
+    #   * `n_step=5`: e o quarto item do pacote do Apendice H e nao entrou. Com uma maca
+    #     a cada ~21 passos, uma janela de 5 contem recompensa real em 19,8% das vezes
+    #     contra 35,6% com 10 - num jogo esparso, o risco de errar para menos e maior
+    #     que o de manter um bootstrap um pouco mais velho. Segundo braco de seguimento.
+    #   * `coef_valor`, `unroll`, `num_simulations`, `gamma`, `dirichlet_alpha`: ja sao
+    #     os do paper, ou a medicao ja disse que mexer vai para o lado errado.
+
     # ------------------------------------------------- a hipotese principal (§2.31)
     # `perda_pi` e uma SOMA CRUA sobre K+1 termos. O passo 0 - o unico que a metrica
     # oficial mede, porque `politica()` age sobre a observacao real - vale 14,5% dela
@@ -1033,14 +1145,42 @@ NOTEBOOKS = [
             "**fatia** do passo 0 \u00e9 deix\u00e1-lo fora da escala, que \u00e9 o que o "
             "pseudoc\u00f3digo publicado faz e o que `normaliza_unroll` implementa. "
             "Ver \u00a72.31.\n\n"
+            "### O que as três execuções mediram, e o que elas mudam\n\n"
+            "Três braços fecharam. As duas previsões pré-registradas se confirmaram, e a hipótese principal **não** se confirmou.\n\n"
+            "| braço | final | melhor | \\|gap\\| aluno-professor |\n"
+            "|---|---:|---:|---|\n"
+            "| `unroll5` (controle) | 49,26 | 66,05 | 3,9 → **18,5** → 5,2 |\n"
+            "| `normaliza_unroll` | **42,70** | 62,60 | 4,3 → **3,5** → 17,1 |\n"
+            "| `unroll10`+`sims32` | 42,22 | 54,68 | 3,8 → 6,7 → 8,4 |\n\n"
+            "(as três janelas do gap são &lt;2,5 M · 2,5–3,6 M · &gt;3,6 M)\n\n"
+            "`normaliza_unroll` **fez exatamente o que prometia**: `frac_pi_0` foi de 14,5% para 46%, e o vão entre a busca e a rede pura na faixa do meio caiu de 18,45 para 3,47 pontos — em 3,5 M o aluno marcou 62,59 contra 62,72 do professor. E o número oficial **piorou**, porque a divergência não foi consertada, foi **adiada**: ela reaparece depois de 3,6 M como uma **queda monótona** (desvio 4,2) no lugar da oscilação do controle (desvio 12,1). Consertar o peso trocou um modo de falha por outro.\n\n"
+            "### O contraste que faltava, e que reordena tudo\n\n"
+            "O `93_alphazero_ablacoes` roda **a mesma árvore** — mesmo `c_puct`, `fpu`, `q_normalizado`, `gamma=0,997`, `n_step=10`, `epochs_por_iter=8`, `lr`, `dirichlet_alpha=1,0`, `temp_passos=30` — e a mesma métrica oficial (a rede pura, greedy). O resultado:\n\n"
+            "| | professor (busca) | aluno (a métrica) | passos por maçã |\n"
+            "|---|---:|---:|---:|\n"
+            "| AlphaZero `sims32` | **94,60** | 83,31 | **9,9** |\n"
+            "| MuZero `unroll5` | 60,17 | 49,26 | 21,3 |\n\n"
+            "O AlphaZero destila com um vão **constante de 11 a 20 pontos que só encolhe**, e nunca oscila. A diferença estrutural entre os dois é uma só: a árvore do MuZero anda numa `g` **aprendida**. Isso corrige a leitura do §2.31, que dizia \u201co professor não é o gargalo\u201d porque ele estava *estável* em 58–60 — estável não é bom. Contra 94,60, o déficit do professor (34 pontos) é maior que o do aluno (11), e o aluno herda o dele.\n\n"
+            "E há uma assimetria que explica por que o Reanalyse importa aqui e não lá: um alvo velho do AlphaZero **continua válido**, porque a busca que o produziu andou no simulador de verdade. Um alvo velho do MuZero saiu de uma `g` que já mudou — é um alvo de outro MDP.\n\n"
+            "Um número solto que aponta para o mesmo lugar: o MuZero gasta **21,3 passos por maçã** contra 9,9 do AlphaZero. A busca não está sendo derrotada, está **vagando** — que é o que uma árvore faz quando o modelo por onde ela anda não sabe onde está a comida.\n\n"
             "### Como rodar, em ordem de prioridade\n\n"
-            "Cada bra\u00e7o custa ~7 h. Escolha o `BRACO`, rode o ensaio (2 min — ele confere "
-            "que `frac_pi_0` saiu no valor esperado, que \u00e9 o jeito de pegar uma chave que "
-            "n\u00e3o chegou no `cfg`) e depois o treino. Compare com `07_muzero` **na mesma "
-            "semente**; o `sufixo_variante` mantém os bra\u00e7os separados na arena.\n\n"
-            "1. **`normaliza_unroll`** \u2014 a hip\u00f3tese principal, e a **\u00fanica coisa "
-            "que o Ap\u00eandice G manda fazer e o reposit\u00f3rio n\u00e3o faz**. \u00c9 de gra\u00e7a: "
-            "mesmo custo por atualiza\u00e7\u00e3o. Se voc\u00ea s\u00f3 tem uma execu\u00e7\u00e3o, \u00e9 esta.\n"
+            "Cada braço custa 7 h ou mais. Escolha o `BRACO`, rode o ensaio (2 min — ele confere "
+            "a **mecânica**: que o Reanalyse aconteceu, que as perdas são finitas e, onde o "
+            "número é limpo, que `frac_pi_0` saiu no valor esperado) e depois o treino. "
+            "Compare com `07_muzero` **na mesma semente**; o `sufixo_variante` mantém os "
+            "braços separados na arena.\n\n"
+            "0. **`definitiva`** — **o padrão deste notebook, e o que rodar se você tem "
+            "uma execução só.** Não é uma ablação: é a soma do que os Apêndices F, G e H "
+            "mandam fazer, menos o que a medição já falsificou (`unroll=10`, `sims32`) e "
+            "menos o que a comparação com o AlphaZero exonerou (o agendamento de "
+            "temperatura). Custa ~9–10 h e **não atribui efeito a chave nenhuma** — para "
+            "isso servem os braços de uma chave só, que continuam aqui. A pergunta que ela "
+            "responde é a que interessa primeiro: *o MuZero fiel ao paper passa do teto?*\n"
+            "1. **`normaliza_unroll`** — a hipótese principal, e a **única coisa que o "
+            "Apêndice G manda fazer e o repositório não fazia**. É de graça. **Já rodou**: "
+            "fez o que prometia e não bastou (42,70 contra 49,26 do controle), pelas razões "
+            "acima. Continua dentro da `definitiva`; rodá-lo sozinho de novo só faz sentido "
+            "para uma segunda semente.\n"
             "2. **`reuso_do_paper`** ou os **`reanalise_*`** \u2014 8 \u00e9pocas \u00d7 256 sobre 1.024 "
             "passos novos d\u00e3o **2,0 amostras por estado**. O paper usa 0,1 no MuZero puro "
             "e sobe para 2,0 s\u00f3 no **Reanalyse** (Ap\u00eandice H) \u2014 que refaz a busca com a "

@@ -13,6 +13,7 @@ código anterior — um `git revert` de qualquer correção acende exatamente um
 | §2.2 variância explicada | **corrigido** (logada por iteração no PPO e no A2C) |
 | §2.3 ruído das noisy nets na coleta | **corrigido** |
 | §2.5 alvo de valor sem bootstrap | **corrigido** no AlphaZero e no MuZero |
+| §2.37 o gargalo do MuZero é o **professor**, e a `g` é o professor | **medido** — `normaliza_unroll` fez o que prometia (`frac_pi_0` 14,5% → 46%, vão do meio 18,45 → 3,47) e o final **piorou** (42,70 contra 49,26): a divergência foi adiada de 2,75 M para 3,75 M e virou queda monótona. As duas previsões pré-registradas do §2.31 (`unroll10`, `sims32`) se confirmaram. O contraste que reordena a fila: o AlphaZero, com a **mesma árvore** e os mesmos hiperparâmetros, leva o professor a **94,60** e termina em 83,31 sem oscilar — a única diferença estrutural é a `g` aprendida, e o MuZero gasta 21,3 passos por maçã contra 9,9. Braço `definitiva` |
 | §2.36 a região de confiança do ACKTR: o estouro era aquecimento, e o que sobra é um **piso** | **medido, com três conclusões minhas retiradas** — com 300 atualizações o controle cai de 7,4× para **1,2×** (os 4,4×–12,4× da §2 eram o regime frio do K-FAC, sem `cold_iter`). Mas pedir 0,0150 e pedir 0,0020 entregam a **mesma** KL (0,0187 e 0,0185): a KL não responde ao alvo. Suspeito: `escala_kl` usa o gradiente combinado e a KL mede só a política — o tronco compartilhado é movido pelo valor e pela entropia. Braços `so_politica` e `sem_entropia` |
 | §2.35 o sorteio do replay do MuZero é uniforme e o Apêndice G prioriza | **implementado, desligado** — `P(i) ∝ |ν − z|^α` com `α = β = 1`; `ν` e `z` são fixos na coleta, então a prioridade nunca é atualizada, ao contrário do PER do DQN. Gravada mesmo desligada, porque mede o quanto busca e jogo discordaram. Braço `priorizado` |
 | §2.34 o agendamento de temperatura é o de jogo de tabuleiro, não o de Atari | **implementado, desligado** — com episódios de ~1.200 lances, `temp_passos=30` deixa 97,5% do episódio a τ=0,25 desde a primeira iteração; o Apêndice D, em Atari, amostra o episódio inteiro com τ por passo de treino. Braço `temp_de_treino` |
@@ -721,6 +722,126 @@ Marcar por `eps_start > 0` sozinho seria pior que não marcar — sob `noisy=Tru
 execução não teve. Aquela execução foi renomeada para
 `completo+n3+sem_noisy+eps_greedy`, com o motivo gravado em `meta["variante_corrigida"]`;
 o teste é `test_the_epsilon_ladder_marks_the_variant_and_a_dead_epsilon_does_not`.
+
+### 2.37 ✔ O gargalo do MuZero é o **professor**, não a destilação — e a `g` é o professor
+`runs/muzero/*` · `runs/alphazero/sims32` · `muzero.py` · Apêndices F, G e H
+
+Três braços do `92_muzero_ablacoes` fecharam. O resultado **falsifica a hipótese principal
+do §2.31** — que era minha — e o contraste com o AlphaZero reordena a fila inteira.
+
+**O que as três execuções mediram.** O vão é `eval − train`, ou seja a rede pura menos a
+busca, em três janelas do orçamento:
+
+| braço | final | melhor | \|gap\| <2,5 M | \|gap\| 2,5–3,6 M | \|gap\| >3,6 M | desvio do gap no fim |
+|---|---:|---:|---:|---:|---:|---:|
+| `unroll5` (controle) | **49,26** | 66,05 | 3,91 | **18,45** | 5,17 | 5,73 |
+| `normaliza_unroll` | **42,70** | 62,60 | 4,34 | **3,47** | 17,09 | **4,18** |
+| `unroll10`+`sims32` | **42,22** | 54,68 | 3,78 | 6,74 | 8,41 | 3,86 |
+
+As duas previsões pré-registradas do §2.31 se confirmaram: `unroll=10` e `sims32` ficaram
+piores que o controle nos dois números. Ficam registradas como acertadas.
+
+**A hipótese principal não.** `normaliza_unroll` fez exatamente o que prometia —
+`frac_pi_0` de 14,5% para 46%, e o vão na faixa do meio caiu de 18,45 para 3,47 pontos; em
+3,5 M o aluno marcou **62,59** contra 62,72 do professor, que é destilação praticamente
+perfeita. E o número oficial **piorou**. A divergência não foi consertada: foi **adiada**
+de 2,75 M para 3,75 M, e mudou de forma. No controle ela é oscilação (desvio 12,09 na faixa
+do meio, com o aluno voltando a 66,05 depois de cair a 31,74); com o peso corrigido ela é
+**queda monótona** (desvio 4,18, sem volta). Consertar o peso trocou um modo de falha por
+outro — o que é informação, não fracasso, mas não é o conserto.
+
+**O contraste que faltava.** O `93_alphazero_ablacoes` roda **o mesmo objeto `MCTS`** e a
+mesma métrica oficial (a rede pura, greedy). As configurações são idênticas em `c_puct`,
+`fpu`, `q_normalizado`, `desempate`, `gamma=0,997`, `n_step=10`, `epochs_por_iter=8`, `lr`,
+`lr_final`, `max_grad_norm`, `dirichlet_alpha=1,0`, `dirichlet_frac`, `temp_passos=30`,
+`temp_alvo`, `num_envs` e `rollout`. Diferem em três números — `num_simulations` 32 contra
+24, `batch_size` 512 contra 256, `memory_size` 100k contra 50k — e numa coisa estrutural: a
+árvore do MuZero anda numa `g` **aprendida**.
+
+| | professor (a busca) | aluno (a métrica oficial) | passos por maçã |
+|---|---:|---:|---:|
+| AlphaZero `sims32` | **94,60** | 83,31 | **9,9** |
+| MuZero `unroll5` | 60,17 | 49,26 | 21,3 |
+
+O AlphaZero destila com um vão **constante entre 11 e 20 pontos, que só encolhe**, e nunca
+oscila. Isso corrige a leitura do §2.31, e a correção é minha: escrevi lá que *"o professor
+não é o gargalo"* porque ele estava **estável** em 58–60. Estável não é bom. Contra 94,60,
+o déficit do professor são 34 pontos e o do aluno são 11 — e o aluno herda o do professor.
+
+Repare no `batch_size`: o AlphaZero faz `8 × 512 / 1.024 = 4,0` amostras por estado contra
+2,0 do MuZero. **Reúso alto sozinho não é o defeito** — quem reusa o dobro é quem não
+oscila. O que muda é a **validade** do alvo velho, e a assimetria vale escrever: um alvo de
+visitas velho do AlphaZero continua válido, porque a busca que o produziu andou no
+simulador de verdade e a política que ela recomenda para aquele estado não expira. Um alvo
+velho do MuZero saiu de uma busca que andou numa `g` que já mudou — não é um alvo velho, é
+um alvo **de outro MDP**. É por isso que o Reanalyse (Apêndice H) é a peça que falta aqui e
+não faz falta lá.
+
+**Um número solto que aponta para o mesmo lugar.** O MuZero gasta **21,3 passos por maçã**
+(1.283 passos para 60,2 de score) contra **9,9** do AlphaZero (936 para 94,6). A busca não
+está sendo derrotada; está **vagando**. É o que uma árvore faz quando o modelo por onde ela
+anda não sabe onde está a comida — e a `perda_r` é a única âncora que liga o estado oculto
+ao mundo.
+
+**Uma hipótese que não é medição, e está marcada como tal.** A janela de replay do MuZero
+guarda 50.000 transições, ou `50.000 / 64 = 781` passos **por ambiente**. O episódio começa
+com ~130 passos e chega a **1.400**: por volta de 1,3 M de passos a janela deixa de conter
+um episódio inteiro e vira uma fatia deslizante de **uma fase** do jogo. O AlphaZero, que
+não colapsa, cobre `100.000 / 64 = 1.562` sobre ~930 — **1,68 episódios**. O MuZero, no
+fim, cobre **0,56**. O modo de falha bate com o mecanismo: `fim_fome` é 25,6% no checkpoint
+final contra 5,8% no melhor, e esquecer a fase de abertura — a corrida direta à maçã — é
+exatamente o que uma janela que só contém fim de jogo produziria. O ajuste é aritmética,
+não número redondo: `150.000 / 64 = 2.344` sobre ~1.400 dá **1,67**, a mesma cobertura do
+AlphaZero. Custa ~310 MB de RAM de host e nenhum tempo de GPU. **Isto é `?`, não `✔`** — o
+encaixe temporal é frouxo (a cobertura cai em 1,3 M e o colapso vem em 2,75 M) e nada aqui
+foi isolado; o braço `memoria_20k`, na direção oposta, é o que a falsifica.
+
+**A configuração definitiva.** O braço `definitiva` do `92` é a soma do que o paper manda e
+o repositório não fazia, menos o que a medição já derrubou:
+
+| chave | de onde vem | por que entra |
+|---|---|---|
+| `normaliza_unroll=True` | Apêndice G, pseudocódigo | fez o que prometia, medido; fica |
+| `reanalise=0,80` | Apêndice H | o alvo de outro MDP, acima. 0,80 é o número do paper e numa GPU custa quase o mesmo que 0,25 |
+| `memory_size=150_000` | a aritmética acima | cobrir o episódio |
+| `n_suporte=121` | Apêndice F | a recompensa é 0 em ~95% dos passos; regressão quadrática puxa a âncora para a média condicional |
+| `transformacao="h"` | Apêndice F (R2D2) | cresce como √x e preserva resolução onde o valor deste jogo vive |
+
+E o que ficou **de fora, de propósito**, porque uma execução definitiva também é uma lista
+do que ela não testa:
+
+* **`per=1,0`** (Apêndice G, Atari). A prioridade é `|ν − z|` fixa na coleta e nunca
+  atualizada; numa janela de 150k uma linha vive ~146 iterações carregando a mesma
+  prioridade, e o Reanalyse reescreve `π` mas **não** a prioridade. A interação não foi
+  medida. Primeiro braço de seguimento.
+* **`temp_esquema="treino"`** (Apêndice D). O AlphaZero roda o **mesmo** agendamento e não
+  estagna: a exploração está exonerada pela comparação. E o problema medido está no último
+  terço, enquanto este botão reescreve a primeira metade.
+* **`n_step=5`**, o quarto item do pacote do Apêndice H. Com uma maçã a cada ~21 passos,
+  uma janela de 5 contém recompensa real em **19,8%** das vezes contra **35,6%** com 10.
+  Num jogo esparso o risco de errar para menos é maior que o de manter um bootstrap um
+  pouco mais velho — e o bootstrap é valor de **busca**, não da rede crua. Segundo braço de
+  seguimento, e a assimetria de risco é o argumento, não o paper.
+* **`coef_valor`, `unroll`, `num_simulations`, `gamma`, `dirichlet_alpha`**: já são os do
+  paper, ou a medição já disse que mexer vai para o lado errado. `unroll` fica em 5, que é
+  o `K` do paper — *"we always unroll for K = 5 steps"*.
+
+**O que a `definitiva` não faz, dito antes de alguém perguntar:** ela não atribui efeito a
+chave nenhuma. É deliberado — a pergunta que ela responde é *o MuZero fiel ao paper passa
+do teto de 63?*, e essa vem antes de *qual das cinco chaves valeu*. Os braços de uma chave
+só continuam no notebook para a segunda pergunta.
+
+**Uma armadilha de instrumentação que a verificação pegou.** O ensaio do `92` conferia
+`frac_pi_0 ≈ 46%` e chamava qualquer desvio de "a chave não chegou no cfg". Medido: com
+`normaliza_unroll` sozinho dá 44,4%; com Reanalyse **e** cabeça categórica juntos dá
+**24,3%** — e não é a chave faltando. Com o alvo do passo 0 refeito pela rede atual,
+`perda_pi_0` cai muito mais rápido que os passos imaginados (0,25 contra 0,79 por termo), e
+a *fatia* encolhe porque o numerador aprendeu. A célula passou a cobrar o número só onde ele
+é limpo, e a conferir no lugar dele a **mecânica**: que `reanalises` saiu no valor exato, e
+que as perdas são finitas. Os pisos também mudam com a cabeça categórica — `perda_v` sai de
+~0,04 para uma entropia cruzada que começa em `2 × ln 121 = 9,6` e cai para **~1,0**, porque
+um alvo contínuo repartido entre dois átomos vizinhos tem entropia média 0,50 e não zero.
+Sem isso escrito, o primeiro ensaio da configuração pareceria uma regressão.
 
 ### 2.36 ✔ O passo da região de confiança do ACKTR não desconta o momento
 `acktr.py:272-273` · `otimizadores.py:81` · `kfac.py:342-356`
