@@ -266,7 +266,7 @@ Todos os itens que a versão de 18/08 listava como bloqueio estão fechados:
 * **Decisão do orçamento de gradiente** → medida com 3 sementes de cada lado e **efetivada**:
   a configuração densa é o padrão do `PPOConfig`, e a antiga virou a ablação
   `96_ppo_orcamento_esparso`. O mesmo tratamento foi dado ao ACKTR (região calibrada é o
-  padrão, nominal virou `98_acktr_kl_nominal`) e ao A2C (`t_max=5` canônico é o padrão,
+  padrão, nominal virou o braço `kl_do_paper` do `98_acktr_ablacoes`) e ao A2C (`t_max=5` canônico é o padrão,
   `rollout=16` virou `95_a2c_orcamento_esparso`).
 * **Truncamento por fome nos sequenciais** → corrigido em ACER, DreamerV3, AlphaZero e
   MuZero, com testes que verificam o bootstrap no passo truncado.
@@ -306,7 +306,7 @@ ACKTR foi **retirada** depois que a semente 2 a contradisse.
 
 Coisas que só o Victor pode apagar, porque a ponte com o dispositivo não deleta arquivos:
 
-* `notebooks/98_acktr_kl_max_corrigido.ipynb` — substituído por `98_acktr_kl_nominal.ipynb`
+* `notebooks/98_acktr_kl_max_corrigido.ipynb` — substituído por `98_acktr_kl_nominal.ipynb`, hoje também aposentado em favor do braço `kl_do_paper` do `98_acktr_ablacoes.ipynb`
   (`git rm`). **Pendente**: é um arquivo rastreado, e a ponte não remove do índice.
 * `_to_delete/` na raiz — pastas vazias já movidas para fora de `runs/` e o `bundle.tgz` de
   transporte. Está no `.gitignore`, então é limpeza de disco: `rmdir /s /q _to_delete`.

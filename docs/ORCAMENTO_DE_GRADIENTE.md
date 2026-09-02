@@ -360,3 +360,24 @@ O gráfico sai de `tools/fig_orcamento.py`, que lê os mesmos `history.json`.
   (+18,70 contra +18,71) e a explicação da dispersão não replicou. Acrescentadas as seções
   de saturação, do eixo entre famílias e do mecanismo de fome. As duas afirmações
   derrubadas ficam no texto, marcadas — não foram apagadas.
+
+---
+
+## Um contrato de passos de ambiente não é um contrato de passos de gradiente
+
+O LBC deu o contraexemplo mais claro que este repositório tem. Ele cumpriu os 5 M passos de
+ambiente e a configuração nominal de 4 épocas × 32 minilotes, e mesmo assim terminou a
+execução com **3.524** atualizações de gradiente contra **38.374** do PPO — 9,2%. A causa foi
+a parada antecipada por KL, que num agente off-policy dispara no minilote ~8 de 128 em vez de
+ser a exceção que é no PPO.
+
+Nada disso aparece na curva de score. O que aparece é `melhor == final` no último passo — a
+assinatura de um treino que não acabou — e um tempo de parede desproporcionalmente pequeno
+(581 s contra 2.689 s do PPO para o mesmo número de iterações).
+
+**A regra prática que sai daí:** `meta.atualizacoes` é parte da leitura de qualquer execução,
+e um agente com parada antecipada (por KL ou por qualquer outro critério) precisa ter esse
+número conferido contra o de um agente que se sabe treinado antes de a curva ser interpretada.
+Um agente que gastou uma fração do orçamento de gradiente dos outros não está sendo comparado
+no mesmo eixo, mesmo tendo visto os mesmos 5 M passos. O diagnóstico completo, com as
+ablações que separaram as duas causas, está em [`LBC.md`](LBC.md) §2.11.

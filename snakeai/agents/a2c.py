@@ -42,6 +42,15 @@ class A2CConfig(PPOConfig):
     #: diferença entre as duas curvas mede clipping **mais** orçamento, e o artigo precisa
     #: dizer isso — não há como igualar. Ver `docs/ORCAMENTO_DE_GRADIENTE.md`.
     rollout: int = 5
+
+    #: **Não vale para os herdeiros com região de confiança.** O argumento acima — "sem
+    #: clipping, passos grandes com dados velhos desestabilizam" — é sobre o A2C, que anda
+    #: uma distância fixa pelo `lr`. O ACKTR anda a distância que a KL permitir, e para ele
+    #: o rollout decide outra coisa: quanto do crédito passa pelo GAE e quanto passa pelo
+    #: crítico. Com `γλ = 0,945`, um rollout de 5 deixa **76%** do peso no bootstrap
+    #: `V(s_{t+5})`; um de 16 deixa 40%. Depois que o shaping decai a zero (`shaping_frac`,
+    #: 1,25 M de 5 M) a recompensa fica esparsa e essa diferença passa a morder. Por isso
+    #: `ACKTRConfig` redeclara `rollout = 16` — ver a nota lá.
     lr_start: float = 7e-4
     lr_end: float = 1e-4
     ent_coef_start: float = 0.02

@@ -92,6 +92,38 @@ __all__ = ["ACKTRConfig", "ACKTR"]
 
 @dataclass
 class ACKTRConfig(A2CConfig):
+    #: **Redeclarado, e não herdado.** O `A2CConfig` fixa 5 — o `t_max` canônico do A3C —
+    #: por um argumento que não sobrevive à região de confiança: sem clipping, o A2C anda
+    #: uma distância fixa e precisa de rollouts curtos para não usar dados velhos. Aqui o
+    #: tamanho do passo é a KL, e o rollout decide **outra coisa**: onde mora o crédito.
+    #:
+    #: Com `γλ = 0,995 × 0,95 = 0,945`, a fração do peso do GAE que sobra no bootstrap
+    #: `V(s_{t+T})` é `0,945^T` — **76% com T = 5, 40% com T = 16**. Enquanto o shaping
+    #: está ligado a recompensa é densa e isso não importa; depois que ele decai a zero
+    #: (`shaping_frac = 0,25`, ou 1,25 M dos 5 M) a única recompensa é comida e morte, e
+    #: com a cobra longa há dezenas de passos entre uma comida e outra.
+    #:
+    #: A medição que fixou este valor, interpolada na mesma grade de passos de ambiente
+    #: (`train_score_mean`):
+    #:
+    #: ===================  ======  ======  ======  ======  ======
+    #: execução             1,0 M   1,5 M   2,0 M   3,0 M   5,0 M
+    #: ===================  ======  ======  ======  ======  ======
+    #: 3 sementes, T = 16   26–29   31–37   40–64   67–72   73–81
+    #: ACEKTR, T = 5        29,3    36,8    44,1    55,5    63,5
+    #: ===================  ======  ======  ======  ======  ======
+    #:
+    #: Até 1,5 M o T = 5 está **no topo** da faixa; de 2 M em diante ele sai por baixo e
+    #: não volta. O ponto de separação é o fim do shaping, que é o que a conta acima
+    #: prevê. E não é falta de passo: o T = 5 acumulou `Σ√KL` de **202** contra 57–73 das
+    #: três sementes de T = 16 — ele andou 3,6× mais e chegou mais perto do chão.
+    #:
+    #: As três execuções de `acktr/resnet_small` gravadas rodaram com 16. O 5 entrou junto
+    #: com o `A2CConfig` em 21/08, um dia **depois** delas, e ninguém reexecutou — de modo
+    #: que o default de hoje não reproduz nenhum resultado do repositório. Isto é
+    #: restauração, não escolha nova.
+    rollout: int = 16
+
     #: Teto do passo. No ACKTR o tamanho normalmente é decidido pela KL; o `lr` só impede
     #: que um lote de curvatura quase nula peça um passo absurdo.
     lr_start: float = 0.5
@@ -158,6 +190,35 @@ class ACKTRConfig(A2CConfig):
     kl_cal_min: float = 0.05
     kl_cal_max: float = 200.0
 
+    #: **Corrige o atraso de partida da calibração.** `_fator_kl` é uma média móvel com
+    #: `kl_cal_ema = 0,98`, ou seja constante de tempo de ~50 atualizações — e o orçamento
+    #: inteiro tem **610**. Partindo de 1,0, ela gasta ~8% do treino subindo até o fator
+    #: verdadeiro (15 a 25 nas execuções medidas), e nesse intervalo o alvo efetivo é até
+    #: 20× maior que o pedido, bem na hora em que a política ainda é aleatória. As três
+    #: sementes registram esse transitório: `kl_fator` mediano no primeiro quinto foi
+    #: 15,5 · 13,5 · 5,4, contra 18,5 · 15,7 · 9,1 no último.
+    #:
+    #: Ligado, a média passa a ser **debiasada** — mantém-se `s` e o peso `w` acumulado e
+    #: usa-se `s/w`, como o `1 − β^t` do Adam — de modo que a segunda atualização já usa o
+    #: fator medido, sem abrir mão da suavização depois. Com `kl_fator_inicial` como
+    #: prior de peso pequeno, a **primeira** também sai razoável.
+    #:
+    #: Default `False` no ACKTR de propósito: as três execuções gravadas rodaram sem isto,
+    #: e mudar o default silenciosamente faria `08_acktr` deixar de reproduzi-las. O
+    #: `ACEKTRConfig` liga.
+    kl_cal_debias: bool = False
+
+    #: Prior do fator, usado só quando `kl_cal_debias`. `1,0` é "não sei nada", que é o
+    #: comportamento histórico. As medições do `docs/diag_acktr_kl.json` (7,4 · 7,0 · 1,2)
+    #: e o regime das execuções longas (15 a 25) sustentam um prior alto — e o erro é
+    #: assimétrico: começar cauteloso demais custa alguns passos curtos, começar ousado
+    #: demais colapsa a entropia e não tem volta.
+    kl_fator_inicial: float = 1.0
+
+    #: Peso do prior, na mesma unidade do peso acumulado da média (que satura em 1). Com
+    #: 0,05 o prior vale ~70% na primeira atualização, 18% na décima e 3% na quinquagésima.
+    kl_cal_peso0: float = 0.05
+
     optimizer: str = "sgd"
 
     # ------------------------------------------------------------------------------
@@ -195,7 +256,12 @@ class ACKTR(A2C):
         #: Fator sistemático entre a KL pedida e a entregue. Começa em 1 — ou seja, a
         #: primeira atualização é idêntica à da versão não calibrada, e a correção só
         #: aparece conforme a medição chega.
-        self._fator_kl = 1.0
+        self._fator_kl = float(getattr(c, "kl_fator_inicial", 1.0))
+        #: Numerador e peso da média debiasada. O prior entra com peso `kl_cal_peso0`, e
+        #: como o peso de uma EMA satura em 1, ele se dilui sozinho conforme as medições
+        #: chegam — sem `if passo < N` nenhum.
+        self._cal_peso = float(getattr(c, "kl_cal_peso0", 0.05))
+        self._cal_soma = self._fator_kl * self._cal_peso
         if variant is None:
             self.variant = self._com_sufixo(self._variante_da_regiao(c),
                                             getattr(c, "sufixo_variante", ""))
@@ -225,6 +291,10 @@ class ACKTR(A2C):
         marcas = []
         if not cfg.kl_calibrado:
             marcas.append("kl_nominal")
+        # comparado ao default da **própria** classe: o ACEKTR liga por padrão, então para
+        # ele o que precisa aparecer no nome é o desligamento, e vice-versa.
+        if cfg.kl_cal_debias != type(cfg).kl_cal_debias:
+            marcas.append("kl_cal_debias" if cfg.kl_cal_debias else "kl_cal_v1")
         if cfg.kl_max != type(cfg).kl_max:
             marcas.append(f"kl{cfg.kl_max:g}")
         return "+".join([cfg.net] + marcas)
@@ -318,8 +388,17 @@ class ACKTR(A2C):
             # própria correção e a faria divergir.
             c = kl / max(alvo_efetivo, 1e-12)
             d = cfg.kl_cal_ema
-            self._fator_kl = float(np.clip(d * self._fator_kl + (1 - d) * c,
-                                           cfg.kl_cal_min, cfg.kl_cal_max))
+            if getattr(cfg, "kl_cal_debias", False):
+                # média móvel debiasada: `s/w` em vez de `s`. Sem isto a média parte de
+                # `_fator_kl` e leva 1/(1−d) ≈ 50 atualizações para chegar ao valor
+                # medido — 8% de um orçamento de 610, gastos com o alvo efetivo até 20×
+                # maior que o pedido.
+                self._cal_soma = d * self._cal_soma + (1 - d) * c
+                self._cal_peso = d * self._cal_peso + (1 - d)
+                bruto = self._cal_soma / max(self._cal_peso, 1e-12)
+            else:
+                bruto = d * self._fator_kl + (1 - d) * c
+            self._fator_kl = float(np.clip(bruto, cfg.kl_cal_min, cfg.kl_cal_max))
 
         return {
             "pg": float(pg), "vf": float(vl), "ent": float(ent),

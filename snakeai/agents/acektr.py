@@ -44,6 +44,39 @@ registrado a cada atualização. É uma previsão falsificável e barata:
 
 Nos dois casos o repositório aprende algo que hoje é suposição. Ver `docs/EKFAC.md`.
 
+A primeira tentativa de responder isso **não valeu** — e por quê
+----------------------------------------------------------------
+A execução de 01/09 (`acektr/resnet_small/seed0`) fechou em 71,07 com 17,6% de tabuleiros
+cheios, contra 89,78 e 89,7% do ACKTR, e a mediana de `kl_fator` saiu 19,98 contra 18,71 —
+o que se leria como "o EK-FAC não aproxima melhor **e** ainda joga pior". As duas leituras
+são inválidas, pelo mesmo motivo: **o par não estava pareado**.
+
+O `A2CConfig.rollout` foi de 16 para 5 em 21/08, um dia depois das três execuções gravadas
+do ACKTR, e o `ACKTRConfig` herdava esse campo. A execução do ACEKTR rodou com `T = 5`; as
+três do ACKTR, com `T = 16`. Interpolando `train_score_mean` na mesma grade de passos de
+ambiente:
+
+===========================  ======  ======  ======  ======  ======
+execução                     1,0 M   1,5 M   2,0 M   3,0 M   5,0 M
+===========================  ======  ======  ======  ======  ======
+faixa das 3 sementes, T = 16 26–29   31–37   40–64   67–72   73–81
+ACEKTR, T = 5                29,3    36,8    44,1    55,5    63,5
+===========================  ======  ======  ======  ======  ======
+
+Até 1,5 M o ACEKTR está **no topo** da faixa. A separação começa em 2 M — logo depois de
+`shaping_frac` levar o shaping a zero em 1,25 M, quando a recompensa deixa de ser densa e
+o crédito passa a depender da janela do GAE. É o que a conta prevê: com `γλ = 0,945`,
+`0,945⁵ = 76%` do peso fica no bootstrap contra `0,945¹⁶ = 40%`.
+
+E **não foi falta de passo**, que era a suspeita óbvia. Somando `√KL` sobre as
+atualizações, o ACEKTR acumulou **202** contra 57–73 das três sementes do ACKTR: ele andou
+3,6× mais e chegou 20 pontos abaixo. O que faltou foi direção, não distância — o que também
+descarta subir `kl_max` como conserto.
+
+Então `ACKTRConfig` voltou a declarar `rollout = 16`, e a §5 da `docs/EKFAC.md` continua
+**sem resposta**: ela precisa de duas execuções na mesma semente e no mesmo orçamento de
+crédito, que é o que a próxima execução deste notebook produz.
+
 E a previsão que **não** se pode fazer
 --------------------------------------
 Que o ACEKTR ganhe do ACKTR na arena. Aproximar melhor a Fisher é uma afirmação sobre a
@@ -80,7 +113,58 @@ class ACEKTRConfig(ACKTRConfig):
     #: `1.0` desliga a medição e o EK-FAC vira **exatamente** o K-FAC. Não é uma
     #: curiosidade: é o controle que `tests/test_ekfac.py` usa para provar que a única
     #: diferença entre os dois agentes é a correção de autovalores.
-    ema_escalas: float = 0.5
+    ema_escalas: float = 0.8
+
+    #: **A base rara, as escalas sempre** — o regime que o paper propõe, e que o
+    #: `docs/EKFAC.md` §3.2 registra como deliberadamente desligado até aqui.
+    #:
+    #: O default do ACKTR é 10, e lá ele significa só "de quantas em quantas atualizações
+    #: refatorar". No EK-FAC ele significa outra coisa: é o eixo de amortização. `s*`
+    #: descreve os eixos de **uma** base e é reiniciado no palpite do K-FAC toda vez que a
+    #: base muda — com uma janela de 10 e `ema_escalas = 0,5`, a medição mal saía do
+    #: palpite antes de ser jogada fora. Com 50, sobram ~30 atualizações por janela
+    #: rodando com escalas de fato medidas, e a `eigh` cara sai 5× menos vezes.
+    #:
+    #: `ema_escalas` sobe junto, de 0,5 para 0,8: a janela agora comporta uma média sobre
+    #: ~5 lotes em vez de ~2, e `s*` medido em 2 lotes é ruidoso — dividir por um
+    #: autovalor subestimado por ruído amplifica exatamente a direção que o lote não
+    #: sabia estimar. É a troca de um estimador enviesado e liso (o do K-FAC) por um não
+    #: enviesado e liso, em vez de por um não enviesado e barulhento.
+    #:
+    #: Isto sai do pareamento `12_acektr × 08_acktr` — que passa a medir duas variáveis —
+    #: e por isso a variante ganha `+base50` **sempre**, mesmo sendo o default daqui.
+    inv_every: int = 50
+
+    #: Ligada aqui, ao contrário do ACKTR. Ver `ACKTRConfig.kl_cal_debias`: o ACKTR mantém
+    #: `False` para continuar reproduzindo as três execuções gravadas; o ACEKTR não tem
+    #: execução boa para preservar, e o transitório de ~50 atualizações é 8% do orçamento.
+    kl_cal_debias: bool = True
+
+    #: Prior do fator de calibração. As execuções longas assentaram entre 15 e 25, e o
+    #: diagnóstico curto (`docs/diag_acktr_kl.json`) mediu 7,0 a 7,4 na forma do contrato.
+    #: 15 fica no meio, e o erro é assimétrico: cauteloso demais custa alguns passos
+    #: curtos no começo, ousado demais colapsa a entropia e não tem volta.
+    kl_fator_inicial: float = 15.0
+
+    @classmethod
+    def credito_longo(cls, **kw):
+        """O braço que dobra a janela de crédito: `rollout = 32`.
+
+        Sai do mesmo achado que restaurou o 16. Depois que o shaping zera, `0,945^T` decide
+        quanto do peso do GAE sobra no bootstrap — 76% com T=5, 40% com T=16, **16% com
+        T=32**. E a execução de 01/09 mostrou que distância não é o gargalo: ela acumulou
+        `Σ√KL` de 202 contra 57–73 do ACKTR e chegou 20 pontos abaixo. Se movimento sobra e
+        direção falta, cortar as atualizações pela metade (610 → 305) para dobrar o horizonte
+        é a troca que faz sentido testar — e é falsificável: se o score cair, movimento
+        também estava mordendo, e a leitura de cima precisa de asterisco.
+
+        Ganha `sufixo_variante="T32"` porque rollout é orçamento, não região de confiança: o
+        nome da variante não o marca sozinho, e duas janelas de crédito diferentes com a
+        mesma identidade `(algo, variant, seed)` viram uma curva só na arena. É a mesma
+        mecânica do `A2CConfig.esparso()`.
+        """
+        kw.setdefault("sufixo_variante", "T32")
+        return cls(rollout=32, **kw)
 
 
 class ACEKTR(ACKTR):
@@ -107,7 +191,12 @@ class ACEKTR(ACKTR):
         Ver `docs/EKFAC.md`.
         """
         marcas = [ACKTR._variante_da_regiao(cfg)]
-        if cfg.inv_every != type(cfg).inv_every:
+        # comparado ao default do **ACKTR**, não ao daqui: `inv_every` é o eixo de
+        # amortização do paper, e uma execução no regime dele não é a mesma coisa que uma
+        # execução pareada com o `08_acktr`. Como o default do ACEKTR passou a ser 50, a
+        # marca aparece sempre — que é o ponto: ela é o que impede a identidade
+        # `(algo, variant, seed)` de colidir com a execução de 01/09, que rodou com 10.
+        if cfg.inv_every != ACKTRConfig.inv_every:
             marcas.append(f"base{cfg.inv_every}")
         if getattr(cfg, "ema_escalas", 0.5) >= 1.0:
             marcas.append("sem_correcao")

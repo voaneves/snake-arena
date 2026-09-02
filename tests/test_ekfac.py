@@ -348,21 +348,58 @@ def test_the_correction_grows_between_basis_rebuilds_and_resets_at_one():
 def test_turning_the_correction_off_marks_the_variant():
     """`ema_escalas=1` é o EK-FAC sem medir, que é o K-FAC — o controle. Sem a marca, ele
     dividiria a identidade `(algo, variant, seed)` com o algoritmo de verdade e as duas
-    curvas virariam uma só na arena."""
-    assert ACEKTR(cfg()).variant == "resnet_tiny"
+    curvas virariam uma só na arena.
+
+    E `+base50` aparece **sempre**, porque o default do ACEKTR passou a ser o regime de
+    amortização do paper (base rara, escalas sempre). A marca é comparada ao default do
+    ACKTR, não ao daqui: uma execução nesse regime não é pareada com o `08_acktr`, e sem a
+    marca ela ainda colidiria com a execução de 01/09, que rodou com `inv_every = 10`.
+    """
+    assert ACEKTR(cfg()).variant == "resnet_tiny+base50"
     assert ACEKTR(cfg(ema_escalas=1.0)).variant.endswith("+sem_correcao")
-    assert ACEKTR(cfg(inv_every=50)).variant.endswith("+base50")
+    assert ACEKTR(cfg(inv_every=10)).variant == "resnet_tiny"
 
 
 def test_the_control_really_reproduces_acktr_inside_the_agent():
     """A âncora do começo, agora dentro do agente e com a rede de verdade: com a medição
-    desligada, a primeira atualização do ACEKTR é a do ACKTR."""
+    desligada **e a região de confiança pareada**, a primeira atualização do ACEKTR é a do
+    ACKTR.
+
+    O pareamento explícito é novo e é o ponto. O ACEKTR deixou de herdar a região de
+    confiança do ACKTR: ele liga `kl_cal_debias` e parte de `kl_fator_inicial = 15`, então
+    por padrão o primeiro passo dele é ~√15 menor. Isso é escolha, não bug — e este teste
+    continua sendo o que separa "escolhemos diferente" de "a convenção do
+    pré-condicionador está trocada", que é a única coisa que ele sempre existiu para
+    detectar.
+    """
     a = ACKTR(ACKTRConfig(net="resnet_tiny", num_envs=32, rollout=8, seed=0,
                           eval_every_steps=10 ** 9, log_every_steps=10 ** 9,
                           salvar_gif=False, salvar_grafico=False)).iterate()
-    b = ACEKTR(cfg(seed=0, ema_escalas=1.0)).iterate()
+    b = ACEKTR(cfg(seed=0, ema_escalas=1.0, inv_every=10,
+                   kl_cal_debias=False, kl_fator_inicial=1.0)).iterate()
     assert b["lr"] == pytest.approx(a["lr"], rel=2e-3)
     assert b["kl"] == pytest.approx(a["kl"], rel=5e-2)
+
+
+def test_the_acektr_trust_region_starts_where_the_measurements_ended():
+    """E o contrapositivo: no default, o primeiro passo do ACEKTR é deliberadamente menor.
+
+    `_fator_kl` é uma média com constante de tempo de ~50 atualizações num orçamento de
+    610. Partindo de 1,0 ela gasta 8% do treino com o alvo efetivo até 20× maior que o
+    pedido, bem quando a política ainda é aleatória. Partir do fator que as execuções
+    longas mediram (15 a 25) e debiasar a média encurta isso para ~2 atualizações.
+    """
+    import numpy as np
+
+    a = ACEKTR(cfg(seed=0, ema_escalas=1.0,
+                   kl_cal_debias=False, kl_fator_inicial=1.0)).iterate()
+    b = ACEKTR(cfg(seed=0, ema_escalas=1.0)).iterate()
+    assert b["kl_alvo_efetivo"] == pytest.approx(a["kl_alvo_efetivo"] / 15.0, rel=1e-6)
+    assert b["lr"] < a["lr"]
+    # e a debiasada chega ao fator medido em poucas atualizações, não em ~50
+    ag = ACEKTR(cfg(seed=0))
+    fatores = [ag.iterate()["kl_fator"] for _ in range(4)]
+    assert np.ptp(fatores[-2:]) < abs(fatores[0]) * 5, "o fator deve assentar rápido"
 
 
 def test_reloading_the_model_rebuilds_the_preconditioner():

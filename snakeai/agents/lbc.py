@@ -347,8 +347,28 @@ class LBCConfig(BaseConfig):
     mab_piso_uniforme: float = 0.1
 
     # -------------------------------------------------------------- otimização
-    lr_start: float = 3e-4
-    lr_end: float = 5e-5
+    #: **1e-4 e não 3e-4 como no PPO, e isto é sobre o orçamento de gradiente, não sobre
+    #: velocidade de aprendizado.** Ver `docs/LBC.md` §2.11.
+    #:
+    #: O LBC move a política mais por passo de gradiente que o PPO, por duas razões que se
+    #: multiplicam: a perda é a **soma** sobre três políticas e o tronco é compartilhado,
+    #: então ele recebe ~3× o gradiente que o tronco do PPO recebe; e os dados são
+    #: off-policy, com a vantagem pesada por `ρ` (metade das amostras truncadas), o que a
+    #: deixa de cauda pesada — depois de normalizada, são as caudas que mandam no passo.
+    #:
+    #: Com `lr = 3e-4` isso não aparece como instabilidade: aparece como **fome de
+    #: gradiente**. A parada por KL, que deveria ser freio de emergência, dispara no
+    #: minilote ~8 de 128, e a execução termina com 3.524 atualizações contra 38.374 do
+    #: PPO — 9% do orçamento que o contrato promete a todos (`docs/ORCAMENTO_DE_GRADIENTE.md`).
+    #: A curva sobe até o último passo porque o treino simplesmente não acabou.
+    #:
+    #: A resposta ao `lr` é um penhasco, medido em bancada (mediana de atualizações por
+    #: iteração, de 128): `3e-4 → 15`, `1.5e-4 → 29`, `1e-4 → 125`. Em 1e-4 o KL medido cai
+    #: para 0,0143 — **abaixo** do teto de 0,03 e no mesmo patamar do PPO (0,0125) —, o que
+    #: quer dizer que o freio deixou de ser acionado em vez de ter sido afrouxado. Passo
+    #: menor, orçamento inteiro, mesma segurança.
+    lr_start: float = 1e-4
+    lr_end: float = 3e-5
     optimizer: str = "adam"
     #: 1,0 e não 0,5 como no PPO **porque a perda é a soma sobre as políticas**. Com três
     #: cabeças, a norma do gradiente é ~√3 vezes a de uma; manter o teto do PPO faria o
@@ -426,6 +446,41 @@ class LBCConfig(BaseConfig):
     shaping_start: float = 0.5
     shaping_frac: float = 0.25
 
+    # ------------------------------------------------- o eixo `RS` de `H` (§5.1.2)
+    #: **O segundo eixo de `H`, o que faltava.** No paper `h_i = (γ_i, RS_i)`, onde `RS` é
+    #: um método de *reward shaping* por política (Badia et al., 2020a) — no Agent57 são os
+    #: pesos `β_i` da recompensa intrínseca, pareados com os `γ_i` à moda do NGU: quem
+    #: explora tem `β` alto e `γ` baixo, quem explora o que já sabe tem `β` baixo e `γ` alto.
+    #: A §2.2 tinha reduzido `H` a γ sozinho, e a §2.12 mediu o preço disso: as três
+    #: políticas otimizavam o **mesmo** objetivo, então duas delas não eram "míope
+    #: competente" e "paciente competente" — eram simplesmente piores.
+    #:
+    #: Aqui o análogo de `RS` é o coeficiente do shaping potencial do `VecSnake`,
+    #: `Φ = −dist(cabeça, comida)/b`, dado **por política**. Com ele, cada cabeça passa a
+    #: maximizar um retorno diferente e legítimo:
+    #:
+    #: * shaping alto = guiada pelo gradiente local, colhe rápido, horizonte curto;
+    #: * shaping zero = cega a esse gradiente, só a recompensa esparsa, precisa aprender
+    #:   jogo de corpo inteiro para pontuar.
+    #:
+    #: `None` mantém o comportamento antigo — um shaping só, o do agendamento, igual para
+    #: todas. Com uma tupla, o `VecSnake` é chamado com `shaping_coef = 0` e o agente monta
+    #: a recompensa de cada política a partir de `phi_old`/`phi_new` do `info`, usando o
+    #: **γ da própria política** (o potencial só é invariante quando o γ bate — no caminho
+    #: antigo todas usam o γ da avaliada, que é uma imprecisão herdada).
+    shapings: tuple = None
+
+    #: Fração do orçamento em que o shaping de cada política chega a zero. `None` usa
+    #: `shaping_frac` para todas. Um valor `<= 0` significa **constante, nunca decai** —
+    #: que é como o `β` do NGU se comporta.
+    #:
+    #: O pareamento sugerido é `shapings=(1.0, 0.5, 0.0)` com `shaping_fracs=(1.0, 0.25, 0.0)`:
+    #: a míope fica guiada a execução inteira, a **avaliada é bit-idêntica ao PPO**
+    #: (0,5 zerando em 25%), e a paciente nunca vê o gradiente local. É o que faz a
+    #: diversidade **persistir** — com um agendamento só, as três voltam a ser a mesma
+    #: coisa depois de 25% do orçamento, que é exatamente o defeito.
+    shaping_fracs: tuple = None
+
     canal_fome: bool = False
 
     def __post_init__(self):
@@ -445,6 +500,16 @@ class LBCConfig(BaseConfig):
         if self.ent_alvo is not None and not (
                 0.0 < self.ent_coef_min <= self.ent_coef_max):
             raise ValueError("é preciso 0 < ent_coef_min <= ent_coef_max")
+        for nome in ("shapings", "shaping_fracs"):
+            v = getattr(self, nome)
+            if v is not None and len(v) != self.n_politicas:
+                raise ValueError(
+                    f"{nome} tem {len(v)} valores mas n_politicas={self.n_politicas}. "
+                    "Os dois descrevem a mesma população — passe os dois juntos.")
+        if self.shaping_fracs is not None and self.shapings is None:
+            raise ValueError(
+                "shaping_fracs sem shapings não faz nada: o agendamento por política só "
+                "existe quando há um coeficiente por política.")
         if self.canal_fome and self.comparable:
             raise ValueError(
                 "canal_fome=True muda a observação de 5 para 6 canais e portanto a "
@@ -523,6 +588,8 @@ class LBC(AgentBase):
             marcas.append("selecao_" + cfg.selecao)
         if cfg.n_politicas != type(cfg).n_politicas:
             marcas.append(f"pop{cfg.n_politicas}")
+        if cfg.shapings is not None:
+            marcas.append("H_shaping")
         if not cfg.logits_padronizados:
             marcas.append("logits_crus")
         if cfg.clip_eps <= 0:
@@ -545,6 +612,28 @@ class LBC(AgentBase):
     def shaping(self):
         f = self.frac()
         return max(0.0, self.cfg.shaping_start * (1.0 - f / self.cfg.shaping_frac))
+
+    def shaping_por_politica(self):
+        """Coeficiente de shaping de **cada** política agora, `(P,)`. `None` = eixo desligado.
+
+        É o `RS_i` de `h_i = (γ_i, RS_i)` — ver `LBCConfig.shapings`. `frac <= 0` significa
+        constante: o `β` do NGU não decai, e é isso que faz a diversidade sobreviver ao
+        ponto em que o agendamento do contrato zera.
+        """
+        cfg = self.cfg
+        if cfg.shapings is None:
+            return None
+        f = self.frac()
+        inicio = np.asarray(cfg.shapings, dtype=np.float32)
+        fracs = (np.full(cfg.n_politicas, cfg.shaping_frac, dtype=np.float32)
+                 if cfg.shaping_fracs is None
+                 else np.asarray(cfg.shaping_fracs, dtype=np.float32))
+        saida = np.empty(cfg.n_politicas, dtype=np.float32)
+        for i in range(cfg.n_politicas):
+            fr = float(fracs[i])
+            saida[i] = (inicio[i] if fr <= 0.0
+                        else max(0.0, float(inicio[i]) * (1.0 - f / fr)))
+        return saida
 
     # ------------------------------------------------------------- comportamento
     def _novo_comportamento(self, idx):
@@ -618,7 +707,12 @@ class LBC(AgentBase):
         done_buf = np.empty((T, N), dtype=np.float32)
 
         shaping = self.shaping()
+        #: `None` = caminho antigo (um shaping só, aplicado dentro do `VecSnake`). Tupla =
+        #: o `VecSnake` devolve a recompensa esparsa pura e o shaping é montado aqui, um
+        #: por política. Dois caminhos porque o antigo tem que continuar **exato**.
+        shaping_i = self.shaping_por_politica()
         gamma_ref = cfg.gamma
+        gammas_f = self.gammas.astype(np.float32)
         scores, vitorias = [], 0
         entropias = []
 
@@ -633,9 +727,19 @@ class LBC(AgentBase):
             mu_buf[t] = np.maximum(mu[np.arange(N), a], 1e-8)
             entropias.append(float(-(mu * np.log(mu + 1e-12)).sum(1).mean()))
 
-            self.obs, self.mask, r, d, info = self.env.step(a, shaping, gamma_ref)
+            self.obs, self.mask, r, d, info = self.env.step(
+                a, 0.0 if shaping_i is not None else shaping, gamma_ref)
             self.registra_fim(info)
-            rew_buf[t] = r[:, None]
+            if shaping_i is None:
+                rew_buf[t] = r[:, None]
+            else:
+                # `r` é a esparsa pura. Cada política soma o seu shaping, calculado com o
+                # **seu** γ: o potencial `γΦ' − Φ` só é invariante para a política cujo γ
+                # foi usado, então dar a todas o γ da avaliada enviesaria as outras duas.
+                vale = info["shaping_valido"].astype(np.float32)[:, None]        # (N, 1)
+                delta = (gammas_f[None, :] * info["phi_new"][:, None]
+                         - info["phi_old"][:, None]) * vale                      # (N, P)
+                rew_buf[t] = r[:, None] + shaping_i[None, :] * delta
             done_buf[t] = d.astype(np.float32)
 
             if info["trunc_idx"].size:      # fome é truncamento, não terminação
@@ -674,7 +778,7 @@ class LBC(AgentBase):
             "train_score_mean": float(np.mean(scores)) if scores else None,
             "n_episodes": len(scores),
             "wins": vitorias,
-            "shaping": shaping,
+            "shaping": shaping if shaping_i is None else float(shaping_i.mean()),
             "entropia_comportamento": float(np.mean(entropias)),
             "tau_medio": float(self.tau.mean()),
             #: Quão longe a mistura está de usar uma política só. 0 é one-hot (o caso
@@ -732,6 +836,7 @@ class LBC(AgentBase):
                 -(np.exp(logp_all_np) * np.where(
                     np.isfinite(logp_all_np) & (logp_all_np > -1e8),
                     logp_all_np, 0.0)).sum(-1).mean()),
+            **self._diversidade(logp_all_np),
             #: Fração de amostras em que o peso de importância bateu no teto. Perto de 0
             #: o comportamento está colado nas políticas alvo e o V-trace não está
             #: fazendo nada; perto de 1 a correção está saturada e o gradiente vira o de
@@ -739,9 +844,50 @@ class LBC(AgentBase):
             "razao_truncada": float((razao > cfg.rho_barra).mean()),
             "ev": variancia_explicada(valor[:, :, self.indice_alvo].ravel(),
                                       vs[:, :, self.indice_alvo].ravel()),
+            #: `V_i` médio da pior cabeça em relação à avaliada. Perto de 1 a população é
+            #: de pares; muito abaixo, as outras cabeças não são "diferentes", são piores —
+            #: e sob `ω` uniforme elas assinam dois terços do comportamento.
+            "valor_relativo_pior": float(
+                valor.reshape(-1, P).mean(0).min()
+                / (abs(valor.reshape(-1, P).mean(0)[self.indice_alvo]) + 1e-8)),
         }
         return (vs.reshape(T * N, P), adv.reshape(T * N, P),
                 logp.astype(np.float32), valor_plano.astype(np.float32), diag)
+
+    @staticmethod
+    def _diversidade(logp_all):
+        """A população é diversa, ou são `N` cópias caras da mesma política?
+
+        Sem isto, a única forma de responder é carregar o checkpoint e medir por fora —
+        que foi como se descobriu, tarde, que a população da primeira execução corrigida
+        concordava no argmax em 31,8% dos estados (o acaso, com três ações, é 33%) e que
+        duas das três cabeças eram simplesmente piores que a avaliada. É o instrumento que
+        faltava para a §2.12 de `docs/LBC.md`.
+
+        Dois números, medidos nos estados do próprio rollout:
+
+        * `divergencia_populacao` — `KL(π_i ‖ π_j)` médio sobre todos os pares. Zero é
+          população degenerada (o mapeamento híbrido não tem o que misturar); alto demais
+          **não** é bom por si só: significa que as cabeças discordam, e discordar só vale
+          quando as duas são competentes — por isso o número seguinte;
+        * `acordo_argmax` — fração dos estados em que **todas** concordam na ação de maior
+          probabilidade. Perto de 1 é degeneração; perto de `1/|A|` é acaso, e aí a
+          população está resolvendo problemas diferentes em vez de resolver o mesmo
+          problema de jeitos diferentes. O alvo saudável fica no meio.
+
+        Ambos valem `nan` com população de uma política — não há par a comparar, e escrever
+        zero ali afirmaria degeneração onde a pergunta nem existe.
+        """
+        n, P, _ = logp_all.shape
+        if P < 2:
+            return {"divergencia_populacao": float("nan"),
+                    "acordo_argmax": float("nan")}
+        p = np.exp(logp_all)
+        kls = [float((p[:, i] * (logp_all[:, i] - logp_all[:, j])).sum(-1).mean())
+               for i in range(P) for j in range(P) if i != j]
+        am = logp_all.argmax(-1)
+        return {"divergencia_populacao": float(np.mean(kls)),
+                "acordo_argmax": float((am == am[:, :1]).all(-1).mean())}
 
     # ----------------------------------------------------------------- update
     @staticmethod

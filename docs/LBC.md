@@ -345,6 +345,133 @@ agrupa por `(algo, variant, seed)` e aquele endereço pertence ao braço oficial
 foi medido. Enquanto for a única execução do LBC, **o algoritmo não tem linha na arena** — o
 que a tabela mostra é a ausência, e não um 0,57 com o nome do LBC em cima.
 
+### 2.11 O `lr` é 1e-4, e isso é sobre orçamento de gradiente
+
+A execução seguinte às correções da §2.6–§2.9 subiu de 0,57 para **38,8** — e terminou
+**subtreinada**: `melhor == final` no último passo, com a curva ainda subindo. A causa não
+está em nenhuma das peças do algoritmo. Está numa linha do `meta`:
+
+| | atualizações de gradiente | iterações | tempo de parede |
+|---|---|---|---|
+| PPO | **38.374** | 305 | 2.689 s |
+| LBC | **3.524** | 305 | 581 s |
+
+**9,2% do orçamento.** O contrato deste repositório iguala duas coisas entre os agentes: 5 M
+passos de ambiente e 4 épocas × 32 minilotes = 128 passos de gradiente por rollout
+(`docs/ORCAMENTO_DE_GRADIENTE.md`). O LBC cumpriu o primeiro e gastou um doze avos do
+segundo. Ele não aprendeu devagar — ele aprendeu **pouco**, e o tempo de parede 4,6× menor é
+a assinatura disso.
+
+O que aconteceu é que **a parada por KL, projetada como freio de emergência, virou o modo
+normal de operação**. No PPO o clip é o freio principal (limita o tamanho do passo sem
+interromper) e o `target_kl` é a exceção; medido na bancada, o PPO completa 79 dos 128
+minilotes. No LBC a parada dispara no minilote ~8, e o efeito de "passos grandes demais"
+aparece invertido, como "passos de menos".
+
+**Por que o KL sobe mais rápido aqui.** Duas causas independentes, isoladas por ablação
+(mediana de atualizações por iteração, de 128, mesma bancada para todos):
+
+| | upd/iter |
+|---|---|
+| PPO | 79 |
+| LBC, `n_politicas=1` | 29 |
+| LBC, `n_politicas=3` (padrão) | 15 |
+
+* **~2× vem do tronco compartilhado sob uma perda somada.** A soma sobre as políticas é
+  deliberada e continua certa para os *parâmetros de cada cabeça* (§ do `_train_step`), mas o
+  **tronco** — que é quase toda a rede — recebe a soma, ou seja ~3× o gradiente que o tronco
+  do PPO recebe. Somar N perdas multiplica o learning rate efetivo do que é compartilhado
+  por ~N.
+* **~2,7× vem de os dados serem off-policy.** É o que sobra depois de tirar a população, e é
+  intrínseco ao LBC: as ações vieram de `μ`, não de `π`. O `ρ` corrige a *esperança*, mas a
+  vantagem vira um produto `ρ · δ` de cauda pesada (`razao_truncada ≈ 0,49` — metade das
+  amostras no teto), e depois da normalização são as caudas que mandam no passo. A política
+  precisa andar mais para aprender a mesma coisa.
+
+**Por que o conserto é o `lr` e não o `target_kl`.** Os dois recuperam o orçamento, e a
+diferença está em *como*:
+
+| | upd/iter | KL medido | leitura |
+|---|---|---|---|
+| padrão antigo (`lr 3e-4`) | 15 | 0,0177 | freio acionado o tempo todo |
+| `target_kl = 0,30` | 128 | **0,0547** | orçamento recuperado **afrouxando o freio** |
+| **`lr = 1e-4`** | **125** | **0,0143** | orçamento recuperado **encurtando o passo** |
+| PPO (referência) | 79 | 0,0125 | — |
+
+Com `lr = 1e-4` o KL medido fica *abaixo* do teto de 0,03: o freio deixou de ser **acionado**,
+em vez de ter sido **removido**. A proteção que impediu o colapso da primeira execução — onde
+o KL chegou a 1,01 — continua inteira. Afrouxar o `target_kl` para 0,30 daria o mesmo número
+de atualizações desmontando exatamente a peça que consertou a §2.7.
+
+A resposta ao `lr` é um penhasco, não uma rampa: `3e-4 → 15`, `1.5e-4 → 29`, `1e-4 → 125`. O
+padrão antigo estava do lado errado da borda, e nada na curva de score dizia isso.
+
+**A lição que passa dos limites deste algoritmo:** um contrato que iguala passos de
+*ambiente* entre agentes não iguala passos de *gradiente*, e a diferença é invisível na curva.
+Sempre que um agente terminar com `melhor == final` no último passo, o primeiro número a
+conferir é `meta.atualizacoes` contra o de um agente que se sabe treinado.
+
+### 2.12 A população não é diversa — é discordante, e o bandit já disse isso
+
+Medido no modelo treinado (`runs/lbc/resnet_small/seed0/modelos/last.keras`), sobre 384
+estados visitados pela política avaliada:
+
+| | π0 (γ=0,99) | π1 (γ=0,995, **a avaliada**) | π2 (γ=0,999) |
+|---|---|---|---|
+| entropia | 0,109 | 0,152 | **0,014** |
+| valor médio `V_i` | **7,62** | 11,41 | 10,99 |
+
+| par | `KL(a‖b)` | `KL(b‖a)` | mesma ação de argmax |
+|---|---|---|---|
+| π0, π1 | 2,47 | 3,18 | 64,6% |
+| π1, π2 | 10,90 | 4,49 | 55,5% |
+| π0, π2 | **17,91** | 10,38 | **32,8%** |
+
+As três concordam no argmax em **31,8%** dos estados. Com três ações, o acaso dá ~33%.
+**π0 e π2 são estatisticamente independentes uma da outra.**
+
+Isso não é o "espaço de comportamento não-degenerado" do §4.1 — é uma população de políticas
+que discordam. E discordar não é diversidade útil quando duas das três são *piores*: π0 vale
+7,62 contra 11,41 de π1, e π2 está saturada em 0,014 nat de entropia. Não são "míope
+competente" e "paciente competente"; são uma cabeça subtreinada e uma cabeça colapsada. Sob
+`ω` uniforme, **dois terços do comportamento vêm delas**.
+
+**E o mapeamento híbrido não está criando comportamento novo.** Comparando a mistura uniforme
+com "só π1", no mesmo `τ`:
+
+* `KL(mistura ‖ só-π1) = 0,56` nat, entropia 0,648 contra 0,212 — a mistura é mais estocástica;
+* mas o **argmax é o mesmo em 95,1% dos estados**.
+
+Ou seja: a mistura não muda *para onde* a cobra vai, só o quanto ela hesita. Isso é ε-greedy
+com passos extras — exatamente o que a §1.2 diz que o mapeamento híbrido existe para superar.
+
+**O meta-controlador já tinha chegado a essa conclusão sozinho.** Em 96,1% das iterações o
+braço preferido foi o **13**, que decodifica para `τ ∈ [2,00, 4,00] · ω ≈ π1`: temperatura
+alta e peso concentrado numa política só. Traduzindo, a parte *learnable* do LBC convergiu
+para **"use π1 sozinha, quase gulosa"** — que é o caso degenerado do Agent57 com população
+de um, e é literalmente a ablação `n_politicas=1`. O bandit funcionou; a resposta que ele deu
+foi que a população não vale o que custa.
+
+Na bancada reduzida a resposta bate: `n_politicas=1` marca 14,5 e empata com o PPO (14,0),
+enquanto `n_politicas=3` marca 10,7 — e a população ainda dobra o consumo do orçamento de
+gradiente (§2.11: 29 contra 15 atualizações por iteração).
+
+**Por que, e o que fazer.** As duas causas prováveis são os desvios §2.1 e §2.2, e é a
+primeira vez que eles têm consequência medida:
+
+* **tronco compartilhado** — as três cabeças veem as mesmas features, então não podem ser
+  *estratégias* diferentes, só leituras diferentes. O que emergiu não foi diversidade de
+  estratégia, foi diferença de saturação sobre um tronco só;
+* **`H` reduzido a γ** — no paper, `H` inclui *reward shaping* por política, e é ele que faz
+  uma política ser genuinamente exploratória em vez de apenas descontar diferente. Com γ como
+  único eixo, o que separa as cabeças é sobretudo ruído de treino.
+
+A conclusão honesta é que, **deste jeito**, a população é custo sem retorno neste domínio, e a
+próxima medição que vale a pena é a ablação `n_politicas=1` em 5 M passos, contra o PPO. Se
+ela empatar ou ganhar, o resultado do repositório é: *o mapeamento híbrido do LBC precisa de
+diversidade de objetivo que γ sozinho não fornece* — que é uma resposta sobre o algoritmo, e
+entra na arena com a nota.
+
 ---
 
 ## 3. O que comparar com o quê
@@ -385,6 +512,7 @@ nada. Quatro números no registro existem para isso:
 | `clipfrac` | 0,05 a 0,25 | perto de 1 = todo minilote está sendo clipado, o passo é grande demais |
 | `mab_sinal_ruido` | cresce com o treino | abaixo de ~2 **com `mab_entropia` baixa** = o bandit decidiu sobre ruído (§2.9) |
 | `ent_coef` | passeia dentro de `[1e-4, 0,15]` | colado no teto com `ent` abaixo do alvo = o controlador perdeu autoridade e o piso não existe |
+| `atualizacoes` / `epochs_done` | perto de 128 e de 4 | **o número mais importante desta tabela.** Uma fração do orçamento (128) é fome de gradiente: a parada por KL virou o modo normal e o agente vai terminar subtreinado, com `melhor == final` no último passo. Confira `meta.atualizacoes` contra o do PPO — não a curva (§2.11) |
 
 `ev` (variância explicada) é lido como nos outros agentes: mede o crítico da política
 **avaliada**, não a média da população.
@@ -401,6 +529,12 @@ algoritmo.
   (`entropia_comportamento` ~0,55 contra 3e-4), o KL fica em 0,02–0,03 contra 0,45–1,01 do
   código antigo, `ev` sobe para 0,86 e o bandit não trava. Isso mostra que os **mecanismos**
   de falha foram fechados; **não** mostra qual score sai de 5 M passos.
+* **Se a população vale alguma coisa neste domínio.** A §2.12 mede que, do jeito atual,
+  não: as três políticas discordam ao nível do acaso, duas são piores que a avaliada, a
+  mistura muda a hesitação e não a direção (95,1% do mesmo argmax), e o próprio bandit
+  escolheu "só π1, quase gulosa" em 96% do treino. O que **não** está medido é se isso é
+  culpa do domínio ou dos desvios §2.1/§2.2 — a ablação `n_politicas=1` em 5 M passos é a
+  próxima medição.
 * **Se o LBC ganha do PPO aqui.** Snake 10×10 com máscara de ação é um domínio de
   exploração fácil: o PPO já fecha ~90% dos tabuleiros. O LBC foi feito para jogos de
   Atari com exploração dura, e o resultado honesto pode perfeitamente ser "não compensa

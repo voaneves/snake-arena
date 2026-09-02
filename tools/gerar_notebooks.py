@@ -766,6 +766,19 @@ a causa*. Medir com ele ligado responderia sempre "está calibrado".
 `controle` dá 15,3×; numa forma reduzida (64×5, `resnet_tiny`) dá **0,9×** — o fenômeno
 some. Lote 8× menor, estouro 17× menor, que é o que a hipótese do momento prevê e a da
 Fisher não. Não encolha `ENVS` para economizar: você mediria outra coisa.
+
+**E a forma mudou.** Tudo que está escrito acima e em `docs/diag_acktr_kl.json` — os 7,4×
+do controle, o piso da KL em ~0,0186, os 15,3× do `sem_clip` — foi medido com
+`rollout = 5`, que era o que o `ACKTRConfig` herdava do `A2CConfig` entre 21/08 e 01/09.
+O `rollout` voltou a ser **16** (declarado, não herdado: ver a nota em `ACKTRConfig`), e
+com ele o lote por atualização é 3,2× maior. Pela própria regra do parágrafo anterior,
+lote maior desloca o fenômeno — então esta célula **remede**, não confirma. Se os números
+vierem diferentes, o resultado novo é o que vale.
+
+**Bracos de treino.** Os quatro últimos (`rollout5`, `calibrado_v1`, `calibrado_debias`,
+`calibrado_debias_prior1`) não aparecem aqui: eles mexem na calibração, que esta célula
+desliga em todos por construção. Eles se respondem treinando, e a célula de treino abaixo
+é o lugar deles.
 """
 
 DIAG_KL_CODE = '''import gc
@@ -778,7 +791,12 @@ ENVS = 512      # @param {type:"integer"}
 SO_ESTES = ""   # @param {type:"string"}
 
 # `kl_calibrado=False` entra aqui e nao vem do BRACOS: a calibracao esconde a causa.
-_ARMS = {k: {**v, "kl_calibrado": False} for k, v in BRACOS.items()}
+# E por isso mesmo os bracos de treino ficam de fora: o que eles mexem E a calibracao,
+# entao aqui eles virariam copias do `controle` - duplicados silenciosos na tabela.
+_ARMS = {k: {**v, "kl_calibrado": False}
+         for k, v in BRACOS.items() if k not in BRACOS_SO_TREINO}
+if BRACOS_SO_TREINO:
+    print(f"fora desta celula (so treino): {', '.join(BRACOS_SO_TREINO)}")
 if SO_ESTES.strip():
     _ARMS = {k: _ARMS[k] for k in
              [x.strip() for x in SO_ESTES.split(",") if x.strip()]}
@@ -787,8 +805,13 @@ if SO_ESTES.strip():
 if "controle" in _ARMS:
     _ARMS = {"controle": _ARMS.pop("controle"), **_ARMS}
 
-print(f"{ITERS} atualizacoes por braco · {ENVS} ambientes · {REDE} · "
-      f"kl_calibrado=False em todos")
+print(f"{ITERS} atualizacoes por braco · {ENVS} ambientes · rollout={ACKTRConfig.rollout}"
+      f" · {REDE} · kl_calibrado=False em todos")
+if ACKTRConfig.rollout != 5:
+    print("ATENCAO: os numeros gravados em `docs/diag_acktr_kl.json` (7,4x no controle, o")
+    print("PISO da KL em ~0,0186) foram medidos com rollout=5, que era o default herdado")
+    print("do A2C ate 01/09. Com o rollout restaurado o lote por atualizacao e 3,2x maior")
+    print("e nada garante que eles se reproduzam - esta celula os REMEDE, nao os confirma.")
 print()
 print(f"{'braco':>24} {'KL mediana':>11} {'razao':>8} {'p90':>8} "
       f"{'no teto':>7} {'eta med':>9} {'s':>6}")
@@ -861,6 +884,7 @@ else:
 _DIAG = os.path.join(PASTA, "diag_acktr_kl.json")
 with open(_DIAG, "w", encoding="utf-8") as _f:
     json.dump({"iters": ITERS, "envs": ENVS, "rede": REDE, "semente": SEMENTE,
+               "rollout": ACKTRConfig.rollout,
                "assinatura_pacote": ASSINATURA_PACOTE,
                "plataforma": detecta(), "razoes": _linhas, "passo": _diag2,
                "bracos": {k: v for k, v in _ARMS.items()}}, _f,
@@ -872,15 +896,30 @@ entregar_arquivo(_DIAG)
 
 
 BRACOS_ACKTR = [
+    # --- diagnostico da KL (calibracao desligada; rodam na celula curta) -------------
     # os dois suspeitos que nao sao a Fisher, e as combinacoes
     "sem_momento", "momento_descontado", "sem_clip", "sem_momento_sem_clip",
     # o alvo do paper, que o repositorio nao usa
     "kl_do_paper", "kl_do_paper_descontado",
     # controle
     "controle",
+    # --- treino (calibracao LIGADA; a celula curta pula estes) ----------------------
+    # a regressao do rollout, testada de frente
+    "rollout5",
+    # de onde vem o ganho da calibracao acordar mais cedo
+    "calibrado_v1", "calibrado_debias", "calibrado_debias_prior1",
+    # tudo o que se sustenta, junto, para UMA execucao
+    "definitiva",
 ]
 
-BRACO_PADRAO_ACKTR = "momento_descontado"
+#: Bracos que so fazem sentido TREINANDO, porque o que eles mexem e a calibracao — e a
+#: celula de diagnostico desliga a calibracao em todos, por construcao. Rodar
+#: `calibrado_debias` la produziria uma linha identica ao `controle` e um duplicado
+#: silencioso na tabela, que e a classe de erro que este notebook existe para evitar.
+BRACOS_SO_TREINO_ACKTR = ("rollout5", "calibrado_v1", "calibrado_debias",
+                          "calibrado_debias_prior1", "definitiva")
+
+BRACO_PADRAO_ACKTR = "definitiva"
 
 _PRE_CFG_ACKTR = """BRACOS = {
     # `kl_calibrado=False` em TODOS: ligado, ele mede a razao e pede `kl_max/c`, de modo
@@ -917,8 +956,9 @@ _PRE_CFG_ACKTR = """BRACOS = {
 
     # ------------------------------------------------ o alvo de KL do paper de verdade
     # Wu et al. usam 0,001-0,002; aqui `kl_max` e 1,5e-2, uma regiao 7-15x mais larga.
-    # O `98_acktr_kl_nominal` ja mede isso COM a calibracao; aqui e sem, e junto com o
-    # conserto do momento - que e a combinacao que o baselines de fato roda.
+    # O `98_acktr_kl_nominal` media isso com a calibracao ligada e foi aposentado: era
+    # exatamente este par de chaves, e o braco abaixo o substitui. Aqui a calibracao
+    # esta desligada, e junto com o conserto do momento - que e o que o baselines roda.
     "kl_do_paper":             {"kl_max": 2e-3, "kl_calibrado": False},
     "kl_do_paper_descontado":  {"kl_max": 2e-3, "descontar_momento": True,
                                 "kl_calibrado": False},
@@ -935,8 +975,178 @@ _PRE_CFG_ACKTR = """BRACOS = {
     # assistente - a diferenca entre plataformas e do tamanho do efeito medido, que e o
     # mesmo fenomeno que o docstring do acktr.py ja registrava)
     "controle": {"kl_calibrado": False},
+
+    # =============================================================== BRACOS DE TREINO
+    # Daqui para baixo a calibracao fica LIGADA e a celula de diagnostico pula todos.
+    # Nao sao perguntas sobre de onde vem o estouro da KL - sao perguntas sobre score.
+
+    # ----------------------------------------- a regressao do rollout, de frente
+    # `A2CConfig.rollout` foi de 16 para 5 em 21/08, um dia DEPOIS das tres sementes
+    # gravadas de `acktr/resnet_small`, e o `ACKTRConfig` herdava o campo. As tres
+    # rodaram com 16; a execucao do ACEKTR de 01/09, com 5. A restauracao (`rollout=16`
+    # declarado no `ACKTRConfig`) veio de um argumento mecanico mais duas execucoes
+    # confundidas - este braco e o teste de UMA variavel que faltava.
+    #
+    # A conta: com `gamma*lambda = 0,995*0,95 = 0,945`, a fracao do peso do GAE que sobra
+    # no bootstrap `V(s_{t+T})` e `0,945^T` - 76% com T=5, 40% com T=16. Enquanto o
+    # shaping segura a recompensa densa isso nao importa; depois de `shaping_frac`
+    # (1,25 M de 5 M) a unica recompensa e comida e morte.
+    #
+    # PREVISAO: fecha na casa dos 70, nao dos 90. Se fechar nos 90, a restauracao do
+    # rollout nao explica o que aconteceu com o ACEKTR e a leitura tem que ser refeita.
+    "rollout5": {"rollout": 5},
+
+    # ------------------------------- a calibracao acordando mais cedo, e a atribuicao
+    # `_fator_kl` e uma media movel com `kl_cal_ema=0,98`: constante de tempo de ~50
+    # atualizacoes num orcamento de 610. Partindo de 1,0 quando o fator verdadeiro e
+    # 15-25, ela gasta ~8% do treino com o alvo efetivo ate 20x maior que o pedido -
+    # exatamente quando a politica ainda e aleatoria.
+    #
+    # MEDIDO em 96 ambientes, mesma semente: com a EMA crua o fator ainda marcava 1,10 na
+    # DECIMA atualizacao (ou seja, nao tinha comecado a corrigir) enquanto a entropia ja
+    # havia caido de 1,06 para 0,29; por volta da 45a a politica estava morta (entropia
+    # 0,0001, eta colado no teto). Com a media debiasada e prior 15, o fator assenta em
+    # ~5 na quinta e a entropia segura em 0,22 ate a 50a.
+    #
+    # Os tres bracos separam DUAS mudancas que andam juntas no default do ACEKTR:
+    "calibrado_v1":            {},                       # o ACKTR das 3 sementes gravadas
+    "calibrado_debias":        {"kl_cal_debias": True,   # debias + prior medido
+                                "kl_fator_inicial": 15.0},
+    "calibrado_debias_prior1": {"kl_cal_debias": True,   # so o debias, sem o prior
+                                "kl_fator_inicial": 1.0},
+    # Se `calibrado_debias_prior1` ja recupera o ganho, o prior e cosmetico e o que
+    # importava era a media nao levar 50 atualizacoes para acordar. Se so
+    # `calibrado_debias` recupera, o estrago acontece nas PRIMEIRAS atualizacoes e nem o
+    # debias chega a tempo - conclusoes diferentes, um braco de distancia.
+
+    # ============================================ A EXECUCAO UNICA (o padrao do dropdown)
+    # Tudo o que se sustenta, junto. E a lista do que ficou de FORA e metade do valor
+    # deste braco, entao ela esta escrita abaixo em vez de ser sobreentendida.
+    #
+    # DENTRO:
+    #   * `rollout = 16`, que nao aparece aqui porque virou o default do `ACKTRConfig`.
+    #     E a restauracao: as tres sementes gravadas rodaram com 16, o 5 entrou herdado
+    #     do `A2CConfig` em 21/08 e nao reproduz resultado nenhum do repositorio.
+    #   * `kl_cal_debias` + `kl_fator_inicial = 15`. A media da calibracao tem constante
+    #     de tempo de ~50 atualizacoes num orcamento de 610: partindo de 1,0 quando o
+    #     fator real e 15-25, ela gasta 8% do treino pedindo um alvo ate 20x maior que o
+    #     que quer. Medido em 96 ambientes: com a EMA crua o fator ainda marcava 1,10 na
+    #     decima atualizacao enquanto a entropia caia de 1,06 para 0,29, e por volta da
+    #     45a a politica estava morta (entropia 0,0001, eta colado no teto). Com o debias
+    #     e o prior, o fator assenta em ~5 na quinta e a entropia segura em 0,22 ate a 50a.
+    #   * `eval_every_steps = 125_000`: 40 avaliacoes em vez de 20. NAO gasta orcamento -
+    #     `avaliar()` roda num `VecSnake` proprio e nao mexe no `global_step`. O que muda
+    #     e a densidade da amostragem do `best`, e o contrato ja registra que em 8 das 21
+    #     avaliacoes da primeira execucao longa havia um checkpoint anterior melhor que o
+    #     modelo daquele momento - numa delas por 21,7 pontos. `avaliar_melhor()` remede o
+    #     escolhido do zero com o mesmo protocolo, entao isto acha um pico melhor sem
+    #     inflar o numero. Custa wall-clock: a avaliacao fica ~2x mais cara no total.
+    #
+    # FORA, e por que:
+    #   * `max_grad_norm = 0`. E a distorcao conhecida que sobrou - o Keras clipa POR
+    #     VARIAVEL sobre a direcao ja pre-condicionada, e ~30% das variaveis batem no
+    #     teto, o que desfaz em silencio a razao de ser do K-FAC. Mas o braco `sem_clip`
+    #     mediu o oposto do esperado: tirar o clip PIORA a razao da KL (7,4x -> 15,3x) e
+    #     satura eta no teto do `lr`. Ele nao era so uma distorcao, era tambem um freio.
+    #     Trocar `clipnorm` por `global_clipnorm` (que preserva a direcao) e o conserto
+    #     certo, mas o limiar teria que ser recalibrado e ninguem mediu qual. Um palpite
+    #     nao entra numa execucao unica.
+    #   * `kl_max` maior. A evidencia so vai ate aqui: 0,002 deu 72,50 e 0,015 deu 89,78.
+    #     Extrapolar seria tentador, mas a execucao do ACEKTR fechou a porta - ela
+    #     acumulou `Sum sqrt(KL)` de 202 contra 57-73 do ACKTR e chegou 20 pontos abaixo.
+    #     Movimento nao e o gargalo; direcao e.
+    #   * `ent_coef_start` maior. A entropia cai para ~0,08 em 7% do treino em TODAS as
+    #     execucoes, e isso e suspeito - mas o debias existe justamente para segurar essa
+    #     queda. Mexer nos dois ao mesmo tempo tornaria o resultado inatribuivel.
+    #   * `shaping_frac` maior. Adiar o fim do shaping so move o penhasco de lugar, e o
+    #     shaping potencial decair a zero e o que garante que a politica otima final seja
+    #     a do problema de verdade.
+    #
+    # O que este braco NAO e: uma aposta. Ele e a uniao do que tem medicao, e a razao de
+    # a lista ser curta e que so tres coisas tem.
+    "definitiva": {"kl_cal_debias": True, "kl_fator_inicial": 15.0,
+                   "eval_every_steps": 125_000},
 }
+
+#: Os que a celula de diagnostico da KL pula. Ver o comentario la.
+BRACOS_SO_TREINO = ("rollout5", "calibrado_v1", "calibrado_debias",
+                    "calibrado_debias_prior1", "definitiva")
+
 print(f"braco: {BRACO}  (o padrao e o 08_acktr; aqui se testa de onde vem o estouro)")
+for _k, _v in sorted(BRACOS[BRACO].items()) or [("(nada)", "= o 08_acktr, pareado")]:
+    print(f"   {_k} = {_v!r}")
+print(f"   rollout = {ACKTRConfig.rollout}  (default restaurado; era 5 ate 01/09)")
+
+"""
+
+
+# ---------------------------------------------------------------------------------
+# LBC — a populacao. O `10_lbc` mede o algoritmo; este mede se a POPULACAO vale o que
+# custa, e com que eixo de `H`. Ver `docs/LBC.md` §2.12.
+BRACOS_LBC = [
+    "H_shaping", "H_shaping_pop5", "H_shaping_aleatoria", "pop1", "H_gamma_aleatoria",
+]
+
+#: `H_shaping` e o braco principal: e a hipotese de que a populacao da execucao anterior
+#: era fraca por causa do eixo, e nao por causa da ideia.
+BRACO_PADRAO_LBC = "H_shaping"
+
+_PRE_CFG_LBC = """BRACOS = {
+    # ---------------------------------------------- o eixo `RS` que faltava (§2.12)
+    # No paper `h_i = (gamma_i, RS_i)`: desconto E metodo de reward shaping por
+    # politica, pareados a moda do NGU (quem explora tem shaping alto e gamma baixo).
+    # A implementacao daqui tinha reduzido `H` a gamma sozinho, e a medicao mostrou o
+    # preco: as tres politicas otimizavam o MESMO objetivo, entao duas nao eram
+    # "miope competente" e "paciente competente" -- eram so piores (V 7,62 e 10,99
+    # contra 11,41 da avaliada), e concordavam no argmax em 31,8% dos estados, que e o
+    # acaso com tres acoes.
+    #
+    # Aqui cada cabeca passa a maximizar um retorno diferente e legitimo:
+    #   pi0 = (gamma 0,990, shaping 1,0 pela execucao inteira) miope e guiada
+    #   pi1 = (gamma 0,995, shaping 0,5 zerando em 25%)        IDENTICA ao 01_ppo
+    #   pi2 = (gamma 0,999, shaping 0,0 sempre)                paciente e esparsa
+    # O `indice_alvo` continua apontando para pi1: e ela que entra na arena.
+    "H_shaping": {
+        "gammas": (0.99, 0.995, 0.999),
+        "shapings": (1.0, 0.5, 0.0),
+        "shaping_fracs": (1.0, 0.25, 0.0),
+        "indice_alvo": 1,
+    },
+
+    # O mesmo eixo com cobertura maior. Cuidado: o §2.11 mediu que cada politica a mais
+    # DOBRA o consumo do orcamento de gradiente (o tronco compartilhado recebe a soma),
+    # entao cinco politicas nao sao "mais do mesmo" -- sao um regime diferente.
+    "H_shaping_pop5": {
+        "n_politicas": 5,
+        "gammas": (0.99, 0.993, 0.995, 0.997, 0.999),
+        "shapings": (1.0, 0.75, 0.5, 0.25, 0.0),
+        "shaping_fracs": (1.0, 0.6, 0.25, 0.1, 0.0),
+        "indice_alvo": 2,
+    },
+
+    # --------------------------------------------- as ablacoes da Fig. 5 do paper
+    # Mesmo espaco de comportamento, escolhido no sorteio. Se empatar com `H_shaping`,
+    # o merito estava no espaco e nao no bandit -- e a parte *learnable* do LBC nao fez
+    # nada neste dominio, que e um resultado.
+    "H_shaping_aleatoria": {
+        "gammas": (0.99, 0.995, 0.999),
+        "shapings": (1.0, 0.5, 0.0),
+        "shaping_fracs": (1.0, 0.25, 0.0),
+        "indice_alvo": 1,
+        "selecao": "aleatoria",
+    },
+
+    # A mesma pergunta sobre o `10_lbc` padrao (H so de gamma), para saber se a
+    # conclusao sobre o bandit depende do eixo de `H`.
+    "H_gamma_aleatoria": {"selecao": "aleatoria"},
+
+    # "Reducing H" da Fig. 5, levado ao extremo: populacao de UMA. O comportamento vem
+    # so de `psi`. Na bancada reduzida este braco EMPATOU com o PPO enquanto a populacao
+    # de tres ficava 4 pontos atras -- e o bandit do `10_lbc` escolheu
+    # "tau alto, omega ~= pi1" em 96% das iteracoes, que e literalmente este braco.
+    "pop1": {"n_politicas": 1, "gammas": (0.995,), "indice_alvo": 0},
+}
+print(f"braco: {BRACO}  (o controle e o 10_lbc, na MESMA semente)")
 for _k, _v in sorted(BRACOS[BRACO].items()):
     print(f"   {_k} = {_v!r}")
 
@@ -947,6 +1157,13 @@ ABLACOES = {
     "alphazero": (BRACOS_ABLACAO, BRACO_PADRAO, _PRE_CFG_ABLACAO),
     "muzero": (BRACOS_MUZERO, BRACO_PADRAO_MUZERO, _PRE_CFG_MUZERO),
     "acktr": (BRACOS_ACKTR, BRACO_PADRAO_ACKTR, _PRE_CFG_ACKTR),
+    "lbc": (BRACOS_LBC, BRACO_PADRAO_LBC, _PRE_CFG_LBC),
+}
+
+#: Braços que a célula de diagnóstico curta **não** roda, por ablação. Só o ACKTR tem —
+#: nos outros dois notebooks a célula curta não desliga nada do que os braços mexem.
+ABLACOES_SO_TREINO = {
+    "acktr": BRACOS_SO_TREINO_ACKTR,
 }
 
 
@@ -1084,7 +1301,9 @@ NOTEBOOKS = [
                   "é um alvo nominal que a Fisher aproximada erra por ~7×, e a mesma "
                   "semente entregou 83,91 num Colab e 64,53 num Kaggle. Com a KL entregue "
                   "presa em ~0,007, o ACKTR fecha ~90% dos tabuleiros. A versão sem "
-                  "calibrar virou a ablação `98_acktr_kl_nominal`.",
+                  "calibrar é o braço `controle` do `98_acktr_ablacoes` (o antigo "
+                  "`98_acktr_kl_nominal`, aposentado quando a ablação passou a cobrir "
+                  "os dois eixos numa execução só).",
     },
     {
         "arquivo": "12_acektr.ipynb",
@@ -1093,25 +1312,41 @@ NOTEBOOKS = [
                     "snakeai/agents/acktr.py", "snakeai/agents/acektr.py"],
         "agente": "ACEKTR",
         "config": "ACEKTRConfig",
-        "resumo": "O `08_acktr` com **uma** troca: o EK-FAC no lugar do K-FAC.\n\n"
+        # 40 avaliações em vez de 20. Não gasta orçamento — `avaliar()` roda num
+        # `VecSnake` próprio e não toca no `global_step` — e o contrato registra que em 8
+        # das 21 avaliações da primeira execução longa havia um checkpoint anterior
+        # melhor que o modelo daquele momento, numa delas por 21,7 pontos. `melhor` é
+        # remedido do zero por `avaliar_melhor()` com o mesmo protocolo, então amostrar
+        # mais denso acha um pico melhor sem inflar o número. Custa wall-clock.
+        "extra_cfg": "    eval_every_steps=125_000,",
+        "resumo": "O `08_acktr` com o EK-FAC no lugar do K-FAC — e, desde 01/09, no "
+                  "**regime que o paper propõe**.\n\n"
                   "De `A ⊗ G = (U_A ⊗ U_G)(S_A ⊗ S_G)(U_A ⊗ U_G)ᵀ` o K-FAC tira duas "
                   "coisas, e só uma se justifica: uma **base** de autovetores (defensável) "
                   "e uma **escala por eixo** obrigada a ter forma de produto, "
                   "`λ_A(j)·λ_G(i)` (que não vem de lugar nenhum além de ter saído junto). "
-                  "O EK-FAC fica com a base e **mede** as escalas — o segundo momento "
-                  "verdadeiro do gradiente projetado. Pelo Teorema 3 do paper ele nunca é "
-                  "pior que o K-FAC, e sai barato porque o gradiente por amostra é um "
-                  "produto externo: a média dos quadrados vira um produto de matrizes.\n\n"
-                  "**O controle é exato:** com `ema_escalas=1` o EK-FAC não mede nada, "
-                  "`s*` fica no palpite do K-FAC e as duas direções coincidem até o "
-                  "arredondamento de float32 — `tests/test_ekfac.py` prova isso. Compare "
-                  "com `08_acktr` na mesma semente.\n\n"
-                  "Olhe `ekfac_desvio` no registro: é o tamanho da correção que está "
-                  "sendo aplicada, em dente de serra entre as reconstruções da base. "
-                  "Grudado em zero significa que não há o que corrigir neste problema — o "
-                  "que é um resultado, e distingue \"não ajudou\" de \"não fez nada\". "
-                  "Ver `docs/EKFAC.md`.",
-    },
+                  "O EK-FAC fica com a base e **mede** as escalas. Teorema 2: `s*` é a "
+                  "melhor escala diagonal naquela base. Teorema 3: nunca é pior que o "
+                  "K-FAC.\n\n"
+                  "**Leia isto antes de rodar.** A execução de 01/09 fechou em 71,07 "
+                  "contra 89,78 do ACKTR, e a leitura óbvia — o EK-FAC é pior — está "
+                  "errada. As duas execuções não estavam pareadas: o `A2CConfig.rollout` "
+                  "foi de 16 para 5 no commit `7cdfe2c`, um dia **depois** das três "
+                  "sementes gravadas do ACKTR, e o `ACKTRConfig` herdava esse campo. Até "
+                  "1,5 M de passos o ACEKTR estava no topo da faixa das três sementes; ele "
+                  "separou por baixo logo depois de o shaping decair a zero em 1,25 M, que "
+                  "é onde `γλ^T` decide quanto do crédito passa pelo GAE — 76% no "
+                  "bootstrap com T=5 contra 40% com T=16. E não faltou passo: o ACEKTR "
+                  "acumulou `Σ√KL` de 202 contra 57–73 do ACKTR. Andou 3,6× mais, chegou "
+                  "20 pontos abaixo.\n\n"
+                  "O que mudou aqui: `rollout=16` restaurado no `ACKTRConfig`; "
+                  "`inv_every=50` com `ema_escalas=0.8` (base rara, escalas sempre — o "
+                  "eixo de amortização do paper, que estava desligado); e "
+                  "`kl_cal_debias=True` com `kl_fator_inicial=15`, porque a média móvel da "
+                  "calibração tem constante de tempo de ~50 atualizações num orçamento de "
+                  "610 e gastava 8% do treino com o alvo efetivo até 20× maior que o "
+                  "pedido — tempo suficiente para a entropia cair de 1,06 para 0,29 e não "
+                  "voltar. Ver `docs/EKFAC.md` §3.2, §3.3 e §5.1."},
     {
         "arquivo": "92_muzero_ablacoes.ipynb",
         "titulo": "MuZero — a oscila\u00e7\u00e3o e o peso do desenrolar",
@@ -1222,7 +1457,7 @@ NOTEBOOKS = [
         "resumo":
             "Este notebook **remove** coisas do padrão, uma por vez. Não é aqui que se roda "
             "o AlphaZero — o agente oficial é o `06_alphazero`, e o padrão dele já é a "
-            "versão consertada. É a mesma inversão que o `98_acktr_kl_nominal` sofreu quando "
+            "versão consertada. É a mesma inversão que o ACKTR sem calibrar sofreu quando "
             "a calibração da região de confiança venceu a medição e virou o padrão do `08`: "
             "o braço que sobrevive é o *sem*.\n\n"
             "**Como rodar.** Escolha o `BRACO`, rode o ensaio (2 min, pega o que é "
@@ -1310,7 +1545,7 @@ NOTEBOOKS = [
                   "está. Ver `docs/REVISAO_ALGORITMOS.md` §2.25.",
     },
     {
-        "arquivo": "91_acktr_ablacoes.ipynb",
+        "arquivo": "98_acktr_ablacoes.ipynb",
         "titulo": "ACKTR — de onde vem o estouro da região de confiança",
         "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
                     "snakeai/agents/acktr.py"],
@@ -1324,6 +1559,15 @@ NOTEBOOKS = [
              "titulo": "Braços (secundário)"},
         ],
         "resumo":
+            "**Se você veio rodar uma vez e ir embora: o braço padrão já é o certo.** "
+"O dropdown abre em `definitiva`, que é a união do que tem medição — o "
+"`rollout = 16` restaurado, a calibração da região de confiança debiasada com "
+"prior 15, e 40 avaliações em vez de 20. Aperte *Executar tudo* e ignore o "
+"resto desta página. A lista do que ficou **de fora** desse braço, e por quê, "
+"está no comentário dele na célula de parâmetros — ela é metade do valor do "
+"braço, porque três coisas terem medição e as outras não é o resultado.\n\n"
+            "---\n\n"
+            "O resto do notebook é a investigação que produziu esses três itens.\n\n"
             "**A medição principal é a célula *Varredura de `kl_max`*, e ela não usa "
             "braço nenhum.** A pergunta certa não é *qual braço reduz a razão* — "
             "isso é uma comparação de sete vias, de uma estatística de cauda pesada, com "
@@ -1377,22 +1621,6 @@ NOTEBOOKS = [
             "O braço padrão é `momento_descontado` porque é o único que, se estiver "
             "certo, é também o conserto que se quer manter. Três sementes oficiais do "
             "ACKTR estão gravadas: **nada aqui vira padrão sem medição.**",
-    },
-    {
-        "arquivo": "98_acktr_kl_nominal.ipynb",
-        "titulo": "ACKTR sem calibrar a região de confiança — o que se perde",
-        "modulos": ["snakeai/kfac.py", "snakeai/agents/ppo.py", "snakeai/agents/a2c.py",
-                    "snakeai/agents/acktr.py"],
-        "agente": "ACKTR",
-        "config": "ACKTRConfig",
-        "extra_cfg": "    kl_calibrado=False,\n    kl_max=2e-3,",
-        "resumo": "O braço de controle da calibração: `kl_max` volta a ser um alvo "
-                  "**nominal** de 0,002, e o que a rede entrega é ~0,014 — o fator "
-                  "sistemático entre a Fisher aproximada e a KL da política de verdade. "
-                  "Foi essa a configuração até agosto, e ela produziu 83,91 num Colab e "
-                  "64,53 num Kaggle **com a mesma semente**: o fator não controlado muda "
-                  "com o hardware. Aqui a medição fica registrada em vez de virar "
-                  "anedota. Compare com `08_acktr` na mesma semente.",
     },
     {
         "arquivo": "96_ppo_orcamento_esparso.ipynb",
@@ -1464,6 +1692,67 @@ NOTEBOOKS = [
                   "política avaliada — a diferença entre as curvas é o preço (ou o "
                   "prêmio) de trocar exploração agendada por exploração selecionada. "
                   "Ver `docs/LBC.md` para os três desvios declarados em relação ao paper.",
+    },
+    {
+        "arquivo": "90_lbc_populacao.ipynb",
+        "titulo": "LBC — a população vale o que custa?",
+        "modulos": ["snakeai/bandit.py", "snakeai/agents/ppo.py",
+                    "snakeai/agents/lbc.py"],
+        "agente": "LBC",
+        "config": "LBCConfig",
+        "param_braco": "lbc",
+        "resumo":
+            "Não é aqui que se roda o LBC — o agente oficial é o `10_lbc`. Aqui se mede a "
+            "peça de que ele mais depende e que a primeira execução corrigida mostrou ser "
+            "a mais frágil: a **população de políticas**.\n\n"
+            "**Como rodar.** Escolha o `BRACO` e compare com `10_lbc` **na mesma "
+            "semente** — o `sufixo_variante` mantém os braços separados na arena.\n\n"
+            "---\n\n"
+            "### A pergunta\n\n"
+            "O mapeamento híbrido do §4.1 mistura `N` políticas para obter um "
+            "comportamento que nenhuma delas produz sozinha. Isso só funciona se as `N` "
+            "forem **diferentes e cada uma competente**. Medido no modelo treinado da "
+            "execução anterior, nenhuma das duas condições valia:\n\n"
+            "| | π0 (γ=0,99) | π1 (γ=0,995, a avaliada) | π2 (γ=0,999) |\n"
+            "|---|---|---|---|\n"
+            "| entropia | 0,109 | 0,152 | 0,014 |\n"
+            "| valor médio `V_i` | 7,62 | 11,41 | 10,99 |\n\n"
+            "As três concordavam na ação de argmax em **31,8%** dos estados — com três "
+            "ações, o acaso é 33%. Não era uma população de pares com estratégias "
+            "distintas: era uma cabeça subtreinada, uma colapsada e a avaliada. E a "
+            "mistura uniforme, comparada com \"só π1\", mudava a entropia (0,65 contra "
+            "0,21) mas mantinha **95,1% do mesmo argmax** — ou seja, mudava o quanto a "
+            "cobra hesita, não para onde ela vai. Isso é ε-greedy com passos extras, que "
+            "é exatamente o que o mapeamento híbrido existe para superar.\n\n"
+            "O meta-controlador já tinha chegado nessa conclusão: em **96,1%** das "
+            "iterações ele escolheu o braço `τ∈[2,4] · ω≈π1` — *\"use π1 sozinha, quase "
+            "gulosa\"*, que é o caso degenerado do Agent57 e literalmente o braço "
+            "`pop1` daqui.\n\n"
+            "### A hipótese que este notebook testa\n\n"
+            "Que o problema era o **eixo**, não a ideia. O paper usa "
+            "`h_i = (γ_i, RS_i)` — desconto **e** um método de *reward shaping* por "
+            "política, pareados à moda do NGU. Esta implementação tinha reduzido `H` a γ "
+            "sozinho (`docs/LBC.md` §2.2), então as três cabeças otimizavam o **mesmo** "
+            "objetivo sobre um tronco compartilhado, e o que as separava era sobretudo "
+            "ruído de treino. O braço `H_shaping` devolve o segundo eixo usando o "
+            "potencial que o `VecSnake` já calcula.\n\n"
+            "### Como ler o resultado\n\n"
+            "| se… | a leitura é… |\n"
+            "|---|---|\n"
+            "| `H_shaping` > `10_lbc` | o eixo era o problema; `H` reduzido a γ não "
+            "sustenta um mapeamento híbrido |\n"
+            "| `pop1` ≥ `H_shaping` | a população não paga o que custa **neste domínio** "
+            "— e o LBC aqui é o `ψ` sozinho |\n"
+            "| `H_shaping_aleatoria` ≈ `H_shaping` | o mérito é do espaço de "
+            "comportamento, não do bandit: a parte *learnable* não fez nada |\n"
+            "| `H_shaping_pop5` < `H_shaping` | mais políticas custam mais do que "
+            "rendem — cada uma dobra o consumo do orçamento de gradiente (§2.11) |\n\n"
+            "Os dois números novos no registro respondem direto, sem forense de "
+            "checkpoint: **`divergencia_populacao`** (KL médio entre as cabeças) e "
+            "**`acordo_argmax`** (fração de estados em que todas concordam). Perto de 1 "
+            "é população degenerada; perto de `1/3` é acaso, e aí elas estão resolvendo "
+            "problemas diferentes em vez de o mesmo problema de jeitos diferentes. "
+            "`valor_relativo_pior` diz se as outras cabeças são competentes ou só piores.",
     },
     {
         "arquivo": "11_soap.ipynb",
@@ -1600,6 +1889,18 @@ def monta_notebook(spec, usuario="voaneves", repo="snake-arena"):
                 f"só no dicionário {sorted(set(_ns['BRACOS']) - set(lista))}")
         if padrao not in lista:
             raise ValueError(f"braço padrão {padrao!r} não está na lista")
+        # a mesma conferência para os braços que a célula de diagnóstico pula: um nome
+        # errado ali não estoura, só faz o braço voltar a ser medido com a calibração
+        # desligada e virar um duplicado silencioso do `controle` na tabela
+        so_treino = ABLACOES_SO_TREINO.get(spec["param_braco"], ())
+        if set(_ns.get("BRACOS_SO_TREINO", ())) != set(so_treino):
+            raise ValueError(
+                f"os braços só-de-treino do {spec['param_braco']} divergiram: "
+                f"gerador {sorted(so_treino)} × notebook "
+                f"{sorted(_ns.get('BRACOS_SO_TREINO', ()))}")
+        if set(so_treino) - set(lista):
+            raise ValueError(
+                f"braço só-de-treino fora da lista: {sorted(set(so_treino) - set(lista))}")
         braco_param = ('\n' + f'BRACO = "{padrao}"  # @param ['
                        + ", ".join(f'"{k}"' for k in lista) + "]")
         pre = pre_bracos

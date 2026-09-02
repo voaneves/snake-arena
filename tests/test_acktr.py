@@ -272,3 +272,27 @@ def test_the_experiment_never_measures_with_the_calibration_on():
     fonte = inspect.getsource(mede)
     assert "kl_calibrado=False" in fonte
     assert not any("kl_calibrado" in e and e.get("kl_calibrado") for e in BRACOS.values())
+
+
+def test_the_trust_region_declares_its_own_rollout():
+    """A trava da regressão de 21/08.
+
+    `A2CConfig.rollout` foi de 16 para 5 pelo argumento canônico do A3C — que é sobre um
+    algoritmo sem região de confiança — e o `ACKTRConfig` herdou em silêncio, um dia depois
+    das três execuções gravadas de `acktr/resnet_small`. O default parou de reproduzir
+    qualquer resultado do repositório e ninguém percebeu, porque nada quebra: o agente
+    treina, só que pior.
+
+    Com `γλ = 0,945`, o peso que sobra no bootstrap `V(s_{t+T})` é `0,945^T` — 76% em T=5
+    contra 40% em T=16. Enquanto o shaping segura a recompensa densa isso não importa;
+    depois de `shaping_frac` a recompensa é só comida e morte, e foi exatamente ali que a
+    execução com T=5 saiu por baixo da faixa das três com T=16 e não voltou.
+    """
+    from snakeai.agents.a2c import A2CConfig
+    from snakeai.agents.acektr import ACEKTRConfig
+
+    assert ACKTRConfig.rollout == 16, "o rollout das execuções gravadas do ACKTR"
+    assert ACEKTRConfig.rollout == 16, "o ACEKTR herda a mesma janela de crédito"
+    assert "rollout" in ACKTRConfig.__dataclass_fields__
+    # e continua sendo uma redeclaração deliberada, não um acidente de herança
+    assert A2CConfig.rollout != ACKTRConfig.rollout

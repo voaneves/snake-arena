@@ -104,26 +104,61 @@ o EK-FAC nunca chegaria a usar o que mediu — seria um K-FAC caro. Meia-vida de
 atualização deixa as medições dominarem em três ou quatro passos, com folga dentro da
 janela.
 
-### 3.2 `inv_every = 10`, o mesmo do ACKTR — e é aqui que o EK-FAC está handicapado
+### 3.2 `inv_every = 50` — o regime do paper, que era o que faltava
 
 O paper propõe **amortizar**: reconstruir a base raramente (50 a 500 passos) e recalcular as
 escalas a cada passo. É de lá que vem metade do argumento — o EK-FAC não só aproxima melhor,
 como fica mais barato que o K-FAC, porque a `eigh` cara é diluída em muitas atualizações
 baratas.
 
-Aqui o default é `10`, o mesmo do ACKTR, e a escolha é deliberada: **é o que faz
-`08_acktr × 12_acektr` isolar uma variável só**. Se o EK-FAC também mudasse a frequência de
-reconstrução, a diferença entre as curvas passaria a misturar "autovalores melhores" com
-"base mais velha", e o repositório teria mais uma comparação de duas variáveis — que é
-exatamente o que o `96_ppo_orcamento_esparso` documenta como o defeito do braço de controle
-antigo.
+Até 01/09 o default aqui era `10`, o mesmo do ACKTR, e a escolha era deliberada: era o que
+fazia `08_acktr × 12_acektr` isolar uma variável só. **Deixou de ser.** Com `inv_every = 10`
+e `ema_escalas = 0,5`, `s*` é reiniciado no palpite do K-FAC a cada 10 atualizações e a
+média móvel cobre ~2 lotes — o EK-FAC gastava a janela inteira saindo do palpite e o que ele
+usava no meio do caminho era um `s*` medido em dois lotes. Isso não é "K-FAC caro": é pior
+que isso, porque um autovalor **subestimado por ruído** vai para o denominador e amplifica
+justamente a direção que o lote não soube estimar. O K-FAC troca viés por variância na
+direção certa; o EK-FAC assim configurado trocava na direção errada.
 
-O regime do paper está a uma configuração de distância: `ACEKTRConfig(inv_every=50)`, que
-ganha a variante `+base50`. É a execução que responde "e se o EK-FAC rodar como ele foi
-projetado?" — e ela **não** compete com o `08_acktr` na mesma leitura, porque mexe em dois
-botões.
+O default passou a ser `inv_every = 50` com `ema_escalas = 0,8`:
 
----
+* a base é reconstruída 13 vezes num orçamento de 610 atualizações, em vez de 61;
+* dentro de cada janela sobram ~30 atualizações rodando com escalas de fato medidas;
+* a média cobre ~5 lotes em vez de ~2;
+* a `eigh` sai 5× menos vezes — o EK-FAC fica **mais barato** que o K-FAC, como o paper diz.
+
+O preço é que a execução deixa de ser pareada com o `08_acktr` — e é por isso que a marca
+`+base50` aparece **sempre** no nome da variante, mesmo sendo o default. Quem quiser o par
+de uma variável só pede `ACEKTRConfig(inv_every=10, ema_escalas=0.5, kl_cal_debias=False,
+kl_fator_inicial=1.0)`, que volta a se chamar `resnet_small` e é comparável ponto a ponto.
+
+### 3.3 `kl_cal_debias = True` — a região de confiança não pode levar 8% do treino para acordar
+
+`_fator_kl` é uma média móvel com `kl_cal_ema = 0,98`: constante de tempo de ~50
+atualizações. O orçamento inteiro tem **610**. Partindo de 1,0, a calibração gasta ~8% do
+treino subindo até o fator verdadeiro — que as execuções longas mediram entre 15 e 25 — e
+nesse intervalo o alvo efetivo é até 20× maior que o pedido, exatamente quando a política
+ainda é aleatória e o estrago é permanente.
+
+Medido em 96 ambientes, 20 atualizações, mesma semente:
+
+| | `kl_fator` na it. 10 | entropia na it. 10 | entropia na it. 15 |
+|---|---|---|---|
+| EMA crua, prior 1,0 | 1,10 | 0,29 | 0,25 |
+| debiasada, prior 15 | assenta em ~5 na it. 5 | 0,90 (it. 5) | — |
+
+A EMA crua ainda estava em 1,10 na décima atualização — ou seja, **não tinha começado a
+corrigir** — enquanto a entropia já havia caído de 1,06 para 0,29. A versão debiasada
+mantém `s` e o peso `w` acumulado e usa `s/w`, como o `1 − βᵗ` do Adam: a segunda
+atualização já usa o fator medido, sem abrir mão da suavização depois.
+
+O prior `kl_fator_inicial = 15` cobre a primeira, e o erro é assimétrico de propósito:
+começar cauteloso custa alguns passos curtos, começar ousado colapsa a entropia e não tem
+volta.
+
+Isto fica **desligado no ACKTR** (`kl_cal_debias = False`), porque as três execuções
+gravadas de `acktr/resnet_small` rodaram sem ele e mudar o default faria o `08_acktr` deixar
+de reproduzi-las.
 
 ## 4. `ekfac_desvio`: o número que distingue "não ajudou" de "não fez nada"
 
@@ -157,7 +192,7 @@ número.
 
 ---
 
-## 5. A previsão falsificável
+## 5. A previsão falsificável — ainda em aberto, e por quê
 
 O docstring do `ACKTR` registra uma medição incômoda de uma execução de 5 M passos: a KL
 **entregue** ficou sistematicamente acima da pedida — 11,8× no primeiro quinto, caindo para
@@ -176,10 +211,36 @@ melhor, por teorema, na mesma base. E o número já é registrado a cada atualiz
 | `kl_fator` do ACEKTR mais perto de 1 | o diagnóstico se sustenta, e a correção de autovalores era a peça que faltava |
 | `kl_fator` igual ao do ACKTR | o desvio vem de outro lugar — a diagonalidade por blocos, a homogeneidade espacial da convolução, ou a própria aproximação quadrática da KL — e a §região de confiança precisa ser reescrita |
 
-Nos dois casos o repositório troca uma suposição por uma medida. É a comparação mais barata
-deste documento: os dois números já existem, é só rodar as duas execuções na mesma semente.
+### 5.1 A primeira tentativa não conta
 
----
+Em 01/09 as duas execuções existiam e a leitura parecia pronta: mediana de `kl_fator`
+**18,71** no ACKTR contra **19,98** no ACEKTR — igual, não mais perto de 1. Segunda linha da
+tabela, diagnóstico derrubado.
+
+Só que o par não estava pareado. O `A2CConfig.rollout` foi de 16 para 5 no commit `7cdfe2c`
+(21/08), um dia **depois** das três execuções gravadas do ACKTR, e o `ACKTRConfig` herdava
+esse campo em silêncio. A execução do ACEKTR rodou com `T = 5` e as três do ACKTR com
+`T = 16` — dois orçamentos de crédito diferentes, e portanto duas distribuições de `Δᵀ∇`
+diferentes. A §7 pede "mesma semente, resto congelado"; o resto não estava congelado.
+
+A mesma confusão contamina a leitura de score. Interpolando `train_score_mean` na grade:
+
+| execução | 1,0 M | 1,5 M | 2,0 M | 3,0 M | 5,0 M |
+|---|---|---|---|---|---|
+| faixa das 3 sementes, `T = 16` | 26–29 | 31–37 | 40–64 | 67–72 | 73–81 |
+| ACEKTR, `T = 5` | 29,3 | 36,8 | 44,1 | 55,5 | 63,5 |
+
+Até 1,5 M o ACEKTR está no **topo** da faixa. A separação começa em 2 M, logo depois de
+`shaping_frac` zerar o shaping em 1,25 M — quando a recompensa deixa de ser densa e o
+crédito passa a depender da janela do GAE. Com `γλ = 0,945`, `0,945⁵ = 76%` do peso fica no
+bootstrap contra `0,945¹⁶ = 40%`.
+
+E não foi falta de passo, que era a suspeita óbvia: somando `√KL` sobre as atualizações, o
+ACEKTR acumulou **202** contra 57–73 das três sementes do ACKTR. Ele andou 3,6× mais e
+chegou 20 pontos abaixo — o que também descarta subir `kl_max` como conserto, e é o único
+achado desta execução que sobrevive.
+
+`ACKTRConfig` voltou a declarar `rollout = 16`. A §5 continua sem resposta.
 
 ## 6. O que "exato" quer dizer numa convolução
 
@@ -208,7 +269,8 @@ amortecimento gigante, que **treina**, só que pior.
 
 | par | o que a diferença mede |
 |---|---|
-| `12_acektr` × `08_acktr`, mesma semente | a correção de autovalores, com todo o resto congelado — a leitura principal |
+| `12_acektr` com `inv_every=10, ema_escalas=0.5, kl_cal_debias=False, kl_fator_inicial=1.0` × `08_acktr`, mesma semente | a correção de autovalores, com todo o resto congelado — o par de uma variável só |
+| `12_acektr` no default (`+base50`) × `08_acktr` | o EK-FAC como o paper o propõe contra o K-FAC como o ACKTR o usa: mede **três** coisas somadas (autovalores, amortização da base, partida da região de confiança) e é a leitura de desempenho, não a de atribuição |
 | `12_acektr` × `12_acektr` com `ema_escalas=1` | o mesmo, com o controle *dentro* do algoritmo: a segunda execução é o K-FAC bit a bit |
 | `12_acektr` × `12_acektr+base50` | o eixo de amortização do paper: base rara, escalas sempre |
 | `12_acektr` × `04_a2c` | a soma dos dois: vale a pena aproximar a curvatura, e vale a pena corrigir os autovalores dela |

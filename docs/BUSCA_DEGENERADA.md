@@ -249,7 +249,7 @@ nada roda o agente consertado.
 
 Cada um continua desligável, e é isso que o `93_alphazero_ablacoes` mede — 17 braços que
 **removem** uma coisa do padrão, não que a acrescentam. É a mesma inversão que o
-`98_acktr_kl_nominal` sofreu quando a calibração da região de confiança venceu e virou o
+o ACKTR sem calibrar sofreu quando a calibração da região de confiança venceu e virou o
 padrão do `08`. Três braços removem um mecanismo inteiro e respondem a pergunta em três
 execuções em vez de onze:
 

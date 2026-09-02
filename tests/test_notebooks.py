@@ -21,6 +21,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RAIZ, "tools"))
 
 from gerar_notebooks import (  # noqa: E402
+    ABLACOES,
     MARCA_FIM,
     MARCA_INICIO,
     NOTEBOOKS,
@@ -380,23 +381,34 @@ def test_notebook_exports_both_models_to_separate_folders(caminho):
     assert '"export", "last"' in junto and '"export", "best"' in junto
 
 
-def test_the_acktr_ablation_is_the_same_agent_with_one_flag():
-    """O `98` não pode ser um agente novo — se fosse, a diferença entre as duas curvas
-    incluiria tudo o que divergiu entre as duas implementações.
+def test_the_retired_kl_nominal_notebook_is_covered_by_an_ablation_arm():
+    """O `98_acktr_kl_nominal` foi aposentado, e este teste é o que impede a pergunta dele
+    de sumir junto.
 
-    Os papéis se inverteram depois da medição: o `08` é o oficial, com a região de
-    confiança calibrada por padrão, e o `98` é o braço de controle que volta ao alvo
-    nominal."""
+    Ele era o `08_acktr` com duas chaves — `kl_calibrado=False, kl_max=2e-3` — e o
+    `98_acktr_ablacoes` cobre exatamente esse par no braço `kl_do_paper`, com a vantagem
+    de rodar contra os outros braços na mesma sessão e no mesmo hardware (que era o ponto:
+    a mesma semente deu 83,91 num Colab e 64,53 num Kaggle). Se alguém mexer no braço, o
+    notebook aposentado deixa de estar coberto e isto quebra.
+    """
+    _, _, pre = ABLACOES["acktr"]
+    ns = {}
+    exec(pre.split("print(")[0], ns)  # noqa: S102
+    assert ns["BRACOS"]["kl_do_paper"] == {"kl_max": 2e-3, "kl_calibrado": False}
+    assert "controle" in ns["BRACOS"], "o braço sem calibrar e no alvo de hoje"
+    assert not any(s["arquivo"] == "98_acktr_kl_nominal.ipynb" for s in NOTEBOOKS)
+    assert not os.path.exists(
+        os.path.join(RAIZ, "notebooks", "98_acktr_kl_nominal.ipynb"))
+
+
+def test_the_acktr_ablation_is_the_same_agent_as_the_official_one():
+    """A ablação não pode ser um agente novo — se fosse, a diferença entre as curvas
+    incluiria tudo o que divergiu entre as duas implementações."""
     oficial = next(s for s in NOTEBOOKS if s["arquivo"] == "08_acktr.ipynb")
     ablacao = next(s for s in NOTEBOOKS
-                   if s["arquivo"] == "98_acktr_kl_nominal.ipynb")
+                   if s["arquivo"] == "98_acktr_ablacoes.ipynb")
     assert ablacao["agente"] == oficial["agente"] == "ACKTR"
     assert ablacao["modulos"] == oficial["modulos"]
-    assert ablacao["extra_cfg"].strip().startswith("kl_calibrado=False,")
-
-    codigo = "\n".join(codigo_de(carrega(
-        os.path.join(RAIZ, "notebooks", ablacao["arquivo"]))))
-    assert "kl_calibrado=False" in codigo
     oficial_codigo = "\n".join(codigo_de(carrega(
         os.path.join(RAIZ, "notebooks", oficial["arquivo"]))))
     assert "kl_calibrado" not in oficial_codigo.split("ASSINATURA_PACOTE")[-1], \
@@ -407,7 +419,7 @@ def test_the_two_acktr_notebooks_embed_byte_identical_code():
     """A única diferença permitida entre os dois é a linha de configuração."""
     a = bloco_gerado(carrega(os.path.join(RAIZ, "notebooks", "08_acktr.ipynb")))
     b = bloco_gerado(carrega(os.path.join(
-        RAIZ, "notebooks", "98_acktr_kl_nominal.ipynb")))
+        RAIZ, "notebooks", "98_acktr_ablacoes.ipynb")))
     assert a == b
 
 
@@ -533,11 +545,11 @@ PAPERS = {
 
 #: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.
 #: Dar a elas o paper do algoritmo base sugeriria que a variação é do paper, e não é.
-SEM_PAPER = {"91_acktr_ablacoes.ipynb", "92_muzero_ablacoes.ipynb",
+SEM_PAPER = {"98_acktr_ablacoes.ipynb", "92_muzero_ablacoes.ipynb",
              "93_alphazero_ablacoes.ipynb",
              "94_rainbow_nstep3.ipynb",
              "95_a2c_orcamento_esparso.ipynb", "96_ppo_orcamento_esparso.ipynb",
-             "97_ppo_canal_de_fome.ipynb", "98_acktr_kl_nominal.ipynb",
+             "97_ppo_canal_de_fome.ipynb",
              "99_ablacoes.ipynb"}
 
 
