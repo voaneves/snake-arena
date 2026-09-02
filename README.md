@@ -312,6 +312,16 @@ confiança, e um bandit decidindo sobre ruído) são **invisíveis na curva de s
 evidentes em quatro campos do registro. As correções viraram mais três desvios declarados
 (§2.6 a §2.9).
 
+A execução seguinte subiu para 38,8 e terminou **subtreinada** — 3.524 atualizações de
+gradiente contra 38.374 do PPO, 9% do orçamento, porque a parada por KL virou o modo normal
+de operação em vez do freio de emergência que deveria ser ([§2.11](docs/LBC.md)). E a
+medição da população mostrou que ela não era diversa: as três políticas concordavam na ação
+de argmax em 31,8% dos estados, que é o acaso com três ações, e o próprio bandit escolheu
+"use só π1" em 96% do treino ([§2.12](docs/LBC.md)). Isso **revogou o desvio §2.2** — o eixo
+`RS` de `H` voltou, agora que o `VecSnake` expõe o potencial do shaping no `info` —, e o
+[`90_lbc_populacao`](notebooks/90_lbc_populacao.ipynb) é o menu de ablações que mede se era
+ele o problema.
+
 Ela está arquivada em `runs/lbc/resnet_small_antes_das_correcoes/seed0`, com
 `comparable=False` e o motivo escrito — o mesmo tratamento de `dqn/base_antigo` e de
 `acktr/resnet_small_regua_antiga`. **Por isso o LBC não tem linha na arena hoje**: a única
@@ -472,7 +482,7 @@ declara qual é qual.
 | [`docs/ORCAMENTO_DE_GRADIENTE.md`](docs/ORCAMENTO_DE_GRADIENTE.md) | a ablação de orçamento nas duas famílias, a previsão pré-registrada que falhou, saturação × limitação por orçamento |
 | [`docs/CANAL_DE_FOME.md`](docs/CANAL_DE_FOME.md) | o sexto canal de observação, e por que ele sai da arena |
 | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | por que o PUCT do AlphaZero colapsa quando o valor aprendido é positivo, e os dois consertos |
-| [`docs/LBC.md`](docs/LBC.md) | o LBC: as três peças, os nove desvios declarados em relação ao paper, a autópsia da primeira execução (§2.10) e o que olhar no log |
+| [`docs/LBC.md`](docs/LBC.md) | o LBC: as três peças, os desvios declarados em relação ao paper (um deles **revogado** na §2.2, quando a medição mostrou que o argumento estava errado), as duas autópsias (§2.10 e §2.11), a medição da população (§2.12) e o que olhar no log |
 | [`docs/SOAP.md`](docs/SOAP.md) | o SOAP: por que opções num jogo que parece markoviano, o controle de uma opção, e como detectar colapso |
 | [`docs/EKFAC.md`](docs/EKFAC.md) | o EK-FAC: o que exatamente ele corrige no K-FAC, o controle bit a bit, e a previsão sobre a região de confiança do ACKTR |
 | [`docs/PROCEDENCIA.md`](docs/PROCEDENCIA.md) | qual código produziu cada execução, e como auditar isso em dois comandos |

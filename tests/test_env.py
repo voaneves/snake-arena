@@ -276,3 +276,72 @@ def test_masked_random_baseline_is_around_one():
         scores.extend(info["scores"].tolist())
     media = float(np.mean(scores[:1000]))
     assert 0.7 < media < 1.6, f"piso aleatório fora do esperado: {media:.2f}"
+
+
+def test_the_shaping_potential_is_exposed_and_recomposes_exactly():
+    """`phi_old`, `phi_new` e `shaping_valido` no `info` são **informação**, não
+    comportamento: a recompensa devolvida é a mesma com ou sem eles.
+
+    O contrato que este teste guarda é o que permite ao LBC dar um coeficiente de shaping
+    **por política** sem reimplementar o potencial (`docs/LBC.md` §2.2): com
+    `shaping_coef=0` a recompensa é a esparsa pura, e
+
+        r = esparsa + coef · shaping_valido · (γ·phi_new − phi_old)
+
+    tem que reproduzir, bit a bit, o que o ambiente calcula sozinho. Se alguém mudar a
+    fórmula do shaping dentro do `step()` e esquecer do `info`, é aqui que quebra.
+    """
+    coef, gamma = 0.5, 0.995
+    a = VecSnake(64, 10, rng=np.random.default_rng(7))
+    b = VecSnake(64, 10, rng=np.random.default_rng(7))
+    a.reset(); b.reset()
+    acoes = np.random.default_rng(0)
+    for _ in range(300):
+        act = acoes.integers(0, N_ACTIONS, 64).astype(np.int32)
+        _, _, r_env, d_env, _ = a.step(act, coef, gamma)
+        _, _, r_esparsa, d_man, info = b.step(act, 0.0, gamma)
+
+        for k in ("phi_old", "phi_new", "shaping_valido"):
+            assert k in info, f"o `info` perdeu {k!r}"
+        r_manual = r_esparsa + coef * info["shaping_valido"] * (
+            gamma * info["phi_new"] - info["phi_old"])
+
+        assert r_env == pytest.approx(r_manual, abs=1e-6)
+        assert (d_env == d_man).all()
+
+
+def test_the_potential_is_invalid_where_the_food_moved_and_only_there():
+    """`shaping_valido` é `~(morreu | venceu | comeu)` — e **não** `~done`.
+
+    A diferença é a fome, e ela não é um detalhe: fome é `done`, mas é *truncamento*, não
+    terminação. A comida não mudou de lugar, o episódio continuaria, e o delta de potencial
+    daquele passo é tão legítimo quanto o de qualquer outro. Zerá-lo ali seria descartar
+    informação boa; deixá-lo valer em morte, vitória ou comida seria comparar distâncias
+    para **comidas diferentes**, que é um número sem significado.
+
+    É a mesma convenção que o `bootstrap_truncados` do agente segue, e pelo mesmo motivo.
+    """
+    env = VecSnake(128, 10, rng=np.random.default_rng(3))
+    env.reset()
+    acoes = np.random.default_rng(1)
+    viu_fome_valida = viu_invalido = False
+    for _ in range(400):
+        act = acoes.integers(0, N_ACTIONS, 128).astype(np.int32)
+        _, _, _, done, info = env.step(act, 0.5, 0.995)
+        vale = info["shaping_valido"]
+
+        # quem terminou por morte ou vitória tem que estar zerado
+        terminou = done.copy()
+        terminou[info["trunc_idx"]] = False
+        assert not vale[terminou].any(), "morte ou vitória com potencial válido"
+
+        # quem foi truncado por fome **pode** continuar válido — e é o ponto do teste
+        if info["trunc_idx"].size and vale[info["trunc_idx"]].any():
+            viu_fome_valida = True
+        viu_invalido |= bool((~vale).any())
+
+    assert viu_invalido, "400 passos sem um passo inválido: o teste não mediu nada"
+    assert viu_fome_valida, (
+        "nenhum truncamento por fome manteve o potencial válido — ou o teste não "
+        "alcançou a fome, ou `shaping_valido` virou `~done` e passou a descartar "
+        "informação boa")

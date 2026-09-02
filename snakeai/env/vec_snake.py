@@ -256,6 +256,13 @@ class VecSnake:
             trunc_idx   : índices dos truncados por fome
             final_obs   : observação terminal dos truncados (para bootstrap do valor)
             final_mask  : máscara terminal dos truncados
+            phi_old     : potencial `-dist(cabeça, comida)/b` **antes** do passo, `(N,)`
+            phi_new     : o mesmo **depois** do passo, `(N,)`
+            shaping_valido : onde o delta de potencial vale, `~(morreu|venceu|comeu)`
+
+        As três últimas são informação, não comportamento: a recompensa devolvida é
+        exatamente a mesma com ou sem elas. Servem a quem precisa aplicar **mais de um**
+        coeficiente de shaping sobre o mesmo passo — ver a nota no `info`.
         """
         n, b = self.n, self.b
         rows = np.arange(n)
@@ -300,12 +307,16 @@ class VecSnake:
         reward -= dead.astype(np.float32)
         reward += won.astype(np.float32) * 2.0
         reward -= starved.astype(np.float32) * 0.5
+        # O potencial é calculado **sempre**, mesmo com `shaping_coef = 0`, porque ele
+        # também sai no `info`. Custa uma subtração vetorizada por passo e é o que permite
+        # a um agente montar o shaping por conta própria — ver as chaves `phi_*` abaixo.
+        # O delta só faz sentido quando a comida não mudou de lugar.
+        d_new = np.abs(self.head - self.food).sum(axis=1).astype(np.float32)
+        phi_old = (-d_old / b).astype(np.float32)
+        phi_new = (-d_new / b).astype(np.float32)
+        shaping_valido = ~(dead | won | ate)
         if shaping_coef > 0.0:
-            # o delta só faz sentido quando a comida não mudou de lugar
-            d_new = np.abs(self.head - self.food).sum(axis=1).astype(np.float32)
-            phi_old = -d_old / b
-            phi_new = -d_new / b
-            delta = np.where(dead | won | ate, 0.0, gamma * phi_new - phi_old)
+            delta = np.where(shaping_valido, gamma * phi_new - phi_old, 0.0)
             reward += shaping_coef * delta
 
         done = dead | won | starved
@@ -328,6 +339,19 @@ class VecSnake:
             "trunc_idx": starved_idx,
             "final_obs": final_obs,
             "final_mask": final_mask,
+            # --- potencial do shaping, cru. Existe para quem precisa de **mais de um**
+            # coeficiente de shaping sobre o mesmo passo: com `shaping_coef=0` a
+            # recompensa devolvida é a esparsa pura, e o consumidor monta a sua com
+            #
+            #     r_i = reward + coef_i * shaping_valido * (γ_i * phi_new - phi_old)
+            #
+            # O ambiente continua dono do potencial (é ele que sabe quando a comida
+            # trocou de lugar); o agente só recombina. É o que o LBC usa para dar a cada
+            # política da população o seu próprio `(γ_i, RS_i)` — o eixo `H` do paper —
+            # sem que o `VecSnake` precise saber que existe uma população.
+            "phi_old": phi_old,
+            "phi_new": phi_new,
+            "shaping_valido": shaping_valido,
         }
         self._reset_idx(np.nonzero(done)[0])
         return self.obs(), self.action_mask(), reward, done, info

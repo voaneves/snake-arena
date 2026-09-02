@@ -494,3 +494,79 @@ def test_turning_the_trust_region_off_restores_the_raw_impala_gradient():
     assert "sem_clip" in ag.variant
     assert np.isfinite(saida["pg"]) and np.isfinite(saida["vf"])
     assert saida["clipfrac"] == pytest.approx(0.0, abs=1.0)   # só não pode dar NaN
+
+
+# ------------------------------------------------- o eixo `RS` de `H` (docs §2.2, §2.12)
+def test_each_policy_gets_its_own_reward_when_the_shaping_axis_is_on():
+    """`h_i = (γ_i, RS_i)`. Com `shapings` ligado, as políticas deixam de otimizar o mesmo
+    objetivo — que era o defeito medido na §2.12: duas das três cabeças não eram "míope
+    competente" e "paciente competente", eram simplesmente piores."""
+    ag = LBC(cfg(total_steps=10 ** 6, gammas=(0.99, 0.995, 0.999),
+                 shapings=(1.0, 0.5, 0.0), shaping_fracs=(1.0, 0.25, 0.0),
+                 indice_alvo=1))
+    assert "H_shaping" in ag.variant
+    lote, _ = ag.collect()
+    soma = lote["rew"].sum(axis=(0, 1))
+    assert len({round(float(v), 4) for v in soma}) == 3, (
+        f"as três políticas receberam recompensas iguais: {soma}")
+
+    # π2 tem shaping 0: a recompensa dela é a esparsa pura, que só tem múltiplos de 0,5
+    esparsa = lote["rew"][:, :, 2]
+    assert np.allclose(esparsa, np.round(esparsa * 2) / 2)
+
+
+def test_the_diversity_of_the_population_is_persistent_not_transient():
+    """O agendamento único fazia as três voltarem a ser a mesma coisa depois de 25% do
+    orçamento. Se a diversidade evapora, o mapeamento híbrido não tem o que misturar
+    justamente no trecho em que o desempenho se decide."""
+    ag = LBC(cfg(total_steps=1000, gammas=(0.99, 0.995, 0.999),
+                 shapings=(1.0, 0.5, 0.0), shaping_fracs=(1.0, 0.25, 0.0),
+                 indice_alvo=1))
+    for passo in (0, 100, 250, 500, 900):
+        ag.global_step = passo
+        v = ag.shaping_por_politica()
+        assert v[0] > v[1] >= v[2], f"ordem quebrou no passo {passo}: {v}"
+    # a avaliada é bit-idêntica ao agendamento do PPO, que é o que sustenta a comparação
+    for passo in (0, 100, 250, 900):
+        ag.global_step = passo
+        assert ag.shaping_por_politica()[1] == pytest.approx(ag.shaping(), abs=1e-6)
+    # e π0 continua guiada depois de a avaliada ter zerado
+    ag.global_step = 900
+    assert ag.shaping_por_politica()[0] > 0.0
+    assert ag.shaping() == 0.0
+
+
+def test_the_shaping_axis_is_off_by_default_and_changes_nothing():
+    """O padrão do `10_lbc` continua `H = γ`: a comparação contra a execução anterior tem
+    que ser de uma variável só."""
+    ag = LBC(cfg(total_steps=10 ** 6))
+    assert ag.cfg.shapings is None
+    assert ag.shaping_por_politica() is None
+    assert "H_shaping" not in ag.variant
+    lote, _ = ag.collect()
+    r = lote["rew"]
+    assert np.allclose(r[:, :, 0], r[:, :, 1]) and np.allclose(r[:, :, 1], r[:, :, 2])
+
+
+def test_the_shaping_axis_must_describe_the_same_population():
+    with pytest.raises(ValueError, match="shapings"):
+        LBCConfig(n_politicas=3, shapings=(1.0, 0.0))
+    with pytest.raises(ValueError, match="shaping_fracs"):
+        LBCConfig(n_politicas=3, shapings=(1.0, 0.5, 0.0), shaping_fracs=(1.0,))
+    with pytest.raises(ValueError, match="não faz nada"):
+        LBCConfig(shaping_fracs=(1.0, 0.25, 0.0))
+
+
+def test_the_population_diversity_is_instrumented():
+    """Sem isto, a única forma de saber se a população degenerou é carregar o checkpoint e
+    medir por fora — que foi como se descobriu, tarde, o que a §2.12 documenta."""
+    ag = LBC(cfg(total_steps=10 ** 6))
+    saida = ag.iterate()
+    assert 0.0 <= saida["divergencia_populacao"] < 1e4
+    assert 0.0 <= saida["acordo_argmax"] <= 1.0
+
+    # com população de uma não há par: `nan`, e não zero — zero afirmaria degeneração
+    # onde a pergunta nem existe
+    solo = LBC(cfg(total_steps=10 ** 6, n_politicas=1, gammas=(0.995,), indice_alvo=0))
+    s1 = solo.iterate()
+    assert np.isnan(s1["divergencia_populacao"]) and np.isnan(s1["acordo_argmax"])

@@ -123,25 +123,36 @@ Se alguém quiser medir o custo desse desvio, o experimento é direto: três ins
 `build_actor_critic_populacao(n_politicas=1)` treinadas em paralelo, com o mesmo `ψ`. Fica
 registrado como pergunta aberta, não como algo que já sabemos.
 
-### 2.2 `H` reduzido ao fator de desconto
+### 2.2 `H` reduzido ao fator de desconto — **desvio revogado**
 
-**Paper:** `h_i = (γ_i, RS_i)` — desconto **e** um método de *reward shaping* por política.
-**Aqui:** `h_i = γ_i`.
+**Paper:** `h_i = (γ_i, RS_i)` — desconto **e** um método de *reward shaping* por política
+(Badia et al., 2020a; no Agent57 são os pesos `β_i` da recompensa intrínseca, pareados com
+os `γ_i` à moda do NGU: quem explora tem `β` alto e `γ` baixo).
+**Aqui, até a §2.12:** `h_i = γ_i`. **Agora:** `h_i = (γ_i, shaping_i)`, opcional.
 
-O eixo de shaping não foi cortado por preguiça: o `VecSnake` aplica o shaping potencial
-dentro do `step()` e devolve **uma** recompensa. Ter um shaping por política exigiria ou
-mudar a assinatura do ambiente — que é a fonte única de verdade de dez algoritmos — ou
-reimplementar o potencial dentro do agente, que é precisamente o erro que a §1.5 da revisão
-documenta (`avaliar_com_busca` reimplementou o protocolo e reintroduziu dois bugs já
-corrigidos).
+O argumento original era que o `VecSnake` aplica o shaping dentro do `step()` e devolve
+**uma** recompensa, e que ter um shaping por política exigiria ou mudar a assinatura do
+ambiente — fonte única de verdade de dez algoritmos — ou reimplementar o potencial dentro do
+agente, que é o erro que a §1.5 da revisão documenta.
 
-O shaping continua existindo, compartilhado e com o mesmo agendamento do PPO, e usa o γ da
-política avaliada. Como ele decai a zero em 25% do treino, a escolha do γ do shaping afeta
-só o primeiro quarto da execução.
+**O argumento estava errado, e havia uma terceira porta.** O `step()` agora devolve
+`phi_old`, `phi_new` e `shaping_valido` no `info`. A recompensa que ele calcula é
+**bit-idêntica** à de antes — é informação a mais, não comportamento diferente —, e com ela
+o consumidor monta
 
-Consequência a registrar: o espaço de comportamento deste LBC é **menor** que o do paper em
-um eixo. Pela Fig. 5 do próprio paper, reduzir o espaço degrada o desempenho — então o
-número daqui deve ser lido como um piso do que o método daria com `H` completo.
+    r_i = r_esparsa + coef_i · shaping_valido · (γ_i · phi_new − phi_old)
+
+O ambiente continua dono do potencial, que é a parte que exige saber quando a comida trocou
+de lugar; o agente só recombina. Nada é reimplementado, e nenhum outro algoritmo muda.
+
+O eixo é ligado por `LBCConfig.shapings` / `shaping_fracs` e é o que o braço `H_shaping` do
+`90_lbc_populacao` mede. O padrão do `10_lbc` continua sendo `H = γ`, para que a comparação
+contra a execução anterior permaneça de uma variável só.
+
+Um detalhe que o caminho novo conserta de passagem: no caminho antigo o shaping de **todas**
+as políticas usa o γ da avaliada. O potencial só é invariante para a política cujo γ foi
+usado, então as outras duas recebiam um shaping levemente enviesado. Com `shapings` ligado,
+cada uma usa o seu próprio γ.
 
 ### 2.3 Um bandit, não uma população de bandits
 
@@ -457,7 +468,8 @@ enquanto `n_politicas=3` marca 10,7 — e a população ainda dobra o consumo do
 gradiente (§2.11: 29 contra 15 atualizações por iteração).
 
 **Por que, e o que fazer.** As duas causas prováveis são os desvios §2.1 e §2.2, e é a
-primeira vez que eles têm consequência medida:
+primeira vez que eles têm consequência medida — o §2.2 foi **revogado** por causa disto, e o
+`90_lbc_populacao` existe para medir se era ele:
 
 * **tronco compartilhado** — as três cabeças veem as mesmas features, então não podem ser
   *estratégias* diferentes, só leituras diferentes. O que emergiu não foi diversidade de
@@ -466,11 +478,27 @@ primeira vez que eles têm consequência medida:
   uma política ser genuinamente exploratória em vez de apenas descontar diferente. Com γ como
   único eixo, o que separa as cabeças é sobretudo ruído de treino.
 
-A conclusão honesta é que, **deste jeito**, a população é custo sem retorno neste domínio, e a
-próxima medição que vale a pena é a ablação `n_politicas=1` em 5 M passos, contra o PPO. Se
-ela empatar ou ganhar, o resultado do repositório é: *o mapeamento híbrido do LBC precisa de
-diversidade de objetivo que γ sozinho não fornece* — que é uma resposta sobre o algoritmo, e
-entra na arena com a nota.
+A conclusão honesta é que **deste jeito** a população é custo sem retorno neste domínio. Mas
+"deste jeito" carrega peso: a hipótese é que o problema é o **eixo**, não a ideia — três
+cabeças que otimizam o *mesmo* objetivo sobre um tronco compartilhado não têm motivo
+estrutural para virar estratégias diferentes, e o que as separou foi ruído de treino sob 9%
+do orçamento de gradiente (§2.11).
+
+Reduzir a população mede a ausência dela; não conserta a diversidade. Por isso a próxima
+medição não é `n_politicas=1` sozinha, e sim o `90_lbc_populacao` inteiro, cujos braços
+separam as três explicações possíveis:
+
+| braço | o que ele mede |
+|---|---|
+| `H_shaping` | o eixo `RS` do paper, devolvido (§2.2). É a hipótese principal |
+| `H_shaping_pop5` | se mais cobertura ajuda ou só consome orçamento |
+| `H_shaping_aleatoria` | se o mérito é do espaço ou do bandit (Fig. 5) |
+| `pop1` | se a população vale alguma coisa, com qualquer eixo |
+
+E dois números novos no registro respondem sem forense de checkpoint:
+**`divergencia_populacao`** (KL médio entre as cabeças), **`acordo_argmax`** (fração de
+estados em que todas concordam na ação) e **`valor_relativo_pior`** (se as outras cabeças
+são competentes ou apenas piores). Estão na tabela da §4.
 
 ---
 
@@ -512,6 +540,9 @@ nada. Quatro números no registro existem para isso:
 | `clipfrac` | 0,05 a 0,25 | perto de 1 = todo minilote está sendo clipado, o passo é grande demais |
 | `mab_sinal_ruido` | cresce com o treino | abaixo de ~2 **com `mab_entropia` baixa** = o bandit decidiu sobre ruído (§2.9) |
 | `ent_coef` | passeia dentro de `[1e-4, 0,15]` | colado no teto com `ent` abaixo do alvo = o controlador perdeu autoridade e o piso não existe |
+| `divergencia_populacao` | acima de zero, sem explodir | 0 = população degenerada, `N` cópias caras da mesma política — o mapeamento híbrido não tem o que misturar (§2.12) |
+| `acordo_argmax` | entre ~0,5 e ~0,9 | perto de 1 = degeneração; perto de `1/3` = as cabeças estão resolvendo problemas **diferentes** em vez do mesmo problema de jeitos diferentes |
+| `valor_relativo_pior` | perto de 1 | bem abaixo = as outras cabeças não são "diferentes", são piores — e sob `ω` uniforme elas assinam dois terços do comportamento. Só é legível depois que `ev` sobe |
 | `atualizacoes` / `epochs_done` | perto de 128 e de 4 | **o número mais importante desta tabela.** Uma fração do orçamento (128) é fome de gradiente: a parada por KL virou o modo normal e o agente vai terminar subtreinado, com `melhor == final` no último passo. Confira `meta.atualizacoes` contra o do PPO — não a curva (§2.11) |
 
 `ev` (variância explicada) é lido como nos outros agentes: mede o crítico da política
