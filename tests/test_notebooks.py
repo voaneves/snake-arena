@@ -339,8 +339,29 @@ def test_the_download_cell_survives_outside_colab(caminho, tmp_path):
 
     dentro = set(zipfile.ZipFile(escopo["ZIP"]).namelist())
     assert {"history.json", "curva.png", "episodio_s7.gif"} <= dentro
-    assert "export/modelo.tflite" in dentro, \
-        "o modelo exportado mora fora da pasta da execução e tem que ser copiado para dentro"
+    # e o `export/` **não** entra: o TFLite é derivado dos mesmos `.keras` que já estão em
+    # `modelos/`, e copiá-lo para cá punha o mesmo modelo em três formatos dentro de
+    # `runs/`, que é a pasta que se versiona e se manda para os outros
+    assert not any(n.startswith("export/") for n in dentro), \
+        f"o export voltou para dentro da pasta da execução: {sorted(dentro)}"
+
+
+@pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
+def test_the_gif_cell_never_writes_outside_the_run_folder(caminho):
+    """O GIF é escrito uma vez, no fim do treino, dentro da pasta da execução.
+
+    A célula do notebook chegava a renderizar de novo com `caminho=f"episodio_last_s{n}.gif"`
+    — caminho relativo, ou seja a **raiz** da pasta de trabalho. Resultado: os mesmos três
+    GIFs em dois lugares, com nomes diferentes, e a raiz suja a cada execução. Aqui ela só
+    exibe o que `AgentBase.artefatos()` já gravou, e o fallback (quando `salvar_gif=False`
+    ou a renderização falhou) escreve em `PASTA_EXECUCAO`.
+    """
+    celula = next(c for c in codigo_de(carrega(caminho)) if c.startswith("# @title GIF"))
+    assert "episodio_last_s" not in celula, "voltou a renderizar na raiz"
+    assert 'os.path.join(PASTA_EXECUCAO' in celula, \
+        "o fallback tem que escrever na pasta da execução, não no diretório atual"
+    assert 'meta.get("artefatos"' in celula, \
+        "a célula tem que reaproveitar o GIF que o treino já gravou"
 
 
 @pytest.mark.parametrize("caminho", CAMINHOS, ids=lambda c: os.path.basename(c))
@@ -545,7 +566,8 @@ PAPERS = {
 
 #: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.
 #: Dar a elas o paper do algoritmo base sugeriria que a variação é do paper, e não é.
-SEM_PAPER = {"98_acktr_ablacoes.ipynb", "92_muzero_ablacoes.ipynb",
+SEM_PAPER = {"90_lbc_populacao.ipynb",
+             "98_acktr_ablacoes.ipynb", "92_muzero_ablacoes.ipynb",
              "93_alphazero_ablacoes.ipynb",
              "94_rainbow_nstep3.ipynb",
              "95_a2c_orcamento_esparso.ipynb", "96_ppo_orcamento_esparso.ipynb",

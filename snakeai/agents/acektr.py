@@ -75,7 +75,25 @@ descarta subir `kl_max` como conserto.
 
 Então `ACKTRConfig` voltou a declarar `rollout = 16`, e a §5 da `docs/EKFAC.md` continua
 **sem resposta**: ela precisa de duas execuções na mesma semente e no mesmo orçamento de
-crédito, que é o que a próxima execução deste notebook produz.
+crédito.
+
+A segunda tentativa também não valeu, e o motivo é outro
+--------------------------------------------------------
+Com o rollout restaurado, a execução de 02/09 (`resnet_small+base50`) fechou em 74,47 com
+**0,4%** de tabuleiros cheios — média maior que a de 01/09 (71,07) e taxa de vitória 44×
+menor. O confundidor dessa vez foi meu: `inv_every` tinha ido de 10 para 50, que é o regime
+de amortização do paper. `ekfac_desvio` mostra o estrago no dente de serra — pico de
+**69,6** dentro da primeira janela contra 0,2–0,4 com janela de 10 —, e o pico escala com o
+comprimento da janela, o que quer dizer que ele mede **base velha**, não violação de
+Kronecker. `kl_fator` foi junto: 46,2 contra 18,7–20,0 das execuções de base fresca. Ver
+`ACEKTRConfig.inv_every`.
+
+Sobreviveu uma coisa daquela execução: `kl_cal_debias` fez o que prometia. A entropia em
+1 M de passos foi 0,196, a mais alta desta família (ACKTR: 0,066 · 0,143 · 0,084; ACEKTR de
+01/09: 0,085).
+
+O par limpo — base fresca, `T = 16`, escalas acumuladas — ainda não foi rodado. É o que a
+próxima execução deste notebook produz.
 
 E a previsão que **não** se pode fazer
 --------------------------------------
@@ -99,41 +117,74 @@ __all__ = ["ACEKTRConfig", "ACEKTR"]
 
 @dataclass
 class ACEKTRConfig(ACKTRConfig):
-    #: Média móvel de `s*` entre atualizações — e **mais rápida** que a de `A` e `G`, de
-    #: propósito.
-    #:
-    #: `kfac_ema = 0,95` faz sentido porque `A` e `G` são acumulados *através* das
-    #: reconstruções da base: eles nunca são zerados, e o que a média móvel absorve é só o
-    #: ruído de lote. `s*` não é assim — ele descreve os eixos de **uma** base e é
-    #: reiniciado no palpite do K-FAC toda vez que a base muda. Com `inv_every = 10`, uma
-    #: média móvel de 0,95 gastaria a janela inteira saindo do palpite e o EK-FAC nunca
-    #: chegaria a usar o que mediu. Meia-vida de uma atualização deixa as medições
-    #: dominarem em três ou quatro passos, com folga dentro da janela.
-    #:
-    #: `1.0` desliga a medição e o EK-FAC vira **exatamente** o K-FAC. Não é uma
-    #: curiosidade: é o controle que `tests/test_ekfac.py` usa para provar que a única
-    #: diferença entre os dois agentes é a correção de autovalores.
+    #: Média móvel exponencial de `s*`. **Só é usada quando `escalas_acumuladas=False`**;
+    #: continua aqui porque `1.0` é o controle que desliga a medição e faz o EK-FAC virar
+    #: **exatamente** o K-FAC, que é o que `tests/test_ekfac.py` usa para provar que a
+    #: única diferença entre os dois agentes é a correção de autovalores.
     ema_escalas: float = 0.8
 
-    #: **A base rara, as escalas sempre** — o regime que o paper propõe, e que o
-    #: `docs/EKFAC.md` §3.2 registra como deliberadamente desligado até aqui.
+    #: **O conserto certo do problema que a `docs/EKFAC.md` §3.2 tinha identificado.**
     #:
-    #: O default do ACKTR é 10, e lá ele significa só "de quantas em quantas atualizações
-    #: refatorar". No EK-FAC ele significa outra coisa: é o eixo de amortização. `s*`
-    #: descreve os eixos de **uma** base e é reiniciado no palpite do K-FAC toda vez que a
-    #: base muda — com uma janela de 10 e `ema_escalas = 0,5`, a medição mal saía do
-    #: palpite antes de ser jogada fora. Com 50, sobram ~30 atualizações por janela
-    #: rodando com escalas de fato medidas, e a `eigh` cara sai 5× menos vezes.
+    #: A queixa original era real: com uma janela de 10 e `ema_escalas = 0,5`, `s*` mal
+    #: saía do palpite do K-FAC antes de a base ser reconstruída, e o que ele usava no meio
+    #: do caminho era uma medição de ~2 lotes. A resposta que tentamos foi alongar a janela
+    #: para 50 — e a medição de 02/09 mostrou que o custo disso (base velha) é muito maior
+    #: que o benefício. Ver `inv_every`.
     #:
-    #: `ema_escalas` sobe junto, de 0,5 para 0,8: a janela agora comporta uma média sobre
-    #: ~5 lotes em vez de ~2, e `s*` medido em 2 lotes é ruidoso — dividir por um
-    #: autovalor subestimado por ruído amplifica exatamente a direção que o lote não
-    #: sabia estimar. É a troca de um estimador enviesado e liso (o do K-FAC) por um não
-    #: enviesado e liso, em vez de por um não enviesado e barulhento.
+    #: A resposta certa é trocar o **estimador**, não a janela. Dentro de uma janela de 10
+    #: atualizações a rede quase não muda, então não há deriva a esquecer: a média
+    #: **acumulada** é o estimador de mínima variância, enquanto a exponencial joga fora
+    #: metade da informação a cada passo para se proteger de uma deriva que não aconteceu.
+    #: Com o palpite do K-FAC entrando como **uma** pseudo-observação,
     #:
-    #: Isto sai do pareamento `12_acektr × 08_acktr` — que passa a medir duas variáveis —
-    #: e por isso a variante ganha `+base50` **sempre**, mesmo sendo o default daqui.
-    inv_every: int = 50
+    #:     s*_k = (λ_A⊗λ_G + Σ_{i≤k} s_i) / (1 + k)
+    #:
+    #: o prior vale 100% em `k = 0` (o controle bit a bit continua valendo), 50% em
+    #: `k = 1`, 10% em `k = 9` — e a variância cai como `1/k` em vez de ficar parada em
+    #: ~2 lotes. Mesmo frescor do K-FAC, autovalores de fato medidos.
+    #:
+    #: Ganha a marca `+s_acum` **sempre**, mesmo sendo o default: é um desvio da
+    #: implementação de referência (que usa média móvel) e é o que separa esta execução
+    #: das gravadas em 01/09 e 02/09 na identidade `(algo, variant, seed)`.
+    escalas_acumuladas: bool = True
+
+    #: **A base rara era o regime errado aqui, e a medição de 02/09 é inequívoca.**
+    #:
+    #: O paper propõe amortizar: reconstruir a base a cada 50–500 passos e recalcular as
+    #: escalas a cada passo. `docs/EKFAC.md` §3.2 registrava `inv_every = 10` como um
+    #: handicap deliberado, e ele foi para 50. A execução que saiu disso fechou em 74,47
+    #: de score com **0,4% de tabuleiros cheios** — média maior que a da execução anterior
+    #: (71,07) e taxa de vitória 44× menor (17,6%).
+    #:
+    #: `ekfac_desvio` diz por quê, e o dente de serra é literal:
+    #:
+    #: =============  =======  =======  =======  =======  =======  =======
+    #: atualização    1        15       29       43       **51**   57
+    #: =============  =======  =======  =======  =======  =======  =======
+    #: `inv_every=50` 0,06     35,3     59,7     **69,6**  (base)  0,29
+    #: `inv_every=10` 0,36     0,37     0,37     0,23      —       0,17
+    #: =============  =======  =======  =======  =======  =======  =======
+    #:
+    #: Duas ordens de grandeza, e elas **escalam com o comprimento da janela**. Se o
+    #: número medisse violação de Kronecker — que é o que o EK-FAC existe para corrigir —
+    #: ele não dependeria de quando a base foi construída. Ele estava medindo **base
+    #: velha**, e a §4 daquele documento, que dizia que as duas coisas "não se separam
+    #: neste número", estava errada: bastava variar `inv_every`.
+    #:
+    #: E base velha no EK-FAC é pior que base velha no K-FAC, o que não é simétrico. O
+    #: K-FAC com `A`, `G` velhos ainda é um pré-condicionador PSD coerente — só descreve
+    #: uma curvatura de 10 passos atrás. O EK-FAC mistura `s*` medido **agora** com eixos
+    #: de 50 passos atrás: nesses eixos `s*` pode ser minúsculo onde a curvatura real é
+    #: grande, e aí divide-se por quase nada numa direção de curvatura alta. `kl_fator`
+    #: mediu isso: **46,2** (p90 58,1) contra 18,7–20,0 das execuções com base fresca.
+    #:
+    #: A premissa do paper — o modelo muda pouco entre reconstruções — vale em aprendizado
+    #: supervisionado com milhares de passos. Aqui o treino inteiro tem **610**
+    #: atualizações e cada uma anda `kl_max` de KL: 50 atualizações são 8% da execução e
+    #: uma política inteiramente diferente. A amortização não é de graça neste regime, e o
+    #: conserto do §3.2 não é janela maior, é **estimador melhor** — ver
+    #: `escalas_acumuladas`.
+    inv_every: int = 10
 
     #: Ligada aqui, ao contrário do ACKTR. Ver `ACKTRConfig.kl_cal_debias`: o ACKTR mantém
     #: `False` para continuar reproduzindo as três execuções gravadas; o ACEKTR não tem
@@ -179,7 +230,8 @@ class ACEKTR(ACKTR):
         c = self.cfg
         return EKFac(self.model, damping=c.damping, ema=c.kfac_ema,
                      inv_every=c.inv_every,
-                     ema_escalas=getattr(c, "ema_escalas", 0.5))
+                     ema_escalas=getattr(c, "ema_escalas", 0.8),
+                     escalas_acumuladas=getattr(c, "escalas_acumuladas", True))
 
     @staticmethod
     def _variante_da_regiao(cfg):
@@ -198,8 +250,11 @@ class ACEKTR(ACKTR):
         # `(algo, variant, seed)` de colidir com a execução de 01/09, que rodou com 10.
         if cfg.inv_every != ACKTRConfig.inv_every:
             marcas.append(f"base{cfg.inv_every}")
-        if getattr(cfg, "ema_escalas", 0.5) >= 1.0:
+        if getattr(cfg, "ema_escalas", 0.8) >= 1.0:
             marcas.append("sem_correcao")
+        elif getattr(cfg, "escalas_acumuladas", True):
+            # sempre, mesmo sendo o default — ver `ACEKTRConfig.escalas_acumuladas`
+            marcas.append("s_acum")
         return "+".join(marcas)
 
     def update(self, lote):

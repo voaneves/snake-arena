@@ -1034,15 +1034,17 @@ _PRE_CFG_ACKTR = """BRACOS = {
     #     decima atualizacao enquanto a entropia caia de 1,06 para 0,29, e por volta da
     #     45a a politica estava morta (entropia 0,0001, eta colado no teto). Com o debias
     #     e o prior, o fator assenta em ~5 na quinta e a entropia segura em 0,22 ate a 50a.
-    #   * `eval_every_steps = 125_000`: 40 avaliacoes em vez de 20. NAO gasta orcamento -
-    #     `avaliar()` roda num `VecSnake` proprio e nao mexe no `global_step`. O que muda
-    #     e a densidade da amostragem do `best`, e o contrato ja registra que em 8 das 21
-    #     avaliacoes da primeira execucao longa havia um checkpoint anterior melhor que o
-    #     modelo daquele momento - numa delas por 21,7 pontos. `avaliar_melhor()` remede o
-    #     escolhido do zero com o mesmo protocolo, entao isto acha um pico melhor sem
-    #     inflar o numero. Custa wall-clock: a avaliacao fica ~2x mais cara no total.
     #
     # FORA, e por que:
+    #   * `eval_every_steps = 125_000` (40 avaliacoes em vez de 20). Esteve dentro e saiu.
+    #     Ele nao gasta orcamento - `avaliar()` roda num `VecSnake` proprio e nao mexe no
+    #     `global_step` - e adensar a amostragem acha um pico melhor de verdade, porque com
+    #     1.000 episodios o erro padrao da avaliacao e ~0,7 ponto enquanto a
+    #     nao-monotonicidade real chega a 20. Mas ele so melhora o `melhor`, e quem entra
+    #     na arena e o `last`. MEDIDO nos registros: na execucao local do ACEKTR os
+    #     intervalos que contem uma avaliacao custam 2,03 s/iteracao contra 0,53 s/iteracao
+    #     dos que nao contem - a avaliacao e ~30-40% do wall-clock. Dobrar isso e trocar
+    #     ~8 minutos de uma execucao de 24 por um numero que nao entra na curva oficial.
     #   * `max_grad_norm = 0`. E a distorcao conhecida que sobrou - o Keras clipa POR
     #     VARIAVEL sobre a direcao ja pre-condicionada, e ~30% das variaveis batem no
     #     teto, o que desfaz em silencio a razao de ser do K-FAC. Mas o braco `sem_clip`
@@ -1064,8 +1066,7 @@ _PRE_CFG_ACKTR = """BRACOS = {
     #
     # O que este braco NAO e: uma aposta. Ele e a uniao do que tem medicao, e a razao de
     # a lista ser curta e que so tres coisas tem.
-    "definitiva": {"kl_cal_debias": True, "kl_fator_inicial": 15.0,
-                   "eval_every_steps": 125_000},
+    "definitiva": {"kl_cal_debias": True, "kl_fator_inicial": 15.0},
 }
 
 #: Os que a celula de diagnostico da KL pula. Ver o comentario la.
@@ -1312,13 +1313,6 @@ NOTEBOOKS = [
                     "snakeai/agents/acktr.py", "snakeai/agents/acektr.py"],
         "agente": "ACEKTR",
         "config": "ACEKTRConfig",
-        # 40 avaliações em vez de 20. Não gasta orçamento — `avaliar()` roda num
-        # `VecSnake` próprio e não toca no `global_step` — e o contrato registra que em 8
-        # das 21 avaliações da primeira execução longa havia um checkpoint anterior
-        # melhor que o modelo daquele momento, numa delas por 21,7 pontos. `melhor` é
-        # remedido do zero por `avaliar_melhor()` com o mesmo protocolo, então amostrar
-        # mais denso acha um pico melhor sem inflar o número. Custa wall-clock.
-        "extra_cfg": "    eval_every_steps=125_000,",
         "resumo": "O `08_acktr` com o EK-FAC no lugar do K-FAC — e, desde 01/09, no "
                   "**regime que o paper propõe**.\n\n"
                   "De `A ⊗ G = (U_A ⊗ U_G)(S_A ⊗ S_G)(U_A ⊗ U_G)ᵀ` o K-FAC tira duas "
@@ -1561,8 +1555,8 @@ NOTEBOOKS = [
         "resumo":
             "**Se você veio rodar uma vez e ir embora: o braço padrão já é o certo.** "
 "O dropdown abre em `definitiva`, que é a união do que tem medição — o "
-"`rollout = 16` restaurado, a calibração da região de confiança debiasada com "
-"prior 15, e 40 avaliações em vez de 20. Aperte *Executar tudo* e ignore o "
+"`rollout = 16` restaurado e a calibração da região de confiança debiasada com "
+"prior 15. Aperte *Executar tudo* e ignore o "
 "resto desta página. A lista do que ficou **de fora** desse braço, e por quê, "
 "está no comentário dele na célula de parâmetros — ela é metade do valor do "
 "braço, porque três coisas terem medição e as outras não é o resultado.\n\n"
@@ -2066,12 +2060,27 @@ diferentes.
 """),
         _code("""from IPython.display import Image, display
 
+# Os GIFs já existem: `AgentBase.artefatos()` os gera no fim do treino, com a mesma
+# política e as mesmas sementes, **dentro da pasta da execução**. Renderizar de novo aqui
+# só criava uma segunda cópia na raiz da pasta de trabalho — mesmo modelo, mesmo resultado,
+# nome diferente. Aqui se exibe o que já está gravado; se faltar (`salvar_gif=False`, ou
+# uma falha na hora), renderiza-se **ali**, ao lado do `history.json`, e nunca na raiz.
+PASTA_EXECUCAO = os.path.dirname(registro.save(skip_validation=True))
+_ARTEFATOS = registro.record.meta.get("artefatos", {})
+
 for semente in (7, 21, 42):
-    caminho, score, motivo = render_episode(
-        agente.politica(), caminho=f"episodio_last_s{semente}.gif", seed=semente,
-        canal_fome=getattr(agente.env, "canal_fome", False))
-    print(f"last · semente {semente}: score {score}, terminou por {motivo}")
-    display(Image(filename=caminho))""", "GIF"),
+    _info = _ARTEFATOS.get(f"gif_s{semente}") or {}
+    _caminho = _info.get("caminho")
+    if _caminho and os.path.exists(_caminho):
+        print(f"last · semente {semente}: score {_info['score']}, "
+              f"terminou por {_info['fim']}")
+    else:
+        _caminho, _score, _motivo = render_episode(
+            agente.politica(),
+            caminho=os.path.join(PASTA_EXECUCAO, f"episodio_s{semente}.gif"),
+            seed=semente, canal_fome=getattr(agente.env, "canal_fome", False))
+        print(f"last · semente {semente}: score {_score}, terminou por {_motivo}")
+    display(Image(filename=_caminho))""", "GIF"),
         _md("""## Exportar — os dois
 
 `.keras` para retomar treino, TFLite fp16/int8 para embarcar no jogo. A paridade de **ação**
@@ -2116,6 +2125,10 @@ Ele carrega os dois resultados: `final` (o modelo do último passo, que é o nú
 e `melhor` (o melhor checkpoint, com o passo em que apareceu). Junto vão `modelos/last.keras`
 e `modelos/best.keras` — a pasta é autossuficiente, quem a recebe consegue rodar o agente
 sem depender de nada que ficou nesta máquina.
+
+O que **não** entra ali é o `export/`: o TFLite é derivado desses mesmos `.keras`, e tê-lo
+dentro da pasta da execução punha o mesmo modelo em três formatos numa pasta que se
+versiona e se compartilha. Ele fica em `PASTA/export`, ao lado dos checkpoints.
 
 Sobre versionar isso no GitHub: o registro vai (`history.json`, `curva.png` e os GIFs), os
 **pesos não**. Um `.keras` vai de 0,8 MB (`resnet_small`) a 6,7 MB (`cnn_rainbow` com dueling
@@ -2164,12 +2177,12 @@ A entrega muda com a plataforma, e o `.zip` existe nos dois casos:
 
 PASTA_EXECUCAO = os.path.dirname(CAMINHO_REGISTRO)
 
-# o export mora fora da pasta da execução; copiamos para dentro antes de zipar,
-# senão o .zip sai sem o modelo — que é justamente o que se leva para o jogo
-_export = os.path.join(PASTA, "export")
-if os.path.isdir(_export):
-    shutil.copytree(_export, os.path.join(PASTA_EXECUCAO, "export"), dirs_exist_ok=True)
-
+# A pasta da execução guarda **só** o que a arena precisa: `history.json`, `curva.png`, os
+# GIFs e `modelos/` com os `.keras`. O `export/` (TFLite fp16/int8) fica em `PASTA/export`
+# e não é copiado para cá — ele é derivado dos mesmos pesos que já estão em `modelos/`, e
+# duplicá-lo aqui punha o mesmo modelo em três formatos dentro de `runs/`, que é a pasta
+# que se versiona e se manda para os outros. Quem precisar do `.tflite` pega em
+# `PASTA/export`; para voltar ao comportamento antigo basta um `shutil.copytree` aqui.
 _nome = "_".join([registro.record.algo, registro.record.variant,
                   f"seed{registro.record.seed}"])
 ZIP = shutil.make_archive(os.path.join(PASTA, _nome), "zip", PASTA_EXECUCAO)

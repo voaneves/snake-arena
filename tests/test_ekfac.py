@@ -100,7 +100,8 @@ def test_measuring_actually_changes_the_direction():
 
     kf = KFac(m, damping=1e-2, ema=0.0, inv_every=1)
     kf.acumula([(c, a, None)], [g])
-    ek = EKFac(m, damping=1e-2, ema=0.0, inv_every=1, ema_escalas=0.0)
+    ek = EKFac(m, damping=1e-2, ema=0.0, inv_every=1, ema_escalas=0.0,
+               escalas_acumuladas=False)
     ek.acumula([(c, a, None)], [g])
 
     dk = kf.precondiciona([grad])[0].numpy()
@@ -123,7 +124,8 @@ def test_the_measured_scales_have_the_same_total_mass_as_the_kfac_guess():
     m = denso(bias=True)
     c = m.get_layer("d")
     a, g = _lote(n=4000)
-    ek = EKFac(m, damping=1e-2, ema=0.0, inv_every=1, ema_escalas=0.0)
+    ek = EKFac(m, damping=1e-2, ema=0.0, inv_every=1, ema_escalas=0.0,
+               escalas_acumuladas=False)
     ek.acumula([(c, a, None)], [g])
 
     ref = (ek._lamA["d"][:, None] * ek._lamG["d"][None, :]).numpy()
@@ -142,7 +144,8 @@ def test_the_conv_scales_keep_the_same_convention():
     x = tf.constant(rng.normal(size=(16, 8, 8, 3)), tf.float32)
     gp = tf.constant(rng.normal(size=(16, 8, 8, 4)), tf.float32)
 
-    ek = EKFac(m, damping=1e-2, ema=0.0, inv_every=1, ema_escalas=0.0)
+    ek = EKFac(m, damping=1e-2, ema=0.0, inv_every=1, ema_escalas=0.0,
+               escalas_acumuladas=False)
     ek.acumula([(c, x, None)], [gp])
     ref = (ek._lamA["c"][:, None] * ek._lamG["c"][None, :]).numpy()
     assert float(ek._m2["c"].numpy().sum() / ref.sum()) == pytest.approx(1.0, rel=0.2)
@@ -169,7 +172,8 @@ def _erro_relativo(F, aprox):
 def _aproximacoes(m, c, a, g):
     kf = KFac(m, damping=1e-8, ema=0.0, inv_every=1)
     kf.acumula([(c, a, None)], [g])
-    ek = EKFac(m, damping=1e-8, ema=0.0, inv_every=1, ema_escalas=0.0)
+    ek = EKFac(m, damping=1e-8, ema=0.0, inv_every=1, ema_escalas=0.0,
+               escalas_acumuladas=False)
     ek.acumula([(c, a, None)], [g])
 
     F_kfac = np.kron(kf._G["d"].numpy(), kf._A["d"].numpy())
@@ -249,7 +253,8 @@ def test_rebuilding_the_basis_resets_the_scales():
     pré-condicionador que mistura duas bases — plausível, silencioso e errado."""
     m = denso(bias=True)
     c = m.get_layer("d")
-    ek = EKFac(m, damping=1e-2, ema=0.5, inv_every=3, ema_escalas=0.0)
+    ek = EKFac(m, damping=1e-2, ema=0.5, inv_every=3, ema_escalas=0.0,
+               escalas_acumuladas=False)
     for i in range(2):
         a, g = _lote(semente=i, correlacionado=True)
         ek.acumula([(c, a, None)], [g])
@@ -299,8 +304,9 @@ def test_acektr_is_acktr_with_one_method_replaced():
 def test_acektr_uses_the_eigenvalue_corrected_preconditioner():
     ag = ACEKTR(cfg())
     assert isinstance(ag.kfac, EKFac)
+    so_do_acktr = set(ACKTRConfig.__dataclass_fields__)
     assert isinstance(ACKTR(ACKTRConfig(**{k: v for k, v in cfg().__dict__.items()
-                                           if k != "ema_escalas"})).kfac, KFac)
+                                           if k in so_do_acktr})).kfac, KFac)
 
 
 def test_acektr_is_its_own_algorithm_in_the_arena():
@@ -355,9 +361,9 @@ def test_turning_the_correction_off_marks_the_variant():
     ACKTR, não ao daqui: uma execução nesse regime não é pareada com o `08_acktr`, e sem a
     marca ela ainda colidiria com a execução de 01/09, que rodou com `inv_every = 10`.
     """
-    assert ACEKTR(cfg()).variant == "resnet_tiny+base50"
+    assert ACEKTR(cfg()).variant == "resnet_tiny+s_acum"
     assert ACEKTR(cfg(ema_escalas=1.0)).variant.endswith("+sem_correcao")
-    assert ACEKTR(cfg(inv_every=10)).variant == "resnet_tiny"
+    assert ACEKTR(cfg(inv_every=50)).variant == "resnet_tiny+base50+s_acum"
 
 
 def test_the_control_really_reproduces_acktr_inside_the_agent():
@@ -375,7 +381,7 @@ def test_the_control_really_reproduces_acktr_inside_the_agent():
     a = ACKTR(ACKTRConfig(net="resnet_tiny", num_envs=32, rollout=8, seed=0,
                           eval_every_steps=10 ** 9, log_every_steps=10 ** 9,
                           salvar_gif=False, salvar_grafico=False)).iterate()
-    b = ACEKTR(cfg(seed=0, ema_escalas=1.0, inv_every=10,
+    b = ACEKTR(cfg(seed=0, ema_escalas=1.0,
                    kl_cal_debias=False, kl_fator_inicial=1.0)).iterate()
     assert b["lr"] == pytest.approx(a["lr"], rel=2e-3)
     assert b["kl"] == pytest.approx(a["kl"], rel=5e-2)
@@ -416,3 +422,70 @@ def test_the_summary_reports_the_correction():
     r = ACEKTR(cfg()).resumo_kfac()
     assert r["fracao"] > 0.95
     assert "desvio_de_kronecker" in r and "escalas_medidas" in r
+
+
+# ============================================ o estimador de `s*` dentro da janela
+def test_the_accumulated_estimator_is_less_noisy_than_the_exponential_one():
+    """A queixa da `EKFAC.md` §3.2 era real; a resposta é o estimador, não a janela.
+
+    Dentro de uma janela de 10 atualizações a rede quase não muda, então não há deriva a
+    esquecer — e a média móvel exponencial joga fora metade da informação a cada passo
+    para se proteger de uma deriva que não aconteceu. Isso importa porque `s*` vai para o
+    **denominador**: um autovalor subestimado por ruído amplifica exatamente a direção que
+    o lote não soube estimar.
+
+    Oito lotes ruidosos da **mesma** distribuição, uma base só (congelada, senão os `m2`
+    descreveriam eixos diferentes e a comparação não significaria nada): o estimador
+    acumulado tem que ficar mais perto do `s*` medido nos oito de uma vez.
+    """
+    m = denso(bias=True)
+    c = m.get_layer("d")
+    lotes = [_lote(semente=100 + i, n=40, correlacionado=True) for i in range(8)]
+
+    def roda(**kw):
+        # `ema=1.0` congela `A` e `G` depois do primeiro lote e `inv_every` gigante impede
+        # qualquer reconstrução: tudo aqui vive na MESMA base, senão os `m2` descreveriam
+        # eixos diferentes e a comparação não significaria nada.
+        ek = EKFac(m, damping=1e-2, ema=1.0, inv_every=10 ** 6, **kw)
+        saida = []
+        for a, g in lotes:
+            ek.acumula([(c, a, None)], [g])
+            saida.append(ek._m2["d"].numpy())
+        return saida
+
+    # `s_i` de cada lote isolado — a medição crua, sem alisamento nenhum
+    por_lote = roda(ema_escalas=0.0, escalas_acumuladas=False)
+    alvo = np.mean(por_lote, axis=0)
+
+    acum = roda(ema_escalas=0.0, escalas_acumuladas=True)[-1]
+    expo = roda(ema_escalas=0.5, escalas_acumuladas=False)[-1]
+
+    def erro(v):
+        return float(np.linalg.norm(v - alvo) / np.linalg.norm(alvo))
+
+    # a variação entre lotes é o que os dois estimadores têm que absorver; se ela for
+    # pequena o teste não separa nada e é o teste que está errado, não o estimador
+    espalhamento = np.mean([erro(v) for v in por_lote])
+    assert espalhamento > 0.1, f"lotes indistinguíveis ({espalhamento:.3f}): teste cego"
+    assert erro(acum) < erro(expo), (
+        f"acumulado {erro(acum):.3f} não ficou abaixo do exponencial {erro(expo):.3f}")
+    assert erro(acum) < espalhamento, "o acumulado tem que ser melhor que um lote só"
+
+
+def test_the_basis_is_rebuilt_as_often_as_the_kfac_one():
+    """A trava do achado de 02/09.
+
+    `inv_every = 50` (o regime de amortização do paper) fez `ekfac_desvio` subir de 0,06
+    para **69,6** dentro da primeira janela e cair para 0,29 na reconstrução seguinte — um
+    dente de serra de duas ordens de grandeza que **escala com o comprimento da janela**,
+    ou seja mede base velha, não violação de Kronecker. E base velha no EK-FAC é pior que
+    no K-FAC: ele mistura `s*` medido agora com eixos de 50 passos atrás. `kl_fator` foi a
+    46,2 contra 18,7–20,0 das execuções com base fresca, e a execução fechou com 0,4% de
+    tabuleiros cheios.
+
+    Com 610 atualizações no orçamento inteiro, 50 delas são 8% do treino. A premissa do
+    paper — o modelo muda pouco entre reconstruções — não vale aqui.
+    """
+    from snakeai.agents.acktr import ACKTRConfig
+    assert ACEKTRConfig.inv_every == ACKTRConfig.inv_every == 10
+    assert ACEKTRConfig.escalas_acumuladas is True

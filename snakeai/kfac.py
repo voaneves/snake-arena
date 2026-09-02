@@ -447,7 +447,7 @@ class EKFac(KFac):
     """
 
     def __init__(self, model, damping=1e-2, ema=0.95, inv_every=10, eps=1e-8,
-                 ema_escalas=0.5):
+                 ema_escalas=0.5, escalas_acumuladas=True):
         super().__init__(model, damping=damping, ema=ema, inv_every=inv_every, eps=eps)
         #: Autovetores e autovalores dos dois fatores — a KFE.
         self._UA, self._UG = {}, {}
@@ -458,6 +458,11 @@ class EKFac(KFac):
         #: `π` do amortecimento fatorado, guardado por camada para o denominador.
         self._pi = {}
         self.ema_escalas = float(ema_escalas)
+        #: Estimador de `s*` **dentro** da janela da base: média acumulada com uma
+        #: pseudo-observação do palpite do K-FAC, em vez de média móvel exponencial.
+        #: Ver `_atualiza_escalas`.
+        self.escalas_acumuladas = bool(escalas_acumuladas)
+        self._m2_soma, self._m2_n = {}, {}
 
     # ------------------------------------------------------------- estatísticas
     def acumula(self, capturado, grads_pre):
@@ -497,8 +502,12 @@ class EKFac(KFac):
             lamG, UG = tf.linalg.eigh(G)
             self._lamA[nome], self._UA[nome] = tf.nn.relu(lamA), UA
             self._lamG[nome], self._UG[nome] = tf.nn.relu(lamG), UG
-            self._m2[nome] = (self._lamA[nome][:, None]
-                              * self._lamG[nome][None, :])
+            prior = self._lamA[nome][:, None] * self._lamG[nome][None, :]
+            self._m2[nome] = prior
+            # o palpite do K-FAC entra como **uma** observação; a média acumulada abaixo
+            # o dilui sozinha conforme as medições chegam, sem `if passo < N` nenhum
+            self._m2_soma[nome] = tf.identity(prior)
+            self._m2_n[nome] = 1.0
 
     def _atualiza_escalas(self, capturado, grads_pre):
         """Mede `s*` neste lote e mistura na média móvel.
@@ -525,8 +534,21 @@ class EKFac(KFac):
             pg = tf.square(tf.matmul(g, self._UG[nome]))
             s = tf.matmul(pa, pg, transpose_a=True) / n
 
-            d = self.ema_escalas
-            self._m2[nome] = d * self._m2[nome] + (1.0 - d) * s
+            if self.escalas_acumuladas and self.ema_escalas < 1.0:
+                # Média **acumulada** dentro da janela, não exponencial. A EMA foi
+                # escolhida quando a janela era o eixo de amortização do paper (50 a 500
+                # passos), onde faz sentido esquecer o começo. Numa janela de 10 ela
+                # descarta metade da informação a cada passo para se proteger de uma
+                # deriva que não teve tempo de acontecer — e `s*` medido em ~2 lotes é
+                # ruidoso, o que importa porque ele vai para o **denominador**: um
+                # autovalor subestimado por ruído amplifica exatamente a direção que o
+                # lote não soube estimar.
+                self._m2_soma[nome] = self._m2_soma[nome] + s
+                self._m2_n[nome] = self._m2_n[nome] + 1.0
+                self._m2[nome] = self._m2_soma[nome] / self._m2_n[nome]
+            else:
+                d = self.ema_escalas
+                self._m2[nome] = d * self._m2[nome] + (1.0 - d) * s
 
     # ----------------------------------------------------------- condicionamento
     def precondiciona(self, grads):
@@ -601,5 +623,6 @@ class EKFac(KFac):
     def resumo(self):
         r = super().resumo()
         r["escalas_medidas"] = len(self._m2)
+        r["escalas_acumuladas"] = self.escalas_acumuladas
         r["desvio_de_kronecker"] = self.desvio_de_kronecker()
         return r

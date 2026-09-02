@@ -104,35 +104,86 @@ o EK-FAC nunca chegaria a usar o que mediu — seria um K-FAC caro. Meia-vida de
 atualização deixa as medições dominarem em três ou quatro passos, com folga dentro da
 janela.
 
-### 3.2 `inv_every = 50` — o regime do paper, que era o que faltava
+### 3.2 `inv_every = 10` — a amortização do paper **não** vale neste regime
 
-O paper propõe **amortizar**: reconstruir a base raramente (50 a 500 passos) e recalcular as
-escalas a cada passo. É de lá que vem metade do argumento — o EK-FAC não só aproxima melhor,
-como fica mais barato que o K-FAC, porque a `eigh` cara é diluída em muitas atualizações
-baratas.
+O paper propõe amortizar: reconstruir a base raramente (50 a 500 passos) e recalcular as
+escalas a cada passo. É de lá que vem metade do argumento — o EK-FAC não só aproxima
+melhor, como fica mais barato que o K-FAC, porque a `eigh` cara é diluída em muitas
+atualizações baratas.
 
-Até 01/09 o default aqui era `10`, o mesmo do ACKTR, e a escolha era deliberada: era o que
-fazia `08_acktr × 12_acektr` isolar uma variável só. **Deixou de ser.** Com `inv_every = 10`
-e `ema_escalas = 0,5`, `s*` é reiniciado no palpite do K-FAC a cada 10 atualizações e a
-média móvel cobre ~2 lotes — o EK-FAC gastava a janela inteira saindo do palpite e o que ele
-usava no meio do caminho era um `s*` medido em dois lotes. Isso não é "K-FAC caro": é pior
-que isso, porque um autovalor **subestimado por ruído** vai para o denominador e amplifica
-justamente a direção que o lote não soube estimar. O K-FAC troca viés por variância na
-direção certa; o EK-FAC assim configurado trocava na direção errada.
+Este documento chegou a dizer que `inv_every = 10` era um handicap deliberado e que o
+regime do paper estava "a uma configuração de distância". A configuração foi rodada em
+02/09. **Ela é pior, e a medição diz exatamente por quê.**
 
-O default passou a ser `inv_every = 50` com `ema_escalas = 0,8`:
+`ekfac_desvio` é um dente de serra — cai a zero em cada reconstrução da base e cresce até a
+próxima. Comparando as duas execuções pelo número da atualização:
 
-* a base é reconstruída 13 vezes num orçamento de 610 atualizações, em vez de 61;
-* dentro de cada janela sobram ~30 atualizações rodando com escalas de fato medidas;
-* a média cobre ~5 lotes em vez de ~2;
-* a `eigh` sai 5× menos vezes — o EK-FAC fica **mais barato** que o K-FAC, como o paper diz.
+| atualização | 1 | 15 | 29 | 43 | **51** (base) | 57 |
+|---|---|---|---|---|---|---|
+| `inv_every = 50` | 0,06 | 35,3 | 59,7 | **69,6** | — | 0,29 |
+| `inv_every = 10` | 0,36 | 0,37 | 0,37 | 0,23 | — | 0,17 |
 
-O preço é que a execução deixa de ser pareada com o `08_acktr` — e é por isso que a marca
-`+base50` aparece **sempre** no nome da variante, mesmo sendo o default. Quem quiser o par
-de uma variável só pede `ACEKTRConfig(inv_every=10, ema_escalas=0.5, kl_cal_debias=False,
-kl_fator_inicial=1.0)`, que volta a se chamar `resnet_small` e é comparável ponto a ponto.
+Duas ordens de grandeza — e elas **escalam com o comprimento da janela**. Esse é o ponto:
+se o número medisse violação de Kronecker, que é o que o EK-FAC existe para corrigir, ele
+não dependeria de quando a base foi construída. Ele estava medindo **base velha**. (A §4
+abaixo dizia que as duas coisas "não se separam neste número"; separam — basta variar
+`inv_every` e ver o que se move.)
 
-### 3.3 `kl_cal_debias = True` — a região de confiança não pode levar 8% do treino para acordar
+E base velha no EK-FAC é pior que base velha no K-FAC, o que não é simétrico:
+
+* o **K-FAC** com `A`, `G` de 10 passos atrás ainda é `A⁻¹∇G⁻¹` — um pré-condicionador PSD
+  coerente, que descreve uma curvatura antiga;
+* o **EK-FAC** mistura `s*` medido **agora** com eixos de 50 passos atrás. Nesses eixos
+  `s*` pode ser minúsculo onde a curvatura real é grande, e o denominador do apêndice C
+  divide por quase nada numa direção de curvatura alta. Não é uma aproximação pior de
+  `F⁻¹`; é outra coisa.
+
+O `kl_fator` da calibração mediu isso, e é o mesmo número da §5:
+
+| execução | `kl_fator` mediano | p90 |
+|---|---|---|
+| ACKTR, K-FAC, base a cada 10 | 18,7 | 22,5 |
+| ACEKTR, base a cada 10 (T=5) | 20,0 | 29,3 |
+| **ACEKTR, base a cada 50** | **46,2** | **58,1** |
+
+A execução fechou em 74,47 de score com **0,4% de tabuleiros cheios** — média maior que a
+da anterior (71,07) e taxa de vitória 44× menor (17,6%).
+
+A premissa da amortização é que o modelo muda pouco entre reconstruções. Vale em
+aprendizado supervisionado, com milhares de passos de gradiente. Aqui o treino inteiro tem
+**610 atualizações** e cada uma anda `kl_max` de KL por construção: 50 atualizações são 8%
+da execução e uma política inteiramente diferente. `inv_every` voltou a 10.
+
+### 3.3 `escalas_acumuladas = True` — o conserto certo da queixa original
+
+A queixa que levou ao `inv_every = 50` era real: com uma janela de 10 e `ema_escalas = 0,5`,
+`s*` mal saía do palpite do K-FAC antes de a base ser reconstruída, e o que o EK-FAC usava
+no meio do caminho era uma medição de ~2 lotes. Um autovalor **subestimado por ruído** vai
+para o denominador e amplifica exatamente a direção que o lote não soube estimar.
+
+Mas a resposta é trocar o **estimador**, não a janela. Dentro de 10 atualizações a rede
+quase não muda, então não há deriva a esquecer — e é justamente contra deriva que serve uma
+média exponencial. A média **acumulada**, com o palpite do K-FAC entrando como uma
+pseudo-observação,
+
+```
+s*_k  =  (λ_A⊗λ_G  +  Σ_{i≤k} s_i) / (1 + k)
+```
+
+dá o prior a 100% em `k = 0` (o controle bit a bit continua valendo), 50% em `k = 1`, 10%
+em `k = 9`, e variância caindo como `1/k` em vez de estacionar em ~2 lotes. Mesmo frescor
+do K-FAC, autovalores de fato medidos.
+`test_the_accumulated_estimator_is_less_noisy_than_the_exponential_one` trava a
+comparação — com a base congelada, senão os dois `m2` descreveriam eixos diferentes.
+
+`ema_escalas` continua existindo como o caminho exponencial (`escalas_acumuladas=False`) e,
+em `1.0`, como o controle que desliga a medição e faz o EK-FAC virar exatamente o K-FAC.
+
+A variante ganha `+s_acum` **sempre**, mesmo sendo o default: é um desvio da implementação
+de referência, que usa média móvel, e é o que separa esta execução das gravadas em 01/09 e
+02/09 na identidade `(algo, variant, seed)`.
+
+### 3.4 `kl_cal_debias = True` — a região de confiança não pode levar 8% do treino para acordar
 
 `_fator_kl` é uma média móvel com `kl_cal_ema = 0,98`: constante de tempo de ~50
 atualizações. O orçamento inteiro tem **610**. Partindo de 1,0, a calibração gasta ~8% do
@@ -149,16 +200,15 @@ Medido em 96 ambientes, 20 atualizações, mesma semente:
 
 A EMA crua ainda estava em 1,10 na décima atualização — ou seja, **não tinha começado a
 corrigir** — enquanto a entropia já havia caído de 1,06 para 0,29. A versão debiasada
-mantém `s` e o peso `w` acumulado e usa `s/w`, como o `1 − βᵗ` do Adam: a segunda
-atualização já usa o fator medido, sem abrir mão da suavização depois.
+mantém `s` e o peso `w` acumulado e usa `s/w`, como o `1 − βᵗ` do Adam.
 
-O prior `kl_fator_inicial = 15` cobre a primeira, e o erro é assimétrico de propósito:
-começar cauteloso custa alguns passos curtos, começar ousado colapsa a entropia e não tem
-volta.
+Na execução de 02/09 isto funcionou como projetado, e é o único dos três ajustes daquela
+rodada que sobrevive: a entropia em 1 M de passos foi **0,196**, a mais alta de todas as
+execuções desta família (ACKTR: 0,066 · 0,143 · 0,084; ACEKTR anterior: 0,085).
 
-Isto fica **desligado no ACKTR** (`kl_cal_debias = False`), porque as três execuções
-gravadas de `acktr/resnet_small` rodaram sem ele e mudar o default faria o `08_acktr` deixar
-de reproduzi-las.
+Fica **desligado no ACKTR** (`kl_cal_debias = False`), porque as três execuções gravadas de
+`acktr/resnet_small` rodaram sem ele e mudar o default faria o `08_acktr` deixar de
+reproduzi-las.
 
 ## 4. `ekfac_desvio`: o número que distingue "não ajudou" de "não fez nada"
 
@@ -269,10 +319,10 @@ amortecimento gigante, que **treina**, só que pior.
 
 | par | o que a diferença mede |
 |---|---|
-| `12_acektr` com `inv_every=10, ema_escalas=0.5, kl_cal_debias=False, kl_fator_inicial=1.0` × `08_acktr`, mesma semente | a correção de autovalores, com todo o resto congelado — o par de uma variável só |
-| `12_acektr` no default (`+base50`) × `08_acktr` | o EK-FAC como o paper o propõe contra o K-FAC como o ACKTR o usa: mede **três** coisas somadas (autovalores, amortização da base, partida da região de confiança) e é a leitura de desempenho, não a de atribuição |
+| `12_acektr` com `escalas_acumuladas=False, ema_escalas=0.5, kl_cal_debias=False, kl_fator_inicial=1.0` × `08_acktr`, mesma semente | a correção de autovalores, com todo o resto congelado — o par de uma variável só |
+| `12_acektr` no default (`+s_acum`) × `08_acktr` | o EK-FAC como o paper o propõe contra o K-FAC como o ACKTR o usa: mede **três** coisas somadas (autovalores, amortização da base, partida da região de confiança) e é a leitura de desempenho, não a de atribuição |
 | `12_acektr` × `12_acektr` com `ema_escalas=1` | o mesmo, com o controle *dentro* do algoritmo: a segunda execução é o K-FAC bit a bit |
-| `12_acektr` × `12_acektr+base50` | o eixo de amortização do paper: base rara, escalas sempre |
+| `12_acektr` × `12_acektr+base50+s_acum` | o eixo de amortização do paper. **Já foi rodado e a resposta é não** — ver §3.2. O par continua na tabela porque a medição vale, não porque a pergunta esteja aberta |
 | `12_acektr` × `04_a2c` | a soma dos dois: vale a pena aproximar a curvatura, e vale a pena corrigir os autovalores dela |
 
 ---
