@@ -539,18 +539,51 @@ class AgentBase:
         with open(self._caminho(tag, "json"), "w", encoding="utf-8") as f:
             json.dump(estado, f, ensure_ascii=False)
 
-    def retomar(self, tag="last"):
-        """Retoma do checkpoint. O Colab derruba a sessão — é questão de quando."""
+    def retomar(self, tag="last", verbose=True):
+        """Retoma do checkpoint. O Colab derruba a sessão — é questão de quando.
+
+        **Só retoma o que é a mesma execução.** `_caminho` não tem semente nem variante no
+        nome — os checkpoints são `{algo}_{tag}.keras`, um par por algoritmo, de propósito:
+        a pasta é compartilhada e sobrescrita pela execução seguinte. O preço disso é que
+        um checkpoint da semente 0, ou de outra região de confiança, mora exatamente onde
+        a próxima execução vai procurar.
+
+        E o modo de falhar é o pior possível, porque nada quebra: `retomar()` também
+        restaura o `global_step`. Um checkpoint de uma execução de 5 M passos faz o laço de
+        treino **sair na primeira verificação**, e o notebook termina em segundos —
+        avaliando o modelo velho e gravando o resultado dele em
+        `runs/<algo>/<variante nova>/seed<N>/`. Um número plausível, com o nome da
+        configuração que nunca rodou.
+
+        Então a identidade `(variante, semente)` é conferida antes de qualquer coisa ser
+        carregada, e um checkpoint de outra identidade é **recusado**, não adotado. Quem
+        quiser mesmo continuar de um modelo estranho carrega à mão; o caminho automático
+        não faz isso por acidente.
+        """
         import keras
 
         m, s = self._caminho(tag, "keras"), self._caminho(tag, "json")
         if not (os.path.exists(m) and os.path.exists(s)):
             return False
+        with open(s, encoding="utf-8") as f:
+            estado = json.load(f)
+
+        antiga = (estado.get("variant"), estado.get("config", {}).get("seed"))
+        atual = (self.variant, self.cfg.seed)
+        # `(None, None)` é um checkpoint anterior a este campo: não há o que conferir, e
+        # recusá-lo quebraria retomadas legítimas de execuções antigas.
+        if antiga != (None, None) and antiga != atual:
+            if verbose:
+                print(f"[checkpoint] ignorado: {self._caminho(tag, 'keras')} é de "
+                      f"variante={antiga[0]!r} semente={antiga[1]!r}, e esta execução é "
+                      f"variante={atual[0]!r} semente={atual[1]!r}.")
+                print("             Começando do zero. Apague a pasta de checkpoints "
+                      "para não ver este aviso de novo.")
+            return False
+
         self.model = keras.models.load_model(m)
         self._carregar_extra(tag)
         self.on_model_reloaded()
-        with open(s, encoding="utf-8") as f:
-            estado = json.load(f)
         self.global_step = estado["global_step"]
         self.episodes = estado["episodes"]
         self.iteration = estado["iteration"]

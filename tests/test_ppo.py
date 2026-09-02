@@ -554,3 +554,31 @@ def test_a_block_bigger_than_the_window_becomes_the_window():
                      "wins": 0, "starved": grande, "deaths": 0})
     assert ag.episodios_na_janela() == grande
     assert ag.media_movel() == pytest.approx(7.0)
+
+
+def test_resuming_refuses_a_checkpoint_from_another_run(tmp_path, capsys):
+    """O modo de falhar mais caro do repositório, e ele não quebrava nada.
+
+    `_caminho` é `{algo}_{tag}.keras` — sem semente, sem variante. É deliberado: a pasta de
+    checkpoints é compartilhada e sobrescrita pela execução seguinte. Só que `retomar()`
+    também restaura o `global_step`, então um checkpoint de uma execução de 5 M passos faz o
+    laço de treino sair na primeira verificação: o notebook termina em segundos, avalia o
+    modelo **velho** e grava o resultado dele em `runs/<algo>/<variante nova>/seed<N>/`. Um
+    número plausível, com o nome de uma configuração que nunca rodou.
+    """
+    from snakeai.agents.ppo import PPO
+
+    a = PPO(cfg_min(ckpt_dir=str(tmp_path), seed=0))
+    a.global_step = 5_000_000
+    a.salvar("last")
+
+    # outra semente, mesmo algoritmo, mesma pasta
+    b = PPO(cfg_min(ckpt_dir=str(tmp_path), seed=1))
+    assert b.retomar("last") is False
+    assert b.global_step == 0, "adotou o passo de outra execução"
+    assert "ignorado" in capsys.readouterr().out
+
+    # e a retomada legítima continua funcionando
+    c = PPO(cfg_min(ckpt_dir=str(tmp_path), seed=0))
+    assert c.retomar("last") is True
+    assert c.global_step == 5_000_000
