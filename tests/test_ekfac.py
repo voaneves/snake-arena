@@ -356,14 +356,19 @@ def test_turning_the_correction_off_marks_the_variant():
     dividiria a identidade `(algo, variant, seed)` com o algoritmo de verdade e as duas
     curvas virariam uma só na arena.
 
-    E `+base50` aparece **sempre**, porque o default do ACEKTR passou a ser o regime de
-    amortização do paper (base rara, escalas sempre). A marca é comparada ao default do
-    ACKTR, não ao daqui: uma execução nesse regime não é pareada com o `08_acktr`, e sem a
-    marca ela ainda colidiria com a execução de 01/09, que rodou com `inv_every = 10`.
+    **O padrão não ganha marca nenhuma**, e essa é a regra que vale para todo o
+    repositório: quem desvia é quem aparece no nome. As três sementes de 03/09 rodaram o
+    default — base fresca, escalas acumuladas — e são `acektr/resnet_small`. Quem desvia é
+    a média móvel da implementação de referência (`+s_ema`) e o regime de amortização do
+    paper (`+base50`, comparado ao default do **ACKTR**, porque uma execução nele não é
+    pareada com o `08_acktr`).
     """
-    assert ACEKTR(cfg()).variant == "resnet_tiny+s_acum"
+    assert ACEKTR(cfg()).variant == "resnet_tiny"
     assert ACEKTR(cfg(ema_escalas=1.0)).variant.endswith("+sem_correcao")
-    assert ACEKTR(cfg(inv_every=50)).variant == "resnet_tiny+base50+s_acum"
+    assert ACEKTR(cfg(escalas_acumuladas=False)).variant == "resnet_tiny+s_ema"
+    assert ACEKTR(cfg(inv_every=50)).variant == "resnet_tiny+base50"
+    assert (ACEKTR(cfg(inv_every=50, escalas_acumuladas=False)).variant
+            == "resnet_tiny+base50+s_ema")
 
 
 def test_the_control_really_reproduces_acktr_inside_the_agent():

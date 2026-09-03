@@ -611,11 +611,27 @@ class AgentBase:
 
     @staticmethod
     def _com_sufixo(variant, sufixo):
-        """Acrescenta `sufixo` à variante, sem duplicar quando ela já o traz."""
+        """Acrescenta `sufixo` à variante, sem duplicar o que ela já traz.
+
+        A dedupe olha o **corpo** do sufixo, não o separador, e é isso que a versão
+        anterior errava. Os notebooks de ablação passam `sufixo_variante=f"_{BRACO}"`, e
+        vários braços têm o nome de uma marca que a variante já deriva sozinha do config:
+        o braço `H_shaping` produziu `resnet_small+H_shaping_H_shaping` — está gravado em
+        `runs/lbc/` — e o braço `pop1`, que ainda está na lista, produziria
+        `resnet_small+pop1_pop1` na próxima execução. Comparar só com `endswith("_corpo")`
+        não pega nenhum dos dois, porque a marca automática entra com `+`.
+
+        Isso não é cosmético: o nome é metade da identidade `(algo, variant, seed)`, e um
+        nome que muda conforme o caminho por onde a mesma configuração chegou faz duas
+        execuções idênticas virarem duas curvas — o espelho exato do problema que o sufixo
+        existe para evitar.
+        """
         if not sufixo:
             return variant
-        sufixo = sufixo if sufixo.startswith("_") else f"_{sufixo}"
-        return variant if variant.endswith(sufixo) else variant + sufixo
+        corpo = sufixo.lstrip("_")
+        if variant.endswith(f"_{corpo}") or variant.endswith(f"+{corpo}"):
+            return variant
+        return f"{variant}_{corpo}"
 
     def on_model_reloaded(self):
         """Gancho: o otimizador antigo aponta para as variáveis do modelo antigo."""

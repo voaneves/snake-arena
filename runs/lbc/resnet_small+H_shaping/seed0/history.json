@@ -1,6 +1,6 @@
 {
   "algo": "lbc",
-  "variant": "resnet_small+H_shaping_H_shaping",
+  "variant": "resnet_small+H_shaping",
   "seed": 0,
   "net": "resnet_small",
   "params": 286896,
@@ -3929,7 +3929,8 @@
         "score": 51,
         "fim": "colisão"
       }
-    }
+    },
+    "variant_anterior": "resnet_small+H_shaping_H_shaping"
   },
   "schema_version": 2
 }

@@ -179,9 +179,14 @@ comparação — com a base congelada, senão os dois `m2` descreveriam eixos di
 `ema_escalas` continua existindo como o caminho exponencial (`escalas_acumuladas=False`) e,
 em `1.0`, como o controle que desliga a medição e faz o EK-FAC virar exatamente o K-FAC.
 
-A variante ganha `+s_acum` **sempre**, mesmo sendo o default: é um desvio da implementação
-de referência, que usa média móvel, e é o que separa esta execução das gravadas em 01/09 e
-02/09 na identidade `(algo, variant, seed)`.
+**O nome.** Enquanto a execução com este estimador era uma só, a variante levava `+s_acum`
+mesmo sendo o default — as duas execuções superadas ocupavam `resnet_small` e `+base50`, e
+alguma marca tinha que separar as três na identidade `(algo, variant, seed)`. Com as três
+sementes de 03/09 gravadas, a marca inverteu para a regra que vale no resto do repositório:
+**o padrão não ganha marca, quem desvia é quem aparece**. Hoje o default é
+`acektr/resnet_small`, a média móvel da implementação de referência é `+s_ema`, e as duas
+superadas viraram `resnet_small+kl_cal_v1+s_ema_T5` (01/09) e `resnet_small+base50+s_ema`
+(02/09) — cada nome derivado do config que aquela execução de fato rodou.
 
 ### 3.4 `kl_cal_debias = True` — a região de confiança não pode levar 8% do treino para acordar
 
@@ -260,6 +265,7 @@ melhor, por teorema, na mesma base. E o número já é registrado a cada atualiz
 |---|---|
 | `kl_fator` do ACEKTR mais perto de 1 | o diagnóstico se sustenta, e a correção de autovalores era a peça que faltava |
 | `kl_fator` igual ao do ACKTR | o desvio vem de outro lugar — a diagonalidade por blocos, a homogeneidade espacial da convolução, ou a própria aproximação quadrática da KL — e a §região de confiança precisa ser reescrita |
+| `kl_fator` **maior** que o do ACKTR | não estava previsto quando esta tabela foi escrita, e é o que a §5.2 mediu: 29,62 contra 19,11. Aproximar melhor a matriz piorou o número, o que derruba a primeira linha e agrava a segunda |
 
 ### 5.1 A primeira tentativa não conta
 
@@ -290,7 +296,44 @@ ACEKTR acumulou **202** contra 57–73 das três sementes do ACKTR. Ele andou 3,
 chegou 20 pontos abaixo — o que também descarta subir `kl_max` como conserto, e é o único
 achado desta execução que sobrevive.
 
-`ACKTRConfig` voltou a declarar `rollout = 16`. A §5 continua sem resposta.
+`ACKTRConfig` voltou a declarar `rollout = 16`.
+
+### 5.2 O par limpo, e a resposta
+
+Ele existe desde 03/09. O controle **não** é `acktr/resnet_small`: aquelas três sementes
+rodaram antes de `kl_cal_debias` existir, e o ACEKTR parte de prior 15 com a calibração
+debiasada. O controle certo é `acktr/resnet_small+kl_cal_debias_definitiva`, que difere do
+default do ACEKTR em exatamente **um** campo — o pré-condicionador. Mesmo `lr_start = 0,5`,
+mesmo `minibatches = 1`, mesmo `rollout = 16`, mesmo `inv_every = 10`, mesmo
+`kl_max = 0,015`, mesma calibração, mesmo prior.
+
+| semente | ACKTR score | ACEKTR score | ACKTR `kl_fator` | ACEKTR `kl_fator` |
+|---|---:|---:|---:|---:|
+| 0 | 69,37 | 74,30 | 18,01 | 31,27 |
+| 1 | 79,04 | 80,02 | 20,20 | 21,47 |
+| 2 | — | 82,01 | — | 29,62 |
+| **mediana** | **74,20** | **80,02** | **19,11** | **29,62** |
+
+**A previsão da §5 falhou, e falhou na direção contrária.** O que se esperava era o EK-FAC
+*encolher* o fator; ele o **dobrou**, e subiu nas duas sementes compartilhadas. Nenhuma das
+duas linhas da tabela de resultados descreve isto: não é "mais perto de 1" nem "igual". A
+leitura que sobra é a segunda, agravada — o desvio sistemático da região de confiança **não**
+vem de `F̃` subestimar a curvatura na média, porque aproximar melhor a matriz piorou o
+número. Vem de algum dos três suspeitos que a §6 já listava, e o primeiro deles é o desta
+casa: `s*` é exato *dentro* da hipótese de homogeneidade espacial da convolução, não sobre
+ela.
+
+Há uma explicação mecânica compatível com o sinal, e ela é falsificável: `Δᵀ∇ = ΔᵀF̃Δ` usa a
+Fisher aproximada para *prever* a KL, mas o passo também é *tomado* nela. Corrigir os
+autovalores encolhe `F̃` nas direções em que o K-FAC os inflava, o passo cresce justamente
+ali, e a KL entregue cresce junto — a melhor aproximação da matriz produz um passo maior, não
+uma previsão melhor. Quem separa as duas coisas é medir a KL prevista contra a entregue por
+faixa de autovalor corrigido, que é medição nova e ainda não foi feita.
+
+**No score, nada se separa.** A mediana vai de 74,20 para 80,02 e o ACEKTR ganha nas duas
+sementes compartilhadas, mas a dispersão entre sementes do próprio ACKTR neste ambiente é de
+19 pontos — maior que a diferença inteira. É exatamente o que a §8 promete que **não** se
+pode prometer, e continua valendo: duas e três sementes não separam um efeito deste tamanho.
 
 ## 6. O que "exato" quer dizer numa convolução
 
@@ -320,9 +363,10 @@ amortecimento gigante, que **treina**, só que pior.
 | par | o que a diferença mede |
 |---|---|
 | `12_acektr` com `escalas_acumuladas=False, ema_escalas=0.5, kl_cal_debias=False, kl_fator_inicial=1.0` × `08_acktr`, mesma semente | a correção de autovalores, com todo o resto congelado — o par de uma variável só |
-| `12_acektr` no default (`+s_acum`) × `08_acktr` | o EK-FAC como o paper o propõe contra o K-FAC como o ACKTR o usa: mede **três** coisas somadas (autovalores, amortização da base, partida da região de confiança) e é a leitura de desempenho, não a de atribuição |
+| `12_acektr` no default (`resnet_small`, sem marca) × `08_acktr+kl_cal_debias_definitiva` | **o par limpo, e o que a §5.2 responde.** Uma variável só: o pré-condicionador. Todo o resto — `lr`, `minibatches`, `rollout`, `inv_every`, `kl_max`, calibração e prior — é idêntico |
+| `12_acektr` no default × `08_acktr` (as três sementes de agosto) | mede **duas** coisas somadas: autovalores e a partida da região de confiança, porque aquelas execuções rodaram antes de `kl_cal_debias`. É a leitura de desempenho, não a de atribuição |
 | `12_acektr` × `12_acektr` com `ema_escalas=1` | o mesmo, com o controle *dentro* do algoritmo: a segunda execução é o K-FAC bit a bit |
-| `12_acektr` × `12_acektr+base50+s_acum` | o eixo de amortização do paper. **Já foi rodado e a resposta é não** — ver §3.2. O par continua na tabela porque a medição vale, não porque a pergunta esteja aberta |
+| `12_acektr` × `12_acektr+base50+s_ema` | o eixo de amortização do paper. **Já foi rodado e a resposta é não** — ver §3.2. O par continua na tabela porque a medição vale, não porque a pergunta esteja aberta |
 | `12_acektr` × `04_a2c` | a soma dos dois: vale a pena aproximar a curvatura, e vale a pena corrigir os autovalores dela |
 
 ---

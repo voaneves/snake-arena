@@ -170,6 +170,7 @@ teste que prova que a implementação faz o que o paper diz — está em
 | ↳ **ACKTR — de onde vem o estouro da região de confiança** | — | `98_acktr_ablacoes.ipynb` | — | 🔬 **Resolvido, e a atribuição original estava certa**: as 5 execuções gravadas cobrem 46× de faixa de alvo e dão inclinação log–log de **0,58** — a região de confiança responde, com ganho sublinear de 6×–33×, que é a assinatura da Fisher subestimada. `tools/diag_acktr_kl.py --dos-registros` |
 | ↳ **MuZero — a oscilação e o peso do desenrolar** | — | `92_muzero_ablacoes.ipynb` | — | 🔬 10 braços que **acrescentam** ao padrão, ao contrário do `93`. `unroll5/seed0` terminou em 49,26 com o melhor em 66,05 e a busca estável em 58–60: o professor está bom, o aluno oscila. A hipótese principal é `normaliza_unroll` (§2.31) — sem ela o passo 0 vale 14,5% da perda de política. Comparar com `07_muzero` na mesma semente |
 | ↳ **LBC — a população vale o que custa?** | — | `90_lbc_populacao.ipynb` | — | 🔬 5 braços sobre o eixo de `H`. A execução anterior reduziu `H` ao γ e a população não ficou diversa: as três políticas concordavam no argmax em 31,8% dos estados — o acaso com três ações — e o bandit escolheu "use só π1" em 96% do treino ([§2.12](docs/LBC.md)). Com o `RS` de volta, `H_shaping` testa se o problema era o eixo e não a ideia |
+| ↳ **LBC — a bala de ouro** | — | `89_lbc_bala_de_ouro.ipynb` | — | 🔬 braço único: o alvo do LBC passa a ser a política **paciente** (`indice_alvo=2`, γ = 0,999), com shaping de 0,25 durando 80% do orçamento para que paciência não vire fome, e entropia alvo de 0,05 para permitir determinismo no fim de jogo. É a aposta de fechar o tabuleiro, e o controle dela é o `90` na mesma semente |
 | ↳ **eixo de otimizadores** (primeira ordem) | — | `99_ablacoes.ipynb` | — | ✅ Adam, AdamW, RMSprop, Lion e SGD como ablação medida |
 
 <details>
@@ -408,22 +409,26 @@ usa.
 | algoritmo | sementes | score (last) | melhor ckpt | com busca | amplitude | horas | tabuleiro cheio |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | SOAP · `resnet_small` | 3 | **85,55** | 89,22 | — | ±0,89 | 0,4 | 72,7% |
-| AlphaZero · `sims32` | 3 | **81,91** | 84,05 | **95,63** (32 sims, n=1) | ±2,20 | 7,1 | 67,3% |
+| AlphaZero · `sims32` | 3 | **81,91** | 84,05 | **94,86** (32 sims) | ±2,20 | 7,1 | 67,3% |
 | PPO · `resnet_small` | 3 | **81,50** | 81,98 | — | ±3,45 | 0,9 | 61,4% |
+| ACEKTR · `resnet_small` | 3 | **80,02** | 80,38 | — | ±7,71 | 0,3 | 49,8% |
 | ACKTR · `resnet_small` | 3 | **78,13** | 85,84 | — | ±19,11 | 0,5 | 60,7% |
 | ACER · `resnet_small` | 3 | **77,84** | 85,77 | — | ±14,53 | 1,4 | 13,0% |
-| ACEKTR · `resnet_small` | 1 | **71,07** | 71,07 | — | — | 0,4 | 17,6% |
 | A2C · `resnet_small` | 3 | **69,61** | 72,94 | — | ±7,72 | 0,3 | 2,2% |
 | Rainbow · `completo` | 3 | **65,43** | 70,51 | — | ±27,01 | 4,0 | 12,0% |
 | MuZero · `unroll5` | 1 | **49,26** | 66,05 | — | — | 6,8 | 0,1% |
 | DQN · `base` | 3 | **47,11** | 51,79 | — | ±2,86 | 1,9 | 0,0% |
+| LBC · `resnet_small` | 1 | **38,82** | 38,82 | — | — | 0,2 | 0,0% |
 | _piso aleatório_ | — | 1,21 | — | — | — | — | 0% |
 
-Score perfeito no 10×10 é **97**. Dois dos doze algoritmos ainda não têm nenhuma semente na
-régua atual — o **DreamerV3**, que nunca rodou, e o **LBC**, cuja única execução de 5 M passos
-é a que falhou e está arquivada fora da arena (`runs/lbc/resnet_small_antes_das_correcoes/`,
-`comparable=False`). Ver [`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) para a fila e o
-custo medido de cada um.
+Score perfeito no 10×10 é **97**. Um dos doze algoritmos ainda não tem nenhuma semente na
+régua atual: o **DreamerV3**, que nunca rodou. O **LBC** já tem — a execução corrigida
+(38,82) e três braços de ablação —, mas ainda em uma semente cada, e a primeira execução,
+a que falhou, continua arquivada fora da arena
+(`runs/lbc/resnet_small_antes_das_correcoes/`, `comparable=False`). O **ACEKTR** foi de uma
+semente para três em 03/09 e entrou na tabela no quarto lugar; o par limpo contra o ACKTR
+está em [`docs/EKFAC.md`](docs/EKFAC.md) §5.2. Ver
+[`docs/ANTES_DO_ARTIGO.md`](docs/ANTES_DO_ARTIGO.md) para a fila e o custo medido de cada um.
 
 **Três colunas, três perguntas.** `score (last)` é o número oficial: o modelo do último
 passo. `melhor ckpt` é o melhor que aquela execução produziu em algum momento — e é otimista
@@ -631,6 +636,7 @@ sozinha.
 | LBC — comportamento aprendido | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/10_lbc.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/10_lbc.ipynb) |
 | SOAP — opções discretas | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/11_soap.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/11_soap.ipynb) |
 | ACEKTR — EK-FAC | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/12_acektr.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/12_acektr.ipynb) |
+| LBC — a bala de ouro | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/89_lbc_bala_de_ouro.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/89_lbc_bala_de_ouro.ipynb) |
 | LBC — a população (ablações) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/90_lbc_populacao.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/90_lbc_populacao.ipynb) |
 | Rainbow — janela de 3 do paper | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/94_rainbow_nstep3.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/94_rainbow_nstep3.ipynb) |
 | PPO — orçamento de gradiente antigo | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/voaneves/snake-arena/blob/main/notebooks/96_ppo_orcamento_esparso.ipynb) | [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/voaneves/snake-arena/blob/main/notebooks/96_ppo_orcamento_esparso.ipynb) |
@@ -790,15 +796,16 @@ O passo 14 é o que falta para a arena ficar completa. Ele não cabe numa CPU: o
 oficial de 5 M passos leva ~3,7 h por semente só no PPO. É para isso que os notebooks
 existem.
 
-Seis perguntas estão **pré-registradas** e esperando só a GPU. Estão escritas antes da
-medição de propósito, para que o resultado não possa ser reinterpretado depois:
+Seis perguntas estão **pré-registradas**. Estão escritas antes da medição de propósito,
+para que o resultado não possa ser reinterpretado depois — e a primeira delas já foi
+medida, com o resultado que a pré-registrada previa como o **menos** provável:
 
 | pergunta | onde está escrita | o que decide |
 |---|---|---|
 | a exploração selecionada do LBC ganha da agendada do PPO? | [`docs/LBC.md`](docs/LBC.md) §5 | `10_lbc` × `01_ppo`, mesma semente |
 | a parte *learnable* do LBC vale alguma coisa, ou o mérito é do espaço de comportamento? | [`docs/LBC.md`](docs/LBC.md) §3 | `10_lbc` × `10_lbc+selecao_aleatoria` |
 | memória discreta resolve a fome melhor que o sexto canal resolveu? | [`docs/SOAP.md`](docs/SOAP.md) §4 | `11_soap` × `01_ppo`, contra `97` × `01_ppo` |
-| o desvio sistemático da região de confiança do ACKTR vem da Fisher aproximada? | [`docs/EKFAC.md`](docs/EKFAC.md) §5 | `kl_fator` de `12_acektr` × `08_acktr` |
+| ~~o desvio sistemático da região de confiança do ACKTR vem da Fisher aproximada?~~ **respondida: não** | [`docs/EKFAC.md`](docs/EKFAC.md) §5.2 | `kl_fator` de `12_acektr` × `08_acktr+kl_cal_debias_definitiva`, o par que difere só no pré-condicionador: **29,62 contra 19,11**. O EK-FAC não encolheu o fator, dobrou-o |
 | qual dos três mecanismos do §2.27–§2.29 carregava o resultado do AlphaZero? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | `93` braços `sem_conserto_da_busca`, `sem_conserto_do_tronco` e `sem_conserto_do_alvo` × `06_alphazero`, mesma semente |
 | quanto vale o lookahead: a rede pura chega perto da busca, ou a distância é estrutural? | [`docs/BUSCA_DEGENERADA.md`](docs/BUSCA_DEGENERADA.md) | a coluna **com busca** do `06_alphazero`, protocolo oficial, contra a curva da rede pura na mesma execução |
 

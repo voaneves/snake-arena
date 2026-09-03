@@ -18,10 +18,11 @@ comparabilidade, o protocolo de avaliação, a metodologia, e — inteiras — a
 fechadas: o canal de fome e o orçamento de gradiente.
 
 O que falta é **fila de GPU**, e ela encolheu muito: **um** algoritmo ainda sem nenhuma
-semente na régua atual — o DreamerV3, que nunca rodou —, mais o LBC, cuja única execução é a
-de antes das correções e está arquivada fora da arena. Faltam ainda duas sementes do MuZero,
-duas do ACEKTR e as duas do braço de controle do Rainbow. Nenhum deles depende de uma escolha
-que ainda não foi feita.
+semente na régua atual — o DreamerV3, que nunca rodou. O LBC saiu dessa lista: a execução
+corrigida marca 38,82 e três braços de ablação já estão gravados, mas todos em uma semente
+só. O ACEKTR saiu por inteiro — fechou as três em 03/09 (74,30 · 80,02 · 82,01) e entrou na
+arena em quarto lugar. Faltam duas sementes do MuZero, duas de cada braço do LBC e as duas do
+braço de controle do Rainbow. Nenhum deles depende de uma escolha que ainda não foi feita.
 
 Há **uma** pergunta nova, e ela é barata: a correção do DQN mudou duas coisas ao mesmo tempo
 e o efeito líquido foi de −9,8 pontos. Uma ablação de 1,85 h separa as duas. Ela não trava
@@ -93,10 +94,9 @@ como a próxima pergunta sobre esse algoritmo.
 
 ## O que falta, e é só execução
 
-Oito dos doze algoritmos já têm as três sementes na régua atual. O que resta é: o DreamerV3
-inteiro (3 sementes, custo desconhecido), o LBC inteiro na régua nova (3), duas sementes do
-MuZero, duas do ACEKTR e as duas do braço de controle do Rainbow. Nenhum depende de decisão
-pendente — os quatro sequenciais já têm o truncamento por fome corrigido, e o DQN já conta a
+Nove dos doze algoritmos já têm as três sementes na régua atual. O que resta é: o DreamerV3
+inteiro (3 sementes, custo desconhecido), duas sementes do LBC em cada braço, duas do MuZero
+e as duas do braço de controle do Rainbow. Nenhum depende de decisão pendente — os quatro sequenciais já têm o truncamento por fome corrigido, e o DQN já conta a
 rede alvo em atualizações de gradiente em vez de passos de ambiente.
 
 | ordem | algoritmo | notebook | estado | custo medido |
@@ -113,9 +113,9 @@ rede alvo em atualizações de gradiente em vez de passos de ambiente.
 **Pendente, e é a entrada nova da fila: implementar o Reanalyse.** A primeira execução sob o contrato (`muzero/unroll5/seed0`) terminou em 49,26 com o melhor em 66,05 e a busca estável em 58–60 — o professor está bom, o aluno oscila (§2.31). O Apêndice H do paper explica por quê melhor do que qualquer hipótese minha: este repositório faz **2,0 amostras de gradiente por estado**, que é exatamente o número do MuZero **Reanalyse** (o MuZero puro usa 0,1) — e o Reanalyse existe porque reúso alto precisa de alvo fresco: ele refaz a busca com a rede atual em 80% das atualizações e usa rede alvo para o bootstrap de valor. Não temos nem um nem outro. O Reanalyse **da política** já está implementado (`reanalise`, §2.32) e desligado por padrão, com o custo medido: 1,32× a 1,57× de tempo de parede em CPU, sublinear na fração porque as buscas são em lote — numa GPU 0,80 deve custar quase o mesmo que 0,25. O que falta do Apêndice H é a rede alvo e o refresco do alvo de **valor**, que exigem guardar o estado em `t+n`. Antes de qualquer um deles, porém, há um conserto de **graça**: `normaliza_unroll`, a escala `1/K` do Apêndice G que o repositório não tinha. Se ele resolver, nada disto precisa de GPU. Os braços estão no `92_muzero_ablacoes`.
 
 **Resolvido.** O MuZero ganhou `avaliar_com_busca` no protocolo oficial e os consertos do §2.27–§2.29 — o `MCTS` é o mesmo objeto, então os defeitos eram os mesmos. Como ele nunca rodou sob o contrato, não havia execução de controle a preservar e tudo já nasce ligado. O levantamento de quem tem o quê além da rede pura está em `docs/COMPARABILITY.md`. O que falta aqui é GPU.
-| 8 | LBC | `10_lbc` | 🔄 **0 de 3 na régua atual** — a única execução é a de antes das correções (`resnet_small_antes_das_correcoes`, `comparable=False`) | 0,36 h/semente, medido na execução que falhou |
+| 8 | LBC | `10_lbc` | 🔄 **1 de 3 na régua atual** (38,82), mais três braços de ablação em uma semente cada. A execução de antes das correções continua arquivada (`resnet_small_antes_das_correcoes`, `comparable=False`) | 0,2 h/semente |
 | ~~9~~ | ~~SOAP~~ | `11_soap` | ✅ **feito**, 3 sementes — e é o topo da arena (85,55) | 0,4 h/semente |
-| 10 | ACEKTR | `12_acektr` | 🔄 1 de 3 sementes | 0,4 h/semente |
+| ~~10~~ | ~~ACEKTR~~ | `12_acektr` | ✅ **feito**, 3 sementes (74,30 · 80,02 · 82,01) — e o par limpo contra o `08_acktr` respondeu a §5 do `EKFAC.md` | 0,3 h/semente |
 
 O A2C saiu **muito** mais barato que a estimativa de 0,7 h: 0,31 h por semente, o menor
 custo do repositório. A correção de retracing (`PROCEDENCIA.md`, caso 2) responde por boa
@@ -228,7 +228,7 @@ uma diferença de gênero, não de grau.
 | a exploração **selecionada** do LBC bate a agendada do PPO | `LBC.md` §5 | `10_lbc` × `01_ppo` | os agendamentos lineares deste repositório eram bons o bastante para este domínio, e isso é publicável |
 | a parte *learnable* do LBC vale alguma coisa | `LBC.md` §3 | `10_lbc` × `10_lbc+selecao_aleatoria` | o mérito estava no espaço de comportamento, não no bandit |
 | memória discreta resolve a fome melhor que o sexto canal | `SOAP.md` §4 | `11_soap` × `01_ppo`, contra `97` × `01_ppo` | 106 passos de horizonte de fome não bastam para justificar memória |
-| o desvio da região de confiança do ACKTR vem da Fisher aproximada | `EKFAC.md` §5 | `kl_fator` de `12_acektr` × `08_acktr` | a §região de confiança do `REVISAO_ALGORITMOS.md` precisa ser reescrita |
+| ~~o desvio da região de confiança do ACKTR vem da Fisher aproximada~~ **respondida: não** (§5.2, 29,62 contra 19,11 — o EK-FAC dobrou o fator em vez de encolhê-lo) | `EKFAC.md` §5.2 | `kl_fator` de `12_acektr` × `08_acktr+kl_cal_debias_definitiva` | a §região de confiança do `REVISAO_ALGORITMOS.md` precisa ser reescrita |
 
 Duas observações de honestidade que já cabem no artigo **sem nenhuma execução**:
 

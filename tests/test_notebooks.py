@@ -566,7 +566,7 @@ PAPERS = {
 
 #: Ablações deste repositório: variam **um** parâmetro de um algoritmo já implementado.
 #: Dar a elas o paper do algoritmo base sugeriria que a variação é do paper, e não é.
-SEM_PAPER = {"90_lbc_populacao.ipynb",
+SEM_PAPER = {"89_lbc_bala_de_ouro.ipynb", "90_lbc_populacao.ipynb",
              "98_acktr_ablacoes.ipynb", "92_muzero_ablacoes.ipynb",
              "93_alphazero_ablacoes.ipynb",
              "94_rainbow_nstep3.ipynb",

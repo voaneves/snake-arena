@@ -46,7 +46,8 @@ Nos dois casos o repositório aprende algo que hoje é suposição. Ver `docs/EK
 
 A primeira tentativa de responder isso **não valeu** — e por quê
 ----------------------------------------------------------------
-A execução de 01/09 (`acektr/resnet_small/seed0`) fechou em 71,07 com 17,6% de tabuleiros
+A execução de 01/09 (`acektr/resnet_small+kl_cal_v1+s_ema_T5/seed0`) fechou em 71,07 com
+17,6% de tabuleiros
 cheios, contra 89,78 e 89,7% do ACKTR, e a mediana de `kl_fator` saiu 19,98 contra 18,71 —
 o que se leria como "o EK-FAC não aproxima melhor **e** ainda joga pior". As duas leituras
 são inválidas, pelo mesmo motivo: **o par não estava pareado**.
@@ -73,13 +74,13 @@ atualizações, o ACEKTR acumulou **202** contra 57–73 das três sementes do A
 3,6× mais e chegou 20 pontos abaixo. O que faltou foi direção, não distância — o que também
 descarta subir `kl_max` como conserto.
 
-Então `ACKTRConfig` voltou a declarar `rollout = 16`, e a §5 da `docs/EKFAC.md` continua
-**sem resposta**: ela precisa de duas execuções na mesma semente e no mesmo orçamento de
-crédito.
+Então `ACKTRConfig` voltou a declarar `rollout = 16`, e a §5 da `docs/EKFAC.md` ficou sem
+resposta por mais dois dias: ela precisava de execuções na mesma semente e no mesmo
+orçamento de crédito. Elas existem desde 03/09 — ver o par limpo, mais abaixo.
 
 A segunda tentativa também não valeu, e o motivo é outro
 --------------------------------------------------------
-Com o rollout restaurado, a execução de 02/09 (`resnet_small+base50`) fechou em 74,47 com
+Com o rollout restaurado, a execução de 02/09 (`resnet_small+base50+s_ema`) fechou em 74,47 com
 **0,4%** de tabuleiros cheios — média maior que a de 01/09 (71,07) e taxa de vitória 44×
 menor. O confundidor dessa vez foi meu: `inv_every` tinha ido de 10 para 50, que é o regime
 de amortização do paper. `ekfac_desvio` mostra o estrago no dente de serra — pico de
@@ -92,8 +93,37 @@ Sobreviveu uma coisa daquela execução: `kl_cal_debias` fez o que prometia. A e
 1 M de passos foi 0,196, a mais alta desta família (ACKTR: 0,066 · 0,143 · 0,084; ACEKTR de
 01/09: 0,085).
 
-O par limpo — base fresca, `T = 16`, escalas acumuladas — ainda não foi rodado. É o que a
-próxima execução deste notebook produz.
+O par limpo, e o que ele mede
+-----------------------------
+Ele foi rodado em 03/09, com três sementes: é `acektr/resnet_small`, o braço oficial deste
+algoritmo, e é a configuração que este notebook roda sem tocar em nada. O par dele não é o
+`acktr/resnet_small` das três sementes de agosto — aquelas rodaram antes de `kl_cal_debias`
+existir — e sim `acktr/resnet_small+kl_cal_debias_definitiva`, que difere do default daqui
+em **um** campo: o pré-condicionador. Mesmo `lr`, mesmo `minibatches`, mesmo `rollout = 16`,
+mesmo `inv_every = 10`, mesmo `kl_max`, mesma calibração debiasada partindo de 15.
+
+===========  =============  =============  =============  =============
+por semente  ACKTR score    ACEKTR score   ACKTR kl_fat   ACEKTR kl_fat
+===========  =============  =============  =============  =============
+seed0        69,37          74,30          18,01          31,27
+seed1        79,04          80,02          20,20          21,47
+seed2        —              82,01          —              29,62
+===========  =============  =============  =============  =============
+
+Duas leituras, e elas apontam para lados diferentes.
+
+**No score, nada se separa.** A mediana vai de 74,20 para 80,02 e o ACEKTR ganha nas duas
+sementes compartilhadas — mas a amplitude entre sementes do próprio ACKTR neste ambiente é
+de 19 pontos, maior que a diferença inteira. É o que o parágrafo de baixo já previa: essa
+comparação não tem poder para o tamanho de efeito plausível aqui.
+
+**No `kl_fator`, a previsão da §5 falhou — e falhou na direção contrária.** O que se
+esperava era o EK-FAC **encolher** o fator: se `F̃` subestimava a curvatura, aproximar
+melhor a Fisher tinha que aproximar a KL entregue da pedida. A mediana foi de 19,11 para
+29,62, e subiu nas duas sementes compartilhadas. Aproximar melhor a Fisher **na média** não
+implica aproximar melhor nas direções que a KL usa, e é a segunda leitura da §5 que fica de
+pé, agravada: o desvio vem de outro lugar — diagonalidade por blocos, homogeneidade
+espacial da convolução, ou a própria aproximação quadrática da KL. Ver `docs/EKFAC.md` §5.
 
 E a previsão que **não** se pode fazer
 --------------------------------------
@@ -143,9 +173,17 @@ class ACEKTRConfig(ACKTRConfig):
     #: `k = 1`, 10% em `k = 9` — e a variância cai como `1/k` em vez de ficar parada em
     #: ~2 lotes. Mesmo frescor do K-FAC, autovalores de fato medidos.
     #:
-    #: Ganha a marca `+s_acum` **sempre**, mesmo sendo o default: é um desvio da
-    #: implementação de referência (que usa média móvel) e é o que separa esta execução
-    #: das gravadas em 01/09 e 02/09 na identidade `(algo, variant, seed)`.
+    #: **É o padrão, e o padrão não ganha marca.** As três sementes de 03/09 rodaram
+    #: exatamente esta configuração — base fresca, `T = 16`, escalas acumuladas — e são o
+    #: braço oficial do ACEKTR: `acektr/resnet_small/seed{0,1,2}`. Quem desvia é quem
+    #: aparece no nome, e o desvio aqui é a média móvel da implementação de referência,
+    #: que ganha `+s_ema`. Foi assim que as duas execuções superadas ficaram separadas
+    #: desta na identidade `(algo, variant, seed)`: a de 01/09 é
+    #: `resnet_small+kl_cal_v1+s_ema_T5` e a de 02/09 é `resnet_small+base50+s_ema`.
+    #:
+    #: A marca já foi o contrário — `+s_acum` no default, `nada` na média móvel — enquanto
+    #: a única execução com este estimador era uma. Inverter só ficou correto quando ela
+    #: virou o braço de três sementes: marcar o padrão é dizer que ele é a exceção.
     escalas_acumuladas: bool = True
 
     #: **A base rara era o regime errado aqui, e a medição de 02/09 é inequívoca.**
@@ -187,8 +225,12 @@ class ACEKTRConfig(ACKTRConfig):
     inv_every: int = 10
 
     #: Ligada aqui, ao contrário do ACKTR. Ver `ACKTRConfig.kl_cal_debias`: o ACKTR mantém
-    #: `False` para continuar reproduzindo as três execuções gravadas; o ACEKTR não tem
-    #: execução boa para preservar, e o transitório de ~50 atualizações é 8% do orçamento.
+    #: `False` para continuar reproduzindo as três execuções de agosto, e o transitório de
+    #: ~50 atualizações é 8% do orçamento — caro demais para pagar sem motivo lá.
+    #:
+    #: Aqui ela ficou ligada desde antes de existir execução boa para preservar, e é isso
+    #: que hoje dá o par limpo: o controle do EK-FAC não é o `acktr/resnet_small`, é o
+    #: `acktr/resnet_small+kl_cal_debias_definitiva`, que roda esta mesma calibração.
     kl_cal_debias: bool = True
 
     #: Prior do fator de calibração. As execuções longas assentaram entre 15 e 25, e o
@@ -245,16 +287,17 @@ class ACEKTR(ACKTR):
         marcas = [ACKTR._variante_da_regiao(cfg)]
         # comparado ao default do **ACKTR**, não ao daqui: `inv_every` é o eixo de
         # amortização do paper, e uma execução no regime dele não é a mesma coisa que uma
-        # execução pareada com o `08_acktr`. Como o default do ACEKTR passou a ser 50, a
-        # marca aparece sempre — que é o ponto: ela é o que impede a identidade
-        # `(algo, variant, seed)` de colidir com a execução de 01/09, que rodou com 10.
+        # execução pareada com o `08_acktr`. Os dois defaults coincidem em 10 hoje, então
+        # a marca não aparece no padrão — ela é o que separa a execução de 02/09, que
+        # rodou com 50, das três sementes oficiais.
         if cfg.inv_every != ACKTRConfig.inv_every:
             marcas.append(f"base{cfg.inv_every}")
         if getattr(cfg, "ema_escalas", 0.8) >= 1.0:
             marcas.append("sem_correcao")
-        elif getattr(cfg, "escalas_acumuladas", True):
-            # sempre, mesmo sendo o default — ver `ACEKTRConfig.escalas_acumuladas`
-            marcas.append("s_acum")
+        elif not getattr(cfg, "escalas_acumuladas", True):
+            # o desvio é a média móvel da implementação de referência, não a acumulada:
+            # ver `ACEKTRConfig.escalas_acumuladas`
+            marcas.append("s_ema")
         return "+".join(marcas)
 
     def update(self, lote):

@@ -488,12 +488,22 @@ Reduzir a população mede a ausência dela; não conserta a diversidade. Por is
 medição não é `n_politicas=1` sozinha, e sim o `90_lbc_populacao` inteiro, cujos braços
 separam as três explicações possíveis:
 
+A primeira geração de braços deste notebook se chamava `H_shaping`, `H_shaping_pop5` e
+`H_shaping_aleatoria`. A `H_shaping` foi rodada, marcou 42,77 e a autópsia dela (§2.13)
+reescreveu a lista inteira — os nomes de hoje são os da bala de prata, e é por eles que a
+tabela abaixo e o notebook falam. A execução antiga está em
+`runs/lbc/resnet_small+H_shaping/seed0`.
+
 | braço | o que ele mede |
 |---|---|
-| `H_shaping` | o eixo `RS` do paper, devolvido (§2.2). É a hipótese principal |
-| `H_shaping_pop5` | se mais cobertura ajuda ou só consome orçamento |
-| `H_shaping_aleatoria` | se o mérito é do espaço ou do bandit (Fig. 5) |
-| `pop1` | se a população vale alguma coisa, com qualquer eixo |
+| `bala_lr_menor` | **o padrão.** A bala de prata mais a única correção que o ensaio dela pediu: `lr_start` 1e-4 → 7e-5, para as 128 atualizações caberem dentro do KL |
+| `bala_de_prata` | as três correções da autópsia juntas, sem o passo menor. É o controle do `bala_lr_menor` |
+| `bala_lote_grande` | o outro caminho para o mesmo orçamento: `minibatches` 32 → 8, menos atualizações e mais amostras em cada. Existe para a comparação ser medida, não argumentada |
+| `bala_sem_concentracao` | quanto vale o `ω` poder concentrar (`concentracao_omega` de volta a 9) |
+| `bala_kl_medio` | quanto vale cobrar o KL de quem o gastou (`kl_por_politica` desligado) |
+| `bala_aleatoria` | se o mérito é do espaço ou do bandit (Fig. 5), agora sobre o espaço novo |
+| `membro_morto` | a população do `H_shaping` de volta: é o controle que reproduz a π2 que desistiu |
+| `pop1` | se a população vale alguma coisa, com qualquer eixo. É o piso |
 
 E dois números novos no registro respondem sem forense de checkpoint:
 **`divergencia_populacao`** (KL médio entre as cabeças), **`acordo_argmax`** (fração de
@@ -624,7 +634,7 @@ competente a divergência cai de 4,9 para 1,3 e as atualizações voltam de 98 p
 
 ### A bala de prata, e o que cada braço atribui
 
-`90_lbc_populacao`, braço padrão `bala_de_prata`:
+`90_lbc_populacao`, a configuração da `bala_de_prata` (que o braço padrão `bala_lr_menor` herda inteira, mudando só o `lr`):
 
 | | mudança | evidência |
 |---|---|---|

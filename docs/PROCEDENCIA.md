@@ -1,7 +1,9 @@
 # Procedência: qual código produziu cada número
 
 Este benchmark foi medido ao longo de três semanas, com o pacote mudando entre execuções.
-Vinte e quatro execuções carregam cinco versões diferentes do código. Um artigo que publica
+São **56 execuções gravadas** em 55 identidades `(algo, variant, seed)` — a 56ª é a colisão
+do LBC descrita no rodapé desta seção —, e elas carregam **25 assinaturas distintas**, mais
+oito execuções anteriores ao mecanismo de assinatura. Um artigo que publica
 uma tabela dessas precisa responder duas perguntas antes que um revisor as faça: **qual
 código produziu cada linha**, e **quais diferenças entre esses códigos tocam num número**.
 
@@ -33,22 +35,65 @@ todos os notebooks sem tocar em um único número.
 
 | execução | assinatura | atualizações | horas | s/atualização |
 |---|---|---:|---:|---:|
-| ppo/resnet_small/seed{0,1,2} | `40448b19b28116da` | 38.273 | 0,83 | 0,08 |
-| ppo/resnet_small_esparso/seed{0,1,2} | — | ~2.424 | 0,41 | 0,62 |
-| ppo/resnet_small_fome_esparso/seed{0,1,2} | — | ~2.424 | 0,40 | 0,60 |
-| acktr/resnet_small/seed{0,1,2} | `ca21410bf88c1c65` | ~610 | 0,51 | 3,03 |
-| acktr/resnet_small+kl0.002/seed0 | `ca21410bf88c1c65` | ~610 | 0,51 | 3,01 |
-| acktr/resnet_small+kl_nominal+kl0.002/seed0 | `ca21410bf88c1c65` | ~610 | 0,51 | 3,01 |
-| acktr/resnet_small_regua_antiga/seed0 | — | ~610 | 0,66 | 3,88 |
 | a2c/resnet_small/seed{0,1,2} | `df6c8eb2b2ca2f58` | 1.954 | 0,31 | 0,57 |
-| a2c/resnet_small_esparso/seed0 | `782a8b8aa4af004f` | 611 | 0,78 | **4,58** |
-| a2c/resnet_small_esparso/seed{1,2} | `df6c8eb2b2ca2f58` | 611 | 0,25 | **1,47** |
-| dqn/base/seed{0,1} | `75aa8ceb896d2cbc` | 38.908 | 1,85 | 0,17 |
+| a2c/resnet_small_esparso/seed0 | `782a8b8aa4af004f` | 611 | 0,78 | 4,58 |
+| a2c/resnet_small_esparso/seed{1,2} | `df6c8eb2b2ca2f58` | 611 | 0,25 | 1,46 |
+| acektr/resnet_small/seed{0,1,2} | `849d16d28efc2d5d` | — | 0,29 | — |
+| acektr/resnet_small+base50+s_ema/seed0 | `d3b3680cad73bfb8` | — | 0,39 | — |
+| acektr/resnet_small+kl_cal_v1+s_ema_T5/seed0 | `67fb85327b6cc0c7` | — | 0,40 | — |
+| acer/resnet_small/seed{0,1} | `027b5bbfc345ca18` | — | 1,43 | — |
+| acer/resnet_small/seed2 | `a185b0e84e0f6066` | — | 0,60 | — |
+| acktr/resnet_small/seed{0,1,2} | `ca21410bf88c1c65` | — | 0,51 | — |
+| acktr/resnet_small+kl0.002/seed0 | `ca21410bf88c1c65` | — | 0,51 | — |
+| acktr/resnet_small+kl_cal_debias_definitiva/seed{0,1} | `a8ed01298eb66b12` | — | 0,26 | — |
+| acktr/resnet_small+kl_nominal+kl0.002/seed0 | `ca21410bf88c1c65` | — | 0,51 | — |
+| acktr/resnet_small+kl_nominal_momento_descontado/seed0 | `88e94000953da52b` | — | 0,20 | — |
+| acktr/resnet_small_regua_antiga/seed0 | — | — | 0,66 | — |
+| alphazero/sims32/seed0 | `13560a9422c146ad` | 39.064 | 7,16 | 0,66 |
+| alphazero/sims32/seed{1,2} | `f1e812f31407d2a2` | 39.064 | 7,04 | 0,65 |
+| alphazero/sims32_sem_correcoes/seed0 | `03504eb9b222dcf6` | — | 7,54 | — |
+| dqn/base/seed{0,1,2} | `75aa8ceb896d2cbc` | 38.908 | 1,85 | 0,17 |
 | dqn/base_antigo/seed0 | — | — | 2,35 | — |
+| lbc/resnet_small/seed0 | `3c00ec03887e3d23` | 3.524 | 0,16 | 0,16 |
+| lbc/resnet_small+H_shaping/seed0 | `f0315ec8b316f379` | 9.523 | 0,22 | 0,08 |
+| lbc/resnet_small+H_shaping+conc49_bala_de_prata/seed0 **(duas vezes)** | `f6ac5a2ec858e414` | 15.782 · 18.399 | 0,26 · 0,30 | 0,06 |
+| lbc/resnet_small_antes_das_correcoes/seed0 | `3d2d21a62b187954` | 39.168 | 0,36 | 0,03 |
+| muzero/unroll10+num_simulations32/seed0 | `cec3a247a15263a3` | 39.064 | 9,67 | 0,89 |
+| muzero/unroll5/seed0 | `cec3a247a15263a3` | 39.064 | 6,77 | 0,62 |
+| muzero/unroll5_normaliza_unroll/seed0 | `d5ad07023295c02e` | 39.064 | 6,65 | 0,61 |
+| ppo/resnet_small/seed{0,1,2} | `40448b19b28116da` | 38.274 | 0,83 | 0,08 |
+| ppo/resnet_small_esparso/seed{0,1,2} | — | — | 0,41 | — |
+| ppo/resnet_small_fome_esparso/seed{0,1,2} | — | — | 0,40 | — |
+| rainbow/completo/seed{0,1} | `b6be2f8e874d7644` | 19.454 | 4,26 | 0,79 |
+| rainbow/completo/seed2 | `b26e37e2d9d82a27` | 19.454 | 2,83 | 0,52 |
+| rainbow/completo+n3/seed0 | `88e54feead9b01a9` | 19.454 | 2,61 | 0,48 |
+| rainbow/completo+n3+sem_noisy+eps_greedy/seed0 | `88e54feead9b01a9` | 19.454 | 8,02 | 1,48 |
+| soap/resnet_small/seed{0,1,2} | `2464fce3786fd31a` | 36.906 | 0,36 | 0,04 |
 
-O travessão marca execuções anteriores ao mecanismo de assinatura. Todas elas já são
-`comparable=False` por outros motivos, **exceto** `ppo/resnet_small_esparso`, que compete e
-cuja procedência precisa ser reconstruída pelo commit em que os dados foram acrescentados.
+O travessão na coluna de assinatura marca execuções anteriores ao mecanismo. Todas elas já
+são `comparable=False` por outros motivos, **exceto** `ppo/resnet_small_esparso`, que compete
+e cuja procedência precisa ser reconstruída pelo commit em que os dados foram acrescentados.
+O travessão em `atualizações` é outra coisa: `meta["atualizacoes"]` passou a ser gravado
+depois, e onde ele falta o `s/atualização` não pode ser calculado sem inventar o
+denominador.
+
+**Três configurações têm sementes de assinaturas diferentes**, e a tabela agora as separa em
+linhas em vez de escondê-las numa média. Além do `a2c/resnet_small_esparso`, que já estava
+documentado, aparecem `acer/resnet_small` (a semente 2 rodou com `a185b0e84e0f6066` e em
+menos da metade do tempo de parede das outras duas), `alphazero/sims32` (a semente 0 com
+`13560a9422c146ad`) e `rainbow/completo` (a semente 2 com `b26e37e2d9d82a27`). Nenhuma delas
+tem a análise que o Caso 4 fez para o `n_steps` do Rainbow, e as três competem hoje na arena
+como se as sementes fossem intercambiáveis — é dívida de procedência aberta, não um problema
+resolvido.
+
+**A linha de duas execuções.** `lbc/resnet_small+H_shaping+conc49_bala_de_prata/seed0` foi
+rodado duas vezes com a **mesma** configuração e a **mesma** assinatura, e as duas ficaram
+gravadas: 24,82 pontos às 14:06 e 61,35 às 16:30 de 03/09. Elas dividem a identidade
+`(algo, variant, seed)`, então `load_all` as junta numa curva só e a arena reporta amplitude
+±36,53 onde deveria haver uma execução. Está aqui de propósito, enquanto a causa da
+diferença é investigada: o que a tabela não pode fazer é fingir que a segunda substituiu a
+primeira. `tests/test_record.py::test_every_recorded_run_sits_where_its_identity_says` fica
+vermelho enquanto as duas conviverem — é o teste fazendo o trabalho dele.
 
 ## A fronteira de agosto: por que **todas** as assinaturas mudaram de uma vez
 

@@ -13,13 +13,16 @@ do próprio controle, na mesma cor, responde outra pergunta.
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | _piso aleatório_ | — | — | — | 0 | **1,21** | — | — | — | — | — | 1 | — | 0% |
 | soap · resnet_small | `resnet_small` | 300,036 | 3 | 5,013,504 | **85.55** | 89.22 | — | 753,664 | 0.4 | ±0.89 | 97 | 97 | 72.7% |
-| alphazero · sims32 | `resnet_small` | 180,464 | 3 | 5,000,192 | **81.91** | 84.05 | 95.63 (32 sims) · n=1 | 750,592 | 7.1 | ±2.20 | 97 | 97 | 67.3% |
+| alphazero · sims32 | `resnet_small` | 180,464 | 3 | 5,000,192 | **81.91** | 84.05 | 94.86 (32 sims) | 750,592 | 7.1 | ±2.20 | 97 | 97 | 67.3% |
 | ppo · resnet_small | `resnet_small` | 180,464 | 3 | 5,013,504 | **81.50** | 81.98 | — | 802,816 | 0.9 | ±3.45 | 97 | 97 | 61.4% |
+| acektr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **80.02** | 80.38 | — | 1,507,328 | 0.3 | ±7.71 | 96 | 97 | 49.8% |
 | acktr · resnet_small | `resnet_small` | 180,464 | 3 | 5,005,312 | **78.13** | 85.84 | — | 1,277,952 | 0.5 | ±19.11 | 97 | 97 | 60.7% |
 | acer · resnet_small | `resnet_small` | 334,878 | 3 | 5,001,216 | **77.84** | 85.77 | — | 1,251,328 | 1.4 | ±14.53 | 86 | 97 | 13.0% |
 | acktr · resnet_small+kl_nominal_momento_descontado | `resnet_small` | 180,464 | 1 | 5,002,240 | **76.45** | 76.45 | — | 2,501,120 | 0.2 | ±0.00 | 86 | 97 | 22.3% |
+| acektr · resnet_small+base50+s_ema | `resnet_small` | 180,464 | 1 | 5,005,312 | **74.47** | 74.47 | — | 1,507,328 | 0.4 | ±0.00 | 82 | 97 | 0.4% |
+| acktr · resnet_small+kl_cal_debias_definitiva | `resnet_small` | 180,464 | 2 | 5,005,312 | **74.20** | 84.34 | — | 1,380,352 | 0.3 | ±9.67 | 90 | 97 | 55.2% |
 | acktr · resnet_small+kl0.002 | `resnet_small` | 180,464 | 1 | 5,005,312 | **72.50** | 74.19 | — | 2,547,712 | 0.5 | ±0.00 | 75 | 97 | 28.9% |
-| acektr · resnet_small | `resnet_small` | 180,464 | 1 | 5,002,240 | **71.07** | 71.07 | — | 1,500,160 | 0.4 | ±0.00 | 78 | 97 | 17.6% |
+| acektr · resnet_small+kl_cal_v1+s_ema_T5 | `resnet_small` | 180,464 | 1 | 5,002,240 | **71.07** | 71.07 | — | 1,500,160 | 0.4 | ±0.00 | 78 | 97 | 17.6% |
 | a2c · resnet_small | `resnet_small` | 180,464 | 3 | 5,002,240 | **69.61** | 72.94 | — | 2,501,120 | 0.3 | ±7.72 | 77 | 97 | 2.2% |
 | rainbow · completo | `resnet_small` | 1,196,648 | 3 | 5,000,192 | **65.43** | 70.51 | — | 2,250,240 | 4.0 | ±27.01 | 77 | 97 | 12.0% |
 | ppo · resnet_small_esparso | `resnet_small` | 180,464 | 3 | 5,013,504 | **64.56** | 62.72 | — | 2,703,360 | 0.4 | ±19.15 | 71 | 97 | 0.0% |
@@ -28,8 +31,11 @@ do próprio controle, na mesma cor, responde outra pergunta.
 | muzero · unroll5 | `resnet_small` | 154,608 | 1 | 5,000,192 | **49.26** | 66.05 | — | 1,500,160 | 6.8 | ±0.00 | 57 | 97 | 0.1% |
 | rainbow · completo+n3+sem_noisy+eps_greedy | `resnet_small` | 662,148 | 1 | 5,000,192 | **49.17** | 49.97 | — | 4,000,000 | 8.0 | ±0.00 | 49 | 90 | 0.0% |
 | dqn · base | `resnet_small` | 333,475 | 3 | 5,000,192 | **47.11** | 51.79 | — | 3,500,032 | 1.9 | ±2.86 | 49 | 89 | 0.0% |
+| lbc · resnet_small+H_shaping+conc49_bala_de_prata | `resnet_small` | 286,896 | 2 | 5,013,504 | **43.09** | 50.71 | — | 2,637,824 | 0.3 | ±36.53 | 45 | 90 | 0.0% |
+| lbc · resnet_small+H_shaping | `resnet_small` | 286,896 | 1 | 5,013,504 | **42.77** | 46.46 | — | 3,014,656 | 0.2 | ±0.00 | 44 | 59 | 0.0% |
 | muzero · unroll5_normaliza_unroll | `resnet_small` | 154,608 | 1 | 5,000,192 | **42.70** | 62.59 | — | 1,750,016 | 6.6 | ±0.00 | 63 | 85 | 0.0% |
 | muzero · unroll10+num_simulations32 | `resnet_small` | 154,608 | 1 | 5,000,192 | **42.22** | 54.68 | — | 2,750,464 | 9.7 | ±0.00 | 52 | 75 | 0.0% |
+| lbc · resnet_small | `resnet_small` | 286,896 | 1 | 5,013,504 | **38.82** | 38.82 | — | não chegou | 0.2 | ±0.00 | 44 | 56 | 0.0% |
 | alphazero · sims32_sem_correcoes | `resnet_small` | 180,464 | 1 | 5,000,192 | **10.62** | 13.03 | — | não chegou | 7.5 | ±0.00 | 5 | 44 | 0.0% |
 | rainbow · completo+n3 | `resnet_small` | 1,196,648 | 1 | 5,000,192 | **0.57** | 0.78 | — | não chegou | 2.6 | ±0.00 | 0 | 6 | 0.0% |
 
@@ -97,11 +103,16 @@ Entram no gráfico, mas **não sustentam comparação**: a amplitude entre
 sementes do PPO neste ambiente é de 19 pontos, maior que quase toda
 diferença entre algoritmos que a tabela mostra.
 
-- `acektr/resnet_small`: 1 de 3 — faltam 2
+- `acektr/resnet_small+base50+s_ema`: 1 de 3 — faltam 2
+- `acektr/resnet_small+kl_cal_v1+s_ema_T5`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl0.002`: 1 de 3 — faltam 2
+- `acktr/resnet_small+kl_cal_debias_definitiva`: 2 de 3 — faltam 1
 - `acktr/resnet_small+kl_nominal+kl0.002`: 1 de 3 — faltam 2
 - `acktr/resnet_small+kl_nominal_momento_descontado`: 1 de 3 — faltam 2
 - `alphazero/sims32_sem_correcoes`: 1 de 3 — faltam 2
+- `lbc/resnet_small`: 1 de 3 — faltam 2
+- `lbc/resnet_small+H_shaping`: 1 de 3 — faltam 2
+- `lbc/resnet_small+H_shaping+conc49_bala_de_prata`: 1 de 3 — faltam 2
 - `muzero/unroll10+num_simulations32`: 1 de 3 — faltam 2
 - `muzero/unroll5`: 1 de 3 — faltam 2
 - `muzero/unroll5_normaliza_unroll`: 1 de 3 — faltam 2

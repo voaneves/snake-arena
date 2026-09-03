@@ -1,6 +1,6 @@
 {
   "algo": "acektr",
-  "variant": "resnet_small+s_acum",
+  "variant": "resnet_small",
   "seed": 1,
   "net": "resnet_small",
   "params": 180464,
@@ -3637,7 +3637,8 @@
         "score": 97,
         "fim": "tabuleiro cheio"
       }
-    }
+    },
+    "variant_anterior": "resnet_small+s_acum"
   },
   "schema_version": 2
 }
