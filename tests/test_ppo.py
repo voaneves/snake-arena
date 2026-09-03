@@ -582,3 +582,63 @@ def test_resuming_refuses_a_checkpoint_from_another_run(tmp_path, capsys):
     c = PPO(cfg_min(ckpt_dir=str(tmp_path), seed=0))
     assert c.retomar("last") is True
     assert c.global_step == 5_000_000
+
+
+def test_resuming_continues_the_curve_instead_of_starting_another(tmp_path):
+    """O modelo voltava certo; o registro dele, não.
+
+    `train()` cria um `Recorder` novo a cada chamada, e uma execução retomada é uma chamada
+    nova. `history` e `evals` eram restaurados na memória do agente, mas nunca chegavam ao
+    `Recorder` — então o `history.json` gravado no fim continha só o que foi registrado
+    **depois** da retomada. A curva nascia truncada no passo em que a sessão caiu, e a
+    `arena` comparava um pedaço de execução com execuções inteiras.
+
+    Aqui: treina metade, joga o agente fora como o Colab faz, retoma e termina.
+    """
+    from snakeai.agents.ppo import PPO
+
+    comum = dict(ckpt_dir=str(tmp_path / "ckpt"), runs_dir=str(tmp_path / "runs"),
+                 seed=0, eval_every_steps=1, log_every_steps=1)
+
+    a = PPO(cfg_min(total_steps=4 * 32 * 8, **comum))
+    rec_a = a.train(verbose=False)
+    passos_a = [p["global_step"] for p in rec_a.record.curve]
+    assert len(passos_a) >= 4
+
+    # a sessão cai; outra instância retoma do checkpoint e vai até o dobro do orçamento
+    b = PPO(cfg_min(total_steps=8 * 32 * 8, **comum))
+    assert b.retomar("last") is True
+    rec_b = b.train(verbose=False)
+    passos_b = [p["global_step"] for p in rec_b.record.curve]
+
+    assert passos_b[:len(passos_a)] == passos_a, "a curva recomeçou em vez de continuar"
+    assert passos_b[-1] > passos_a[-1], "a segunda perna não acrescentou nada"
+    # e o relógio soma as duas pernas em vez de medir só a última
+    assert rec_b.record.meta["wall_s_total"] > rec_a.record.meta["wall_s_total"]
+    assert all(p["wall_s"] <= q["wall_s"] + 1e-6
+               for p, q in zip(passos_b and rec_b.record.curve,
+                               rec_b.record.curve[1:])), "o wall_s andou para trás"
+
+
+def test_the_partial_record_lands_in_runs_before_the_end(tmp_path):
+    """`runs/` só nascia no fim: uma sessão derrubada às 4 h não deixava curva nenhuma lá.
+
+    Agora o registro é gravado na cadência da avaliação, junto do checkpoint. Ele **não**
+    passa no contrato enquanto não terminar — `final` só existe depois do último passo — e
+    é exatamente assim que se distingue um arquivo em andamento de uma execução terminada.
+    """
+    import json as _json
+
+    from snakeai.agents.ppo import PPO
+    from snakeai.record import validate, RunRecord
+
+    destino = tmp_path / "runs" / "ppo"
+    a = PPO(cfg_min(total_steps=3 * 32 * 8, ckpt_dir=str(tmp_path / "ckpt"),
+                    runs_dir=str(tmp_path / "runs"), seed=0,
+                    eval_every_steps=1, log_every_steps=1))
+    a.train(verbose=False)
+
+    caminhos = list(destino.rglob("history.json"))
+    assert caminhos, "o registro não chegou em runs/"
+    dados = _json.loads(caminhos[0].read_text(encoding="utf-8"))
+    assert dados["curve"], "o parcial foi gravado sem curva"

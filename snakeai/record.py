@@ -267,6 +267,11 @@ class Recorder:
                  config=None, env_spec=None, root="runs"):
         self.root = root
         self.t0 = time.perf_counter()
+        #: Wall-clock das pernas anteriores desta execução, quando ela foi retomada de um
+        #: checkpoint. Sem isto, `wall_s` recomeça do zero a cada retomada e o
+        #: `wall_s_total` do registro passa a medir só a última perna — o que faz uma
+        #: execução de 8 horas retomada duas vezes parecer que levou 40 minutos.
+        self._wall_anterior = 0.0
         self.record = RunRecord(
             algo=algo, variant=variant, seed=seed, net=net, params=int(params),
             config=dict(config or {}),
@@ -274,10 +279,32 @@ class Recorder:
             meta=_ambiente(),
         )
 
+    def semear(self, curva, wall_s=0.0):
+        """Continua uma curva em vez de começar outra — o que uma retomada precisa.
+
+        `train()` cria um `Recorder` novo a cada chamada, e uma execução retomada é uma
+        chamada nova. Sem isto, o `history.json` gravado no fim contém **só o que foi
+        registrado depois da retomada**: a curva começa no passo em que a sessão caiu, o
+        gráfico nasce truncado, e a `arena` compara um pedaço de execução com execuções
+        inteiras. O modelo voltava certo; o registro dele, não.
+
+        A curva vem do checkpoint tal como foi gravada, ponto a ponto, com o `wall_s` de
+        cada um — não é reconstruída a partir de `history`/`evals`, que perderia as linhas
+        de avaliação e o relógio.
+        """
+        self.record.curve = [dict(p) for p in curva]
+        self._wall_anterior = float(wall_s or 0.0)
+        return self.record.curve
+
+    @property
+    def wall_s(self):
+        """Segundos desde o início da **execução**, não desde o início deste processo."""
+        return self._wall_anterior + (time.perf_counter() - self.t0)
+
     def log(self, global_step, **metrics):
         """Anexa um ponto à curva. `global_step` é o eixo oficial."""
         ponto = {"global_step": int(global_step),
-                 "wall_s": round(time.perf_counter() - self.t0, 3)}
+                 "wall_s": round(self.wall_s, 3)}
         for k, v in metrics.items():
             ponto[k] = _jsonable(v)
         self.record.curve.append(ponto)
@@ -289,7 +316,7 @@ class Recorder:
             self.record.melhor = {k: _jsonable(v) for k, v in dict(melhor_stats).items()}
         self.record.comparable = bool(comparable)
         self.record.caveat = str(caveat)
-        self.record.meta["wall_s_total"] = round(time.perf_counter() - self.t0, 3)
+        self.record.meta["wall_s_total"] = round(self.wall_s, 3)
         return self.record
 
     def save(self, path=None, skip_validation=False):

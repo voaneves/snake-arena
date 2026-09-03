@@ -154,6 +154,10 @@ class AgentBase:
         self._acumulado_no_log = dict(self._acumulado)
         self._legenda_impressa = False
         self._registrou_causas = False
+        #: O `Recorder` da execução em curso, para o `salvar()` conseguir gravar a curva
+        #: junto do modelo. Sem ele, retomar devolve os pesos e perde o registro.
+        self._rec = None
+        self._curva_retomada, self._wall_retomado = [], 0.0
         os.makedirs(cfg.ckpt_dir, exist_ok=True)
 
     # ----------------------------------------------------------- agendamentos
@@ -535,6 +539,13 @@ class AgentBase:
             "iteration": self.iteration, "history": self.history,
             "evals": self.evals, "baseline": self.baseline, "melhor": self.melhor,
             "config": asdict(self.cfg), "variant": self.variant,
+            # A curva **como o `Recorder` a gravou**, com o `wall_s` de cada ponto, e o
+            # relógio acumulado. É o que permite a execução retomada continuar o mesmo
+            # `history.json` em vez de começar outro — ver `Recorder.semear`. Guardar
+            # `history`/`evals` não bastava: as linhas de avaliação da curva não estão em
+            # `history`, e nenhum dos dois tem o relógio.
+            "curva": list(self._rec.record.curve) if self._rec is not None else [],
+            "wall_s": round(self._rec.wall_s, 3) if self._rec is not None else 0.0,
         }
         with open(self._caminho(tag, "json"), "w", encoding="utf-8") as f:
             json.dump(estado, f, ensure_ascii=False)
@@ -591,6 +602,8 @@ class AgentBase:
         self.evals = estado.get("evals", [])
         self.baseline = estado.get("baseline")
         self.melhor = estado.get("melhor", -np.inf)
+        self._curva_retomada = estado.get("curva") or []
+        self._wall_retomado = float(estado.get("wall_s") or 0.0)
         self._proximo_eval = proximo_multiplo(self.global_step,
                                               self.cfg.eval_every_steps)
         self._proximo_log = self.global_step
@@ -628,6 +641,14 @@ class AgentBase:
                        params=self.model.count_params() if self.model else 0,
                        config=asdict(self.cfg), env_spec=env_spec,
                        root=self.cfg.runs_dir)
+        # Uma execução retomada é uma chamada nova de `train()`, e portanto um `Recorder`
+        # novo. Semear é o que faz o `history.json` continuar em vez de recomeçar.
+        if self._curva_retomada or self._wall_retomado:
+            rec.semear(self._curva_retomada, self._wall_retomado)
+            if verbose:
+                print(f"[registro] continuando a curva: {len(rec.record.curve)} pontos "
+                      f"e {self._wall_retomado / 60:.0f} min já gravados")
+        self._rec = rec
         self.piso()
 
         while self.global_step < alvo:
@@ -680,6 +701,17 @@ class AgentBase:
                     self.melhor = av["score_mean"]
                     self.salvar("best")
                 self.salvar("last")
+                # E o registro vai junto, na cadência da avaliação. Antes, `runs/` só
+                # nascia no fim: uma sessão derrubada às 4 h de treino não deixava curva
+                # nenhuma lá — só o checkpoint, que ninguém lê como registro. O
+                # `skip_validation` é obrigatório aqui: `final` só existe depois do último
+                # passo, então o parcial **não** passa no contrato, e é assim que se
+                # distingue um arquivo em andamento de uma execução terminada.
+                try:
+                    rec.save(skip_validation=True)
+                except Exception as e:                  # nunca derrubar o treino por isso
+                    if verbose:
+                        print(f"  [registro] parcial não gravado: {e!r}")
 
         final = self.avaliar()
         rec.log(self.global_step, eval_score_mean=final["score_mean"],

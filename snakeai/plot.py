@@ -91,7 +91,13 @@ VARIANTE_PRINCIPAL = {
     "alphazero": "sims32",
     "muzero": "unroll5",
     "acktr": "resnet_small",
-    "acektr": "resnet_small",
+    # O ACEKTR marca o regime no nome mesmo sendo o padrão — `+s_acum` diz que `s*` é uma
+    # média acumulada dentro da janela da base, e não a média móvel da implementação de
+    # referência. Sem isto aqui, `e_principal` diria que a execução padrão do ACEKTR é um
+    # braço secundário e a arena a deixaria de fora do gráfico principal — em silêncio.
+    # `tests/test_plot.py::test_the_main_variant_map_matches_what_the_agents_actually_produce`
+    # é o que acusa, e foi ele que pegou isto.
+    "acektr": "resnet_small+s_acum",
     "dreamerv3": "dreamer_small",
     "lbc": "resnet_small",
     "soap": "resnet_small",

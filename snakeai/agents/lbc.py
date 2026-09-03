@@ -231,6 +231,10 @@ class MisturaBoltzmann:
         omega = np.stack([self.rng.dirichlet(a) for a in alpha])
         return tau.astype(np.float32), omega.astype(np.float32)
 
+    def padrao_de(self, bracos):
+        """Índice do padrão de `ω` de cada braço. `n_politicas` é o padrão uniforme."""
+        return self._decompoe(np.asarray(bracos, dtype=np.int64))[1]
+
     def descricao(self, braco):
         f, p = self._decompoe(int(braco))
         lo, hi = self.faixas[f]
@@ -410,6 +414,22 @@ class LBCConfig(BaseConfig):
     #: Parada antecipada por KL, idêntica à do PPO (`target_kl * 1.5`). É a segunda barreira
     #: e a que pega o caso em que o clip sozinho não segura.
     target_kl: float = 0.03
+
+    #: **Quem paga a parada por KL.** Com `False`, o KL é a média sobre as `P` políticas e
+    #: estourá-lo aborta a atualização **inteira** — foi o que aconteceu nas duas execuções
+    #: corrigidas, e o resultado é fome de gradiente: 3.524 e depois 9.523 atualizações
+    #: contra 38.374 do PPO, 9% e 25% do orçamento (`docs/LBC.md` §2.11, §2.13).
+    #:
+    #: O defeito não é o freio, é a **conta**. Três cabeças que otimizam objetivos
+    #: diferentes sobre um tronco compartilhado se afastam em ritmos diferentes; a média
+    #: estoura quando a mais agitada estoura, e a política **avaliada** — que talvez tenha
+    #: andado quase nada — perde a atualização por causa da vizinha. Uma cabeça degenerada
+    #: aborta o treino de todas.
+    #:
+    #: Com `True`, cada política tem o seu próprio KL e o seu próprio limite: quem estoura
+    #: sai da perda, quem não estourou continua aprendendo, e a atualização só termina
+    #: quando **todas** pararam. É a mesma região de confiança, cobrada de quem a gastou.
+    kl_por_politica: bool = True
     #: Normaliza a vantagem **por política**, dentro do minilote. O PPO deste repositório
     #: já faz isso; o LBC não fazia, e a vantagem do V-trace tem escala que muda por ordens
     #: de grandeza durante o treino (o shaping decai a zero em 25% do orçamento, o score
@@ -590,6 +610,10 @@ class LBC(AgentBase):
             marcas.append(f"pop{cfg.n_politicas}")
         if cfg.shapings is not None:
             marcas.append("H_shaping")
+        if cfg.concentracao_omega != type(cfg).concentracao_omega:
+            marcas.append(f"conc{cfg.concentracao_omega:g}")
+        if not cfg.kl_por_politica:
+            marcas.append("kl_medio")
         if not cfg.logits_padronizados:
             marcas.append("logits_crus")
         if cfg.clip_eps <= 0:
@@ -636,6 +660,37 @@ class LBC(AgentBase):
         return saida
 
     # ------------------------------------------------------------- comportamento
+    def competencia_por_membro(self):
+        """Quanto rende um comportamento concentrado em **cada** política. `(P+1,)`.
+
+        Este número já existia e ninguém estava olhando: o bandit mede o retorno de cada
+        braço, e os braços são `(faixa de τ) × (padrão de ω)`. Agrupando os valores pelo
+        padrão de `ω`, o que sai é exatamente *"quanto vale um comportamento que usa
+        sobretudo a política `i`"* — a competência de cada membro da população, medida com
+        os episódios que o treino já jogou, sem um único rollout extra.
+
+        É o instrumento que faltava. Na execução `H_shaping`, `valor_relativo_pior` marcava
+        0,73 e parecia saudável, mas π2 (γ = 0,999, shaping 0) jogava sozinha a **2,03
+        pontos, com 99% de fome** — uma política que aprendeu a andar em círculo. O valor
+        não denunciou porque, com γ = 0,999, não terminar *de fato* vale mais que morrer:
+        a colisão custa −1 agora e a fome custa −0,5 daqui a mil passos. `V` estava certo;
+        a política é que era inútil. Só o **retorno não descontado** — que é o que o bandit
+        mede — mostra isso.
+
+        A última posição é o padrão uniforme, quando ele existe: a competência da mistura.
+        `nan` onde o padrão ainda não tem episódios suficientes na janela.
+        """
+        v = self.mab.valores()
+        pad = self.espaco.padrao_de(np.arange(self.mab.n))
+        n_pad = len(self.espaco.padroes)
+        saida = np.full(n_pad, np.nan)
+        for p in range(n_pad):
+            vp = v[pad == p]
+            vp = vp[np.isfinite(vp)]
+            if vp.size:
+                saida[p] = vp.mean()
+        return saida
+
     def _novo_comportamento(self, idx):
         """Sorteia braço e `ψ` para os ambientes em `idx` — chamado no fim do episódio."""
         idx = np.asarray(idx, dtype=np.int64)
@@ -787,8 +842,30 @@ class LBC(AgentBase):
             "omega_entropia": float(
                 -(self.omega * np.log(self.omega + 1e-12)).sum(1).mean()),
             **self.mab.resumo(),
+            **self._stats_competencia(),
         }
         return lote, stats
+
+    def _stats_competencia(self):
+        """`competencia_por_membro` reduzida a escalares para o registro."""
+        c = self.competencia_por_membro()
+        membros = c[:self.cfg.n_politicas]
+        finitos = membros[np.isfinite(membros)]
+        alvo = c[self.indice_alvo]
+        uniforme = c[-1] if len(c) > self.cfg.n_politicas else np.nan
+        return {
+            #: Retorno do pior membro em fração do da política avaliada. **Perto de zero é
+            #: um membro morto** — e sob `ω` quase uniforme ele assina `1/P` de cada ação.
+            "competencia_pior_membro": float(
+                finitos.min() / alvo) if (finitos.size and np.isfinite(alvo)
+                                          and abs(alvo) > 1e-8) else float("nan"),
+            #: A mistura uniforme rende mais ou menos que a política avaliada sozinha?
+            #: Abaixo de 1 o mapeamento **híbrido** está custando, não rendendo — que é a
+            #: hipótese central do §4.1 do paper falhando neste domínio.
+            "ganho_da_mistura": float(
+                uniforme / alvo) if (np.isfinite(uniforme) and np.isfinite(alvo)
+                                     and abs(alvo) > 1e-8) else float("nan"),
+        }
 
     # ------------------------------------------------------------------ alvos
     def _alvos(self, lote):
@@ -893,7 +970,7 @@ class LBC(AgentBase):
     @staticmethod
     @tf.function(reduce_retracing=True)
     def _train_step(model, optimizer, obs, mask, act, logp_ref, adv, vs, val_ref,
-                    clip_eps, vf_clip, ent_coef, vf_coef, normalizar_vantagem,
+                    clip_eps, vf_clip, ent_coef, vf_coef, ativo, normalizar_vantagem,
                     usar_clip):
         """Um passo de gradiente sobre a **população inteira**, num forward só.
 
@@ -956,19 +1033,23 @@ class LBC(AgentBase):
             ent_por_politica = -tf.reduce_mean(
                 tf.reduce_sum(probs * seguro, axis=-1), axis=0)        # (P,)
 
-            perda = tf.reduce_sum(pg_por_politica
-                                  + vf_coef * v_por_politica
-                                  - ent_coef * ent_por_politica)
+            # `ativo` zera a contribuição das políticas que já gastaram o próprio KL.
+            # Zerar a perda **não** congela a cabeça — o tronco continua se movendo por
+            # causa das outras —, mas para de empurrá-la, que é o que estava ao alcance.
+            perda = tf.reduce_sum(ativo * (pg_por_politica
+                                           + vf_coef * v_por_politica
+                                           - ent_coef * ent_por_politica))
 
         grads = tape.gradient(perda, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-        # estimador k3 do KL — não-negativo e de baixa variância, como no PPO
-        kl = tf.reduce_mean(tf.exp(log_razao) - 1.0 - log_razao)
+        # estimador k3 do KL — não-negativo e de baixa variância, como no PPO —, agora
+        # **por política**: ver `LBCConfig.kl_por_politica`
+        kl_p = tf.reduce_mean(tf.exp(log_razao) - 1.0 - log_razao, axis=0)   # (P,)
         clipfrac = tf.reduce_mean(
             tf.cast(tf.greater(tf.abs(razao - 1.0), clip_eps), tf.float32))
         return (tf.reduce_mean(pg_por_politica), tf.reduce_mean(v_por_politica),
-                tf.reduce_mean(ent_por_politica), kl, clipfrac)
+                tf.reduce_mean(ent_por_politica), kl_p, clipfrac)
 
     def update(self, lote):
         cfg = self.cfg
@@ -987,10 +1068,15 @@ class LBC(AgentBase):
                      (cfg.clip_eps, teto_v, ent_c_valor, cfg.vf_coef)]
         tensores = {k: tf.convert_to_tensor(lote[k]) for k in ("obs", "mask", "act")}
 
-        logs = {"pg": [], "vf": [], "ent": [], "kl": [], "clipfrac": []}
+        logs = {"pg": [], "vf": [], "ent": [], "kl": [], "kl_max": [], "clipfrac": []}
         atualizacoes = 0
         epocas_feitas = 0
         parar = False
+        P = cfg.n_politicas
+        #: Quais políticas ainda podem ser empurradas nesta atualização. Ver
+        #: `LBCConfig.kl_por_politica`.
+        ativo = np.ones(P, dtype=np.float32)
+        teto_kl = cfg.target_kl * 1.5 if cfg.target_kl else float("inf")
         diag = {}
         t_logp_ref = t_val_ref = None
         for _ in range(cfg.epochs):
@@ -1010,21 +1096,31 @@ class LBC(AgentBase):
             rng.shuffle(idx)
             for s_ini in range(0, n, mb):
                 sl = tf.convert_to_tensor(idx[s_ini:s_ini + mb])
-                pg, vf, e, kl, cf = self._train_step(
+                pg, vf, e, kl_p, cf = self._train_step(
                     self.model, self.optimizer,
                     tf.gather(tensores["obs"], sl), tf.gather(tensores["mask"], sl),
                     tf.gather(tensores["act"], sl), tf.gather(t_logp_ref, sl),
                     tf.gather(t_adv, sl), tf.gather(t_vs, sl),
-                    tf.gather(t_val_ref, sl), *escalares, cfg.normalizar_vantagem,
+                    tf.gather(t_val_ref, sl), *escalares,
+                    tf.convert_to_tensor(ativo), cfg.normalizar_vantagem,
                     cfg.clip_eps > 0,
                 )
+                kl_p = kl_p.numpy()
                 logs["pg"].append(float(pg))
                 logs["vf"].append(float(vf))
                 logs["ent"].append(float(e))
-                logs["kl"].append(float(kl))
+                logs["kl"].append(float(kl_p.mean()))
+                logs["kl_max"].append(float(kl_p.max()))
                 logs["clipfrac"].append(float(cf))
                 atualizacoes += 1
-                if cfg.target_kl and float(kl) > cfg.target_kl * 1.5:
+
+                if cfg.kl_por_politica:
+                    # quem gastou o próprio KL sai da perda; as outras continuam
+                    ativo[kl_p > teto_kl] = 0.0
+                    if not ativo.any():
+                        parar = True
+                        break
+                elif float(kl_p.mean()) > teto_kl:
                     parar = True
                     break
             epocas_feitas += 1
@@ -1033,6 +1129,11 @@ class LBC(AgentBase):
 
         saida = {k: float(np.mean(v)) for k, v in logs.items()}
         saida.update(diag)
+        #: Quantas políticas chegaram ao fim da atualização sem estourar o próprio KL.
+        #: Abaixo de `n_politicas` alguma cabeça está gastando a região de confiança muito
+        #: mais rápido que as outras — e antes do `kl_por_politica` era ela quem decidia
+        #: quando o treino de **todas** parava.
+        saida["politicas_ativas"] = float(ativo.sum())
 
         # Realimentação do coeficiente de entropia. Roda **depois** do update e vale para a
         # iteração seguinte: o que se mede aqui é a entropia que o passo já produziu.

@@ -570,3 +570,80 @@ def test_the_population_diversity_is_instrumented():
     solo = LBC(cfg(total_steps=10 ** 6, n_politicas=1, gammas=(0.995,), indice_alvo=0))
     s1 = solo.iterate()
     assert np.isnan(s1["divergencia_populacao"]) and np.isnan(s1["acordo_argmax"])
+
+
+# ------------------------------- a contabilidade do KL e a competência dos membros (§2.13)
+def test_the_kl_bill_goes_to_the_policy_that_spent_it():
+    """Antes, o KL era a média sobre as `P` políticas e estourá-lo abortava a atualização
+    **inteira**: a política avaliada perdia o passo por causa da vizinha mais agitada. Com
+    `kl_por_politica`, cada cabeça tem o seu limite e as outras continuam aprendendo.
+
+    Note que a versão por política é **mais estrita** para a cabeça agitada, não mais
+    frouxa — `média ≤ máximo`. O que ela compra não é orçamento bruto, é orçamento para
+    quem não gastou (`docs/LBC.md` §2.13)."""
+    ag = LBC(cfg(total_steps=10 ** 6))
+    assert ag.cfg.kl_por_politica          # é o padrão
+    saida = ag.iterate()
+    assert 0.0 <= saida["politicas_ativas"] <= ag.cfg.n_politicas
+    assert saida["kl_max"] >= saida["kl"] - 1e-9, "o máximo não pode ser menor que a média"
+
+    # com o limite impossível de respeitar, todas saem — e a atualização termina por isso
+    travado = LBC(cfg(total_steps=10 ** 6, target_kl=1e-12))
+    s2 = travado.iterate()
+    assert s2["politicas_ativas"] == 0.0
+    assert s2["atualizacoes"] <= travado.cfg.n_politicas + 1
+
+    # a contabilidade antiga continua alcançável, e é o braço `bala_kl_medio` do `90`
+    medio = LBC(cfg(total_steps=10 ** 6, kl_por_politica=False))
+    assert medio.iterate()["politicas_ativas"] == medio.cfg.n_politicas
+
+
+def test_a_dead_member_is_visible_without_checkpoint_forensics():
+    """`valor_relativo_pior` marcava 0,73 e parecia saudável enquanto π2 jogava a 2,03
+    pontos com 99% de fome. `V` estava **certo**: com γ = 0,999, andar em círculo vale
+    mais que morrer. Só o retorno **não descontado** denuncia — e é o que o bandit mede.
+
+    Este teste não reproduz a morte da política (5 M passos não cabem numa suíte); ele
+    guarda o instrumento: que `competencia_por_membro` leia os braços certos e que os
+    escalares apareçam no registro."""
+    ag = LBC(cfg(total_steps=10 ** 6))
+    c = ag.competencia_por_membro()
+    # um valor por padrão de ω: um por política, mais o uniforme
+    assert c.shape == (ag.cfg.n_politicas + 1,)
+
+    # o agrupamento tem que bater com a decomposição dos braços do espaço
+    padroes = ag.espaco.padrao_de(np.arange(ag.mab.n))
+    assert set(padroes.tolist()) == set(range(ag.cfg.n_politicas + 1))
+
+    saida = ag.iterate()
+    for k in ("competencia_pior_membro", "ganho_da_mistura"):
+        assert k in saida
+
+    # com população de uma não há padrão uniforme separado, e nada disso quebra
+    solo = LBC(cfg(total_steps=10 ** 6, n_politicas=1, gammas=(0.995,), indice_alvo=0))
+    assert solo.competencia_por_membro().shape == (1,)
+    solo.iterate()
+
+
+def test_the_concentrated_omega_pattern_can_actually_concentrate():
+    """O padrão concentrado é uma `Dirichlet(1 + c·e_i)`, cuja média é
+    `(1 + c)/(P + c)` na política escolhida. Com `c = 9` e `P = 3` isso dá 0,833: o braço
+    **mais** concentrado que existe ainda mistura 16,7% das outras duas, e o caso
+    `ω` one-hot — que o paper aponta como a redução ao Agent57 — é inatingível.
+
+    Com uma população em que um membro vale 2 pontos, esses 16,7% são veneno. Ver
+    `docs/LBC.md` §2.13 e o braço `bala_de_prata` do `90`."""
+    for c, esperado in ((9.0, 0.833), (49.0, 0.962)):
+        esp = MisturaBoltzmann(3, concentracao=c, rng=np.random.default_rng(0))
+        # o braço concentrado em π1 na primeira faixa de τ
+        bracos = np.full(4096, 1, dtype=np.int64)
+        _, omega = esp.amostrar(bracos)
+        assert omega[:, 1].mean() == pytest.approx(esperado, abs=0.02)
+
+    # e concentrar mais aproxima do one-hot, sem nunca chegar — é uma Dirichlet
+    alta = MisturaBoltzmann(3, concentracao=49.0, rng=np.random.default_rng(0))
+    baixa = MisturaBoltzmann(3, concentracao=9.0, rng=np.random.default_rng(0))
+    _, wa = alta.amostrar(np.full(2048, 1, dtype=np.int64))
+    _, wb = baixa.amostrar(np.full(2048, 1, dtype=np.int64))
+    assert wa[:, 1].mean() > wb[:, 1].mean()
+    assert (wa < 1.0).all()

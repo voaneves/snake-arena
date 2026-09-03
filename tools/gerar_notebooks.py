@@ -1085,66 +1085,99 @@ print(f"   rollout = {ACKTRConfig.rollout}  (default restaurado; era 5 ate 01/09
 # LBC — a populacao. O `10_lbc` mede o algoritmo; este mede se a POPULACAO vale o que
 # custa, e com que eixo de `H`. Ver `docs/LBC.md` §2.12.
 BRACOS_LBC = [
-    "H_shaping", "H_shaping_pop5", "H_shaping_aleatoria", "pop1", "H_gamma_aleatoria",
+    "bala_de_prata", "bala_sem_concentracao", "bala_kl_medio", "bala_aleatoria",
+    "membro_morto", "pop1",
 ]
 
-#: `H_shaping` e o braco principal: e a hipotese de que a populacao da execucao anterior
-#: era fraca por causa do eixo, e nao por causa da ideia.
-BRACO_PADRAO_LBC = "H_shaping"
+#: A `bala_de_prata` junta as tres correcoes que a autopsia do `H_shaping` produziu.
+#: Os bracos seguintes removem uma de cada vez, para atribuir o que valeu o que.
+BRACO_PADRAO_LBC = "bala_de_prata"
 
 _PRE_CFG_LBC = """BRACOS = {
-    # ---------------------------------------------- o eixo `RS` que faltava (§2.12)
-    # No paper `h_i = (gamma_i, RS_i)`: desconto E metodo de reward shaping por
-    # politica, pareados a moda do NGU (quem explora tem shaping alto e gamma baixo).
-    # A implementacao daqui tinha reduzido `H` a gamma sozinho, e a medicao mostrou o
-    # preco: as tres politicas otimizavam o MESMO objetivo, entao duas nao eram
-    # "miope competente" e "paciente competente" -- eram so piores (V 7,62 e 10,99
-    # contra 11,41 da avaliada), e concordavam no argmax em 31,8% dos estados, que e o
-    # acaso com tres acoes.
+    # =====================================================================
+    # A BALA DE PRATA -- as tres correcoes que sairam da autopsia do H_shaping.
+    # Medicoes em `docs/LBC.md` 2.13.
+    # =====================================================================
     #
-    # Aqui cada cabeca passa a maximizar um retorno diferente e legitimo:
-    #   pi0 = (gamma 0,990, shaping 1,0 pela execucao inteira) miope e guiada
-    #   pi1 = (gamma 0,995, shaping 0,5 zerando em 25%)        IDENTICA ao 01_ppo
-    #   pi2 = (gamma 0,999, shaping 0,0 sempre)                paciente e esparsa
-    # O `indice_alvo` continua apontando para pi1: e ela que entra na arena.
-    "H_shaping": {
-        "gammas": (0.99, 0.995, 0.999),
-        "shapings": (1.0, 0.5, 0.0),
-        "shaping_fracs": (1.0, 0.25, 0.0),
+    # (1) POPULACAO COMPETENTE. O H_shaping deu a pi2 `gamma=0.999` e shaping ZERO, na
+    #     ideia de que ela seria a membro "paciente". Jogando sozinha, gulosa, ela fez
+    #     2,03 pontos com 99% de fome: aprendeu a andar em circulo. Com gamma=0.999 e
+    #     nenhum sinal denso para achar comida, nao terminar VALE MAIS que jogar --
+    #     colisao custa -1 agora, fome custa -0,5 daqui a mil passos, descontado para
+    #     -0,18. Ela nao era "paciente competente", era uma politica que desistiu.
+    #     E sob omega quase uniforme ela assinava um terco de cada acao.
+    #     Correcao: shaping nunca zero (0,35 ate 70% do orcamento) e gamma 0,997.
+    #
+    # (2) O BANDIT PODE FINALMENTE DIZER "SO pi_i". O padrao concentrado e uma
+    #     Dirichlet(1 + c*e_i); com c=9 a media e (0,083 / 0,833 / 0,083) -- o braco MAIS
+    #     concentrado que existe ainda mistura 16,7% das outras duas. Com uma delas
+    #     valendo 2 pontos, isso e veneno. O paper diz que omega one-hot recupera o
+    #     Agent57 como caso especial; aqui esse caso era inatingivel. Medido no modelo
+    #     treinado: c=9 rende 26,7 e c=49 rende 31,6.
+    #
+    # (3) O KL E COBRADO DE QUEM O GASTOU (`kl_por_politica`, ja o padrao). Antes o KL
+    #     era a media sobre as tres e estoura-lo abortava a atualizacao INTEIRA -- a
+    #     avaliada perdia o passo por causa da vizinha agitada. Duas execucoes seguidas
+    #     terminaram com 9% e 25% do orcamento de gradiente do PPO.
+    #
+    # O que amarra os tres: divergencia_populacao chegou a 13,8 nats no H_shaping, quase
+    # toda ela produzida pela membro morta. Tres objetivos irreconciliaveis num tronco
+    # compartilhado significam KL subindo rapido, freio disparando cedo e treino pela
+    # metade. Consertar a populacao E consertar o orcamento.
+    "bala_de_prata": {
+        "gammas": (0.99, 0.995, 0.997),
+        "shapings": (1.0, 0.5, 0.35),
+        "shaping_fracs": (1.0, 0.25, 0.7),
+        "indice_alvo": 1,
+        "concentracao_omega": 49.0,
+    },
+
+    # ------------------------------------------- atribuicao: uma correcao de cada vez
+    # sem (2): mesma populacao, mas o bandit volta a nao conseguir concentrar
+    "bala_sem_concentracao": {
+        "gammas": (0.99, 0.995, 0.997),
+        "shapings": (1.0, 0.5, 0.35),
+        "shaping_fracs": (1.0, 0.25, 0.7),
         "indice_alvo": 1,
     },
 
-    # O mesmo eixo com cobertura maior. Cuidado: o §2.11 mediu que cada politica a mais
-    # DOBRA o consumo do orcamento de gradiente (o tronco compartilhado recebe a soma),
-    # entao cinco politicas nao sao "mais do mesmo" -- sao um regime diferente.
-    "H_shaping_pop5": {
-        "n_politicas": 5,
-        "gammas": (0.99, 0.993, 0.995, 0.997, 0.999),
-        "shapings": (1.0, 0.75, 0.5, 0.25, 0.0),
-        "shaping_fracs": (1.0, 0.6, 0.25, 0.1, 0.0),
-        "indice_alvo": 2,
+    # sem (3): o KL volta a ser a media, e uma cabeca agitada volta a abortar o treino
+    # de todas. E o braco que mede quanto a contabilidade do freio custava.
+    "bala_kl_medio": {
+        "gammas": (0.99, 0.995, 0.997),
+        "shapings": (1.0, 0.5, 0.35),
+        "shaping_fracs": (1.0, 0.25, 0.7),
+        "indice_alvo": 1,
+        "concentracao_omega": 49.0,
+        "kl_por_politica": False,
     },
 
-    # --------------------------------------------- as ablacoes da Fig. 5 do paper
-    # Mesmo espaco de comportamento, escolhido no sorteio. Se empatar com `H_shaping`,
-    # o merito estava no espaco e nao no bandit -- e a parte *learnable* do LBC nao fez
-    # nada neste dominio, que e um resultado.
-    "H_shaping_aleatoria": {
-        "gammas": (0.99, 0.995, 0.999),
-        "shapings": (1.0, 0.5, 0.0),
-        "shaping_fracs": (1.0, 0.25, 0.0),
+    # ------------------------------------------------ as ablacoes da Fig. 5 do paper
+    # Mesmo espaco de comportamento, escolhido no sorteio. Se empatar com a bala, a
+    # parte *learnable* do LBC nao fez nada neste dominio -- e isso e um resultado.
+    "bala_aleatoria": {
+        "gammas": (0.99, 0.995, 0.997),
+        "shapings": (1.0, 0.5, 0.35),
+        "shaping_fracs": (1.0, 0.25, 0.7),
         "indice_alvo": 1,
+        "concentracao_omega": 49.0,
         "selecao": "aleatoria",
     },
 
-    # A mesma pergunta sobre o `10_lbc` padrao (H so de gamma), para saber se a
-    # conclusao sobre o bandit depende do eixo de `H`.
-    "H_gamma_aleatoria": {"selecao": "aleatoria"},
+    # O controle de cima: a populacao do H_shaping, com a membro morta, rodando sob o
+    # codigo atual. Ja existe na arena como
+    # `lbc/resnet_small+H_shaping_H_shaping/seed0` (42,77) -- rode de novo so se quiser
+    # o controle com os instrumentos novos e a contabilidade nova do KL.
+    "membro_morto": {
+        "gammas": (0.99, 0.995, 0.999),
+        "shapings": (1.0, 0.5, 0.0),
+        "shaping_fracs": (1.0, 0.25, 0.0),
+        "indice_alvo": 1,
+    },
 
-    # "Reducing H" da Fig. 5, levado ao extremo: populacao de UMA. O comportamento vem
-    # so de `psi`. Na bancada reduzida este braco EMPATOU com o PPO enquanto a populacao
-    # de tres ficava 4 pontos atras -- e o bandit do `10_lbc` escolheu
-    # "tau alto, omega ~= pi1" em 96% das iteracoes, que e literalmente este braco.
+    # "Reducing H" da Fig. 5 no extremo: populacao de UMA, o comportamento vem so de
+    # psi. E o piso -- e e literalmente o que o bandit escolheu sozinho nas duas
+    # execucoes anteriores ("tau alto, omega ~= pi1", 96% e 92% das iteracoes).
     "pop1": {"n_politicas": 1, "gammas": (0.995,), "indice_alvo": 0},
 }
 print(f"braco: {BRACO}  (o controle e o 10_lbc, na MESMA semente)")
@@ -1697,56 +1730,83 @@ NOTEBOOKS = [
         "param_braco": "lbc",
         "resumo":
             "Não é aqui que se roda o LBC — o agente oficial é o `10_lbc`. Aqui se mede a "
-            "peça de que ele mais depende e que a primeira execução corrigida mostrou ser "
-            "a mais frágil: a **população de políticas**.\n\n"
+            "peça de que ele mais depende e que três execuções seguidas mostraram ser a "
+            "mais frágil: a **população de políticas**.\n\n"
             "**Como rodar.** Escolha o `BRACO` e compare com `10_lbc` **na mesma "
-            "semente** — o `sufixo_variante` mantém os braços separados na arena.\n\n"
+            "semente** — o `sufixo_variante` mantém os braços separados na arena. O "
+            "padrão é `bala_de_prata`.\n\n"
             "---\n\n"
-            "### A pergunta\n\n"
-            "O mapeamento híbrido do §4.1 mistura `N` políticas para obter um "
-            "comportamento que nenhuma delas produz sozinha. Isso só funciona se as `N` "
-            "forem **diferentes e cada uma competente**. Medido no modelo treinado da "
-            "execução anterior, nenhuma das duas condições valia:\n\n"
-            "| | π0 (γ=0,99) | π1 (γ=0,995, a avaliada) | π2 (γ=0,999) |\n"
+            "### Onde estamos\n\n"
+            "| execução | score | atualizações | o que mudou |\n"
             "|---|---|---|---|\n"
-            "| entropia | 0,109 | 0,152 | 0,014 |\n"
-            "| valor médio `V_i` | 7,62 | 11,41 | 10,99 |\n\n"
-            "As três concordavam na ação de argmax em **31,8%** dos estados — com três "
-            "ações, o acaso é 33%. Não era uma população de pares com estratégias "
-            "distintas: era uma cabeça subtreinada, uma colapsada e a avaliada. E a "
-            "mistura uniforme, comparada com \"só π1\", mudava a entropia (0,65 contra "
-            "0,21) mas mantinha **95,1% do mesmo argmax** — ou seja, mudava o quanto a "
-            "cobra hesita, não para onde ela vai. Isso é ε-greedy com passos extras, que "
-            "é exatamente o que o mapeamento híbrido existe para superar.\n\n"
-            "O meta-controlador já tinha chegado nessa conclusão: em **96,1%** das "
-            "iterações ele escolheu o braço `τ∈[2,4] · ω≈π1` — *\"use π1 sozinha, quase "
-            "gulosa\"*, que é o caso degenerado do Agent57 e literalmente o braço "
-            "`pop1` daqui.\n\n"
-            "### A hipótese que este notebook testa\n\n"
-            "Que o problema era o **eixo**, não a ideia. O paper usa "
-            "`h_i = (γ_i, RS_i)` — desconto **e** um método de *reward shaping* por "
-            "política, pareados à moda do NGU. Esta implementação tinha reduzido `H` a γ "
-            "sozinho (`docs/LBC.md` §2.2), então as três cabeças otimizavam o **mesmo** "
-            "objetivo sobre um tronco compartilhado, e o que as separava era sobretudo "
-            "ruído de treino. O braço `H_shaping` devolve o segundo eixo usando o "
-            "potencial que o `VecSnake` já calcula.\n\n"
+            "| antes das correções | 0,57 | 39.168 | — |\n"
+            "| `10_lbc` corrigido | 38,82 | 3.524 | τ padronizado, região de confiança, bandit |\n"
+            "| `H_shaping` | 42,77 | 9.523 | `lr` 1e-4, eixo `RS` de `H` devolvido |\n"
+            "| **PPO** | **81,51** | **38.374** | — |\n"
+            "| PPO com orçamento esparso | 64,56 | ~2.400 | o controle que importa |\n\n"
+            "A última linha é a que dói: o PPO com **um quarto** das atualizações do LBC "
+            "faz 22 pontos a mais. O orçamento é handicap, mas não é a história toda.\n\n"
+            "### A autópsia do `H_shaping`\n\n"
+            "Medido no modelo treinado, cada cabeça jogando **sozinha e gulosa**:\n\n"
+            "| | γ | shaping | score sozinha | fome |\n"
+            "|---|---|---|---|---|\n"
+            "| π0 | 0,990 | 1,0 sempre | 31,95 | 0% |\n"
+            "| π1 (a avaliada) | 0,995 | 0,5 → 0 em 25% | 38,33 | 5% |\n"
+            "| **π2** | 0,999 | **0,0** | **2,03** | **99%** |\n\n"
+            "**π2 aprendeu a andar em círculo.** Com γ = 0,999 e nenhum sinal denso para "
+            "achar comida, *não terminar* vale mais que jogar: a colisão custa −1 agora e "
+            "a fome custa −0,5 daqui a mil passos, descontado para −0,18. Ela não era "
+            "\"paciente competente\" — era uma política que desistiu. E sob `ω` quase "
+            "uniforme, ela assinava um terço de cada ação.\n\n"
+            "O `valor_relativo_pior` marcava 0,73 e parecia saudável, porque `V₂` **estava "
+            "certo**: circular realmente vale mais que morrer sob aquele γ. Só o retorno "
+            "não descontado denuncia, e é ele que o bandit mede — daí o instrumento novo "
+            "`competencia_pior_membro`.\n\n"
+            "E misturar piorava monotonicamente (comportamento amostrado, τ = 2,4):\n\n"
+            "| `ω` | score |\n|---|---|\n"
+            "| só π1 (o caso Agent57) | 33,25 |\n"
+            "| π0 + π1 | 31,66 |\n"
+            "| uniforme (o híbrido do §4.1) | 21,98 |\n"
+            "| π1 + π2 | 15,95 |\n\n"
+            "### O que a bala de prata junta\n\n"
+            "1. **População competente** — shaping nunca zero (0,35 até 70% do orçamento) "
+            "e γ 0,997 em vez de 0,999, para que \"não jogar\" deixe de ser ótimo.\n"
+            "2. **O bandit pode dizer \"só π_i\"** — `concentracao_omega` 9 → 49. O "
+            "padrão concentrado é uma Dirichlet(1 + c·e_i): com c = 9 a média é "
+            "(0,083 / 0,833 / 0,083), ou seja o braço **mais** concentrado que existe "
+            "ainda mistura 16,7% das outras duas. O paper diz que `ω` one-hot recupera o "
+            "Agent57 como caso especial; aqui esse caso era inatingível. Medido: c = 9 "
+            "rende 26,7 e c = 49 rende 31,6.\n"
+            "3. **O KL é cobrado de quem o gastou** (`kl_por_politica`) — antes a média "
+            "sobre as três abortava a atualização inteira, e a avaliada perdia o passo por "
+            "causa da vizinha.\n\n"
+            "O que amarra os três: `divergencia_populacao` chegou a **13,8 nats**, quase "
+            "toda produzida pela membro morta. Três objetivos irreconciliáveis num tronco "
+            "compartilhado significam KL subindo rápido, freio disparando cedo e treino "
+            "pela metade. **Consertar a população é consertar o orçamento** — em bancada "
+            "reduzida a divergência cai de 4,9 para 1,3 e as atualizações voltam de 98 "
+            "para 128 de 128.\n\n"
+            "### Uma hipótese que morreu, e vale registrar\n\n"
+            "O bandit escolhe a faixa de topo de τ (`[2, 4]`) em 92% das iterações, o que "
+            "parecia teto de espaço apertando. Não é: medido no modelo treinado, o score "
+            "do comportamento é 31,3 em τ = 4 e **não sobe** em 8, 16 ou 32. `tau_max = 4` "
+            "está no lugar certo, e o bandit está lá porque quer.\n\n"
             "### Como ler o resultado\n\n"
             "| se… | a leitura é… |\n"
             "|---|---|\n"
-            "| `H_shaping` > `10_lbc` | o eixo era o problema; `H` reduzido a γ não "
-            "sustenta um mapeamento híbrido |\n"
-            "| `pop1` ≥ `H_shaping` | a população não paga o que custa **neste domínio** "
-            "— e o LBC aqui é o `ψ` sozinho |\n"
-            "| `H_shaping_aleatoria` ≈ `H_shaping` | o mérito é do espaço de "
-            "comportamento, não do bandit: a parte *learnable* não fez nada |\n"
-            "| `H_shaping_pop5` < `H_shaping` | mais políticas custam mais do que "
-            "rendem — cada uma dobra o consumo do orçamento de gradiente (§2.11) |\n\n"
-            "Os dois números novos no registro respondem direto, sem forense de "
-            "checkpoint: **`divergencia_populacao`** (KL médio entre as cabeças) e "
-            "**`acordo_argmax`** (fração de estados em que todas concordam). Perto de 1 "
-            "é população degenerada; perto de `1/3` é acaso, e aí elas estão resolvendo "
-            "problemas diferentes em vez de o mesmo problema de jeitos diferentes. "
-            "`valor_relativo_pior` diz se as outras cabeças são competentes ou só piores.",
+            "| `bala_de_prata` > `H_shaping` | a autópsia acertou; veja qual braço de "
+            "atribuição perde para saber qual das três correções carregou |\n"
+            "| `bala_sem_concentracao` ≈ `bala_de_prata` | o `ω` não era o gargalo |\n"
+            "| `bala_kl_medio` ≈ `bala_de_prata` | a contabilidade do freio não era o "
+            "gargalo — confira `atualizacoes` nos dois |\n"
+            "| `bala_aleatoria` ≈ `bala_de_prata` | o mérito é do espaço, não do bandit: "
+            "a parte *learnable* não fez nada neste domínio |\n"
+            "| `pop1` ≥ `bala_de_prata` | a população não paga o que custa **aqui**, com "
+            "nenhum eixo — e o LBC neste domínio é o `ψ` sozinho |\n\n"
+            "Quatro números no registro respondem sem forense de checkpoint: "
+            "**`competencia_pior_membro`** (perto de zero = membro morto), "
+            "**`ganho_da_mistura`** (abaixo de 1 = o mapeamento híbrido está custando, não "
+            "rendendo), **`divergencia_populacao`** e **`atualizacoes`**.",
     },
     {
         "arquivo": "11_soap.ipynb",

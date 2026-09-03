@@ -500,6 +500,149 @@ E dois números novos no registro respondem sem forense de checkpoint:
 estados em que todas concordam na ação) e **`valor_relativo_pior`** (se as outras cabeças
 são competentes ou apenas piores). Estão na tabela da §4.
 
+## 2.13 A autópsia do `H_shaping` — a membro morta
+
+O eixo `RS` devolvido (§2.2) levou de 38,82 para **42,77** (pico 46,46 em 4,5 M). O
+diagnóstico da §2.12 estava certo na direção e errado no tamanho, e a razão está numa linha
+que o instrumento novo não pegou.
+
+### O que o eixo comprou, e o que ele não comprou
+
+| execução | score | atualizações | `divergencia_populacao` |
+|---|---|---|---|
+| antes das correções | 0,57 | 39.168 | — |
+| `10_lbc` corrigido | 38,82 | 3.524 | (sem instrumento) |
+| `H_shaping` | 42,77 | 9.523 | 13,8 |
+| **PPO** | **81,51** | **38.374** | — |
+| **PPO, orçamento esparso** | **64,56** | **~2.400** | — |
+
+A última linha é a que reordena as prioridades. O PPO com **um quarto** das atualizações do
+LBC faz 22 pontos a mais. Em amostras processadas por gradiente — o produto
+`atualizações × minilote` — o LBC gasta 4,9 M contra 19,6 M do PPO e 14,7 M do PPO esparso.
+O orçamento é handicap real, mas **não é a história toda**: o algoritmo está perdendo por
+mérito próprio.
+
+### A membro morta
+
+Medido no modelo treinado, cada cabeça jogando **sozinha e gulosa**:
+
+| | γ | shaping | score sozinha | fome |
+|---|---|---|---|---|
+| π0 | 0,990 | 1,0 sempre | 31,95 | 0% |
+| π1 (a avaliada) | 0,995 | 0,5 → 0 em 25% | 38,33 | 5% |
+| **π2** | 0,999 | **0,0** | **2,03** | **99%** |
+
+**π2 aprendeu a andar em círculo**, e isso não é um bug de implementação — é o ótimo do
+objetivo que eu lhe dei. Com γ = 0,999 e nenhum sinal denso para achar comida, *não
+terminar* vale mais que jogar: a colisão custa −1 **agora**, a fome custa −0,5 daqui a mil
+passos, descontado para −0,18. Uma política que nunca encontra recompensa positiva converge
+para "sobreviver sem arriscar", e sob `ω` quase uniforme ela assinava **um terço de cada
+ação** e um terço do gradiente que o tronco compartilhado recebia.
+
+O erro de desenho foi meu, e vale nomear: no NGU o `β_i` é um bônus **intrínseco de
+novidade** — mais `β` significa mais *ajuda* para explorar. Eu tratei o shaping como "ajuda
+para explotar" e o removi do membro paciente. Mas aqui o shaping é a **única** coisa que
+inicia o aprendizado: sem ele, num tabuleiro 10×10 com limite de fome, a cobra praticamente
+nunca encontra comida por acaso a partir da inicialização. Zerar o shaping não fez um membro
+exploratório — fez um membro que nunca aprendeu.
+
+**Por que `valor_relativo_pior` não denunciou.** Ele marcava 0,73, um número saudável,
+porque `V₂ = 13,28` era o **maior** dos três. E `V` estava certo: circular realmente vale
+mais que morrer sob γ = 0,999. O crítico não estava errado; a política é que era inútil. Só
+o **retorno não descontado** distingue as duas coisas — e é exatamente o que o bandit já
+media, arm a arm, sem que ninguém estivesse olhando. Daí o instrumento novo
+`competencia_pior_membro`, que agrupa os valores dos braços pelo padrão de `ω`: o valor do
+braço "concentrado em π_i" **é** a competência do membro `i`, medida com episódios que o
+treino já jogou, sem um rollout extra.
+
+### Misturar piora, monotonicamente
+
+Comportamento amostrado no modelo treinado, τ = 2,4:
+
+| `ω` | score |
+|---|---|
+| só π1 (o caso Agent57) | 33,25 |
+| π0 + π1 | 31,66 |
+| uniforme (o híbrido do §4.1) | 21,98 |
+| π1 + π2 | 15,95 |
+
+Nenhuma mistura bate usar π1 sozinha. Em Snake, uma ação errada mata, e um plano que segue
+metade de uma política e metade de outra não é nenhum dos dois planos. É a segunda vez que
+a evidência aponta para o mesmo lugar, e a terceira vez que o próprio bandit escolhe
+"ω ≈ π1" na esmagadora maioria das iterações (96%, 92%).
+
+### O braço mais concentrado que existe ainda mistura 16,7%
+
+O padrão concentrado é uma `Dirichlet(1 + c·e_i)`, cuja média na política escolhida é
+`(1 + c)/(P + c)`. Com `c = 9` e `P = 3` isso dá **0,833** — o braço *mais* concentrado do
+espaço entrega `ω = (0,083 / 0,833 / 0,083)`. O paper aponta `ω` one-hot como a redução ao
+Agent57; aqui esse caso era **inatingível**. Com um membro valendo 2 pontos, 8,3% de peso
+sobre ele, ação após ação, é veneno.
+
+Medido no modelo treinado, o comportamento concentrado em π1:
+
+| `concentracao_omega` | `ω` médio | score (τ=2,4) | score (τ=4) |
+|---|---|---|---|
+| 9 (o atual) | (0,083 / 0,833 / 0,083) | 26,71 | 31,27 |
+| 24 | (0,037 / 0,926 / 0,037) | 30,84 | — |
+| **49** | (0,019 / 0,962 / 0,019) | **31,62** | **32,77** |
+| one-hot exato | (0 / 1 / 0) | 30,29 | — |
+
+Satura perto de `c = 24`; 49 é folga barata.
+
+### Uma hipótese que morreu
+
+O bandit escolhe a faixa de topo de τ (`[2, 4]`) em 92% das iterações, o que parecia teto
+de espaço apertando — a mesma patologia do `ω`. **Não é.** Medido no modelo treinado, o
+score do comportamento é 31,3 em τ = 4 e **não sobe** em 8, 16 nem 32 (29,6 / 30,6 / 30,3).
+`tau_max = 4` está no lugar certo e o bandit está lá porque quer. Fica registrado para que
+ninguém gaste uma execução nisso.
+
+### O KL é cobrado de quem o gastou
+
+O freio era a **média** do KL sobre as `P` políticas, e estourá-la abortava a atualização
+inteira. Três cabeças com objetivos diferentes sobre um tronco compartilhado se afastam em
+ritmos diferentes; a média estoura quando a mais agitada estoura, e a política **avaliada**
+— que talvez tenha andado quase nada — perde o passo por causa da vizinha. Uma cabeça
+degenerada abortava o treino de todas.
+
+`kl_por_politica` (o padrão agora) dá a cada cabeça o seu próprio limite: quem estoura sai
+da perda, quem não estourou continua, e a atualização só termina quando todas pararam.
+
+**O que ele não faz, e é honesto dizer:** como `média ≤ máximo`, parar por política é *mais
+estrito* para a cabeça agitada, não mais frouxo. Em bancada isolada ele **reduziu** o total
+de atualizações (3.627 contra 4.029) e mesmo assim melhorou o score (11,26 contra 9,61). O
+que ele compra não é orçamento bruto — é orçamento **para quem não gastou**.
+
+### Consertar a população é consertar o orçamento
+
+O que amarra tudo: `divergencia_populacao` chegou a 13,8 nats, quase toda produzida pela
+membro morta. Objetivos irreconciliáveis num tronco compartilhado significam KL subindo
+rápido, freio disparando cedo e treino pela metade. Em bancada reduzida, com a população
+competente a divergência cai de 4,9 para 1,3 e as atualizações voltam de 98 para **128 de
+128**.
+
+### A bala de prata, e o que cada braço atribui
+
+`90_lbc_populacao`, braço padrão `bala_de_prata`:
+
+| | mudança | evidência |
+|---|---|---|
+| população competente | `γ=(0,99, 0,995, 0,997)`, `shapings=(1,0, 0,5, 0,35)`, `fracs=(1,0, 0,25, 0,7)` | π2 valia 2,03 |
+| `ω` pode concentrar | `concentracao_omega` 9 → 49 | 26,7 → 31,6 |
+| KL por política | já é o padrão | 9,61 → 11,26 em bancada |
+
+Os braços `bala_sem_concentracao`, `bala_kl_medio` e `membro_morto` removem uma correção de
+cada vez; `bala_aleatoria` é a ablação de seleção da Fig. 5 sobre o espaço novo; `pop1` é o
+piso. A tabela de leitura está no resumo do notebook.
+
+**Se `pop1` empatar ou ganhar da `bala_de_prata`**, a resposta do repositório passa a ser
+uma afirmação sobre o algoritmo neste domínio, e não sobre esta implementação: *o
+mapeamento híbrido precisa que misturar políticas produza comportamento útil, e em Snake
+misturar destrói a coerência do plano*. Seria o quarto resultado independente apontando
+para lá — as três execuções, as duas medições de mistura, e o bandit escolhendo "só π1"
+sozinho, todas as vezes.
+
 ---
 
 ## 3. O que comparar com o quê
@@ -543,6 +686,10 @@ nada. Quatro números no registro existem para isso:
 | `divergencia_populacao` | acima de zero, sem explodir | 0 = população degenerada, `N` cópias caras da mesma política — o mapeamento híbrido não tem o que misturar (§2.12) |
 | `acordo_argmax` | entre ~0,5 e ~0,9 | perto de 1 = degeneração; perto de `1/3` = as cabeças estão resolvendo problemas **diferentes** em vez do mesmo problema de jeitos diferentes |
 | `valor_relativo_pior` | perto de 1 | bem abaixo = as outras cabeças não são "diferentes", são piores — e sob `ω` uniforme elas assinam dois terços do comportamento. Só é legível depois que `ev` sobe |
+| `competencia_pior_membro` | acima de ~0,5 | **perto de zero é uma membro morta** — uma política que desistiu e ainda assina `1/P` de cada ação (§2.13). `V` não denuncia isso; só o retorno não descontado |
+| `ganho_da_mistura` | acima de 1 | abaixo de 1 o mapeamento **híbrido** está custando em vez de render — a hipótese central do §4.1 do paper falhando neste domínio |
+| `politicas_ativas` | igual a `n_politicas` | abaixo disso alguma cabeça gasta a região de confiança muito mais rápido que as outras (§2.13) |
+| `kl_max` contra `kl` | próximos | muito acima = uma cabeça agitada; antes do `kl_por_politica` era ela quem decidia quando o treino de **todas** parava |
 | `atualizacoes` / `epochs_done` | perto de 128 e de 4 | **o número mais importante desta tabela.** Uma fração do orçamento (128) é fome de gradiente: a parada por KL virou o modo normal e o agente vai terminar subtreinado, com `melhor == final` no último passo. Confira `meta.atualizacoes` contra o do PPO — não a curva (§2.11) |
 
 `ev` (variância explicada) é lido como nos outros agentes: mede o crítico da política
