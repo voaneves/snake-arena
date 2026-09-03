@@ -576,6 +576,127 @@ for _k, _v in sorted(BRACOS[BRACO].items()) or [("(nada)", "controle")]:
 
 """
 
+# ---------------------------------------------------------------------------------
+# LBC -- o ensaio. Diferente do ensaio do AlphaZero, este roda na configuracao REAL e
+# nao numa reduzida: o que ele precisa medir -- o orcamento de gradiente -- so aparece
+# quando as cabecas comecam a divergir de verdade, e isso depende da rede e do lote.
+# Ver `docs/LBC.md` 2.13.
+ENSAIO_LBC_MD = """## Ensaio — 3 minutos antes de queimar uma hora
+
+Esta célula roda **30 iterações da configuração real** (≈ 500 mil passos, 10% do
+orçamento) e imprime os números que decidem se vale continuar. Não é uma versão reduzida:
+o que ela precisa medir — a fome de gradiente — só aparece quando as cabeças começam a
+divergir, e isso depende da rede e do lote de verdade.
+
+Nada é gravado em `runs/` nem nos checkpoints; o agente do ensaio é descartado depois.
+
+| sinal | saudável | o que significa se sair errado |
+|---|---|---|
+| `upd` (atualizações por iteração) | **acima de 90 de 128** | é o número que matou as três execuções anteriores: 9.523 contra 38.374 do PPO. Abaixo de ~40 aqui, o braço vai terminar subtreinado e a curva vai subir até o último passo |
+| `pol` (políticas ativas) | igual a `n_politicas` | abaixo disso alguma cabeça gasta a região de confiança muito mais rápido que as outras |
+| `kl` / `klmax` | próximos, `klmax` < 0,045 | muito separados = uma cabeça agitada arrastando as outras |
+| `pior` (`competencia_pior_membro`) | acima de ~0,4 | **perto de zero é uma membro morta** — foi ela que estragou o `H_shaping` (π2 valia 2,03 com 99% de fome). Sai `nan` nas primeiras iterações, até o bandit juntar `mab_min_puxadas` episódios por braço |
+| `mist` (`ganho_da_mistura`) | acima de 1 | abaixo de 1 o mapeamento híbrido está custando em vez de render |
+| `div` (divergência) | sobe devagar, sem explodir | acima de ~10 as cabeças estão irreconciliáveis e o tronco compartilhado está sendo rasgado |
+| `H(mu)` | acima de 0,15 | perto de zero o espaço de comportamento degenerou num ponto |
+
+**O que este ensaio não certifica.** Ele mede meia hora de treino em três minutos, então
+pega configuração errada, membro nascendo morta e freio disparando cedo. Ele **não** prevê
+o score final: 30 iterações não bastam para nenhuma política ficar boa, e `pior`/`mist`
+ainda são ruído nas primeiras iterações. Um ensaio limpo autoriza gastar a hora; não
+promete o resultado.
+"""
+
+ENSAIO_LBC_CODE = '''import numpy as np
+
+_cfg_ensaio = {**asdict(cfg)}
+for _k in ("ckpt_dir", "runs_dir"):
+    _cfg_ensaio.pop(_k, None)
+# `total_steps` fica o REAL: os agendamentos (lr, shaping por politica, coeficiente de
+# entropia) sao funcao da fracao do orcamento, e encurta-lo mediria outra configuracao.
+_cfg_ensaio.update(eval_every_steps=10**9, log_every_steps=10**9,
+                   salvar_gif=False, salvar_grafico=False,
+                   ckpt_dir="/tmp/ensaio_lbc", runs_dir="/tmp/ensaio_lbc")
+_ens = LBC(LBCConfig(**_cfg_ensaio))
+
+print(f"populacao: {_ens.cfg.n_politicas} politicas | avaliada = pi{_ens.indice_alvo}"
+      f" (gamma={_ens.cfg.gamma})")
+_sh = _ens.shaping_por_politica()
+print(f"shaping por politica no passo 0: "
+      f"{'desligado (H = gamma so)' if _sh is None else np.round(_sh, 3)}")
+_, _w = _ens.espaco.amostrar(np.full(2048, _ens.indice_alvo, dtype=np.int64))
+print(f"o braco 'omega ~ pi{_ens.indice_alvo}' entrega peso "
+      f"{_w[:, _ens.indice_alvo].mean():.3f} nessa politica "
+      f"(concentracao={_ens.cfg.concentracao_omega:g})")
+print(f"bracos no espaco de comportamento: {_ens.mab.n}")
+print()
+
+print(f"{'iter':>5} {'score':>6} {'upd':>5} {'pol':>4} {'kl':>7} {'klmax':>7} "
+      f"{'ent':>6} {'H(mu)':>6} {'div':>6} {'acordo':>7} {'pior':>6} {'mist':>6}")
+_hist = []
+for _i in range(1, 31):
+    _st = _ens.iterate(); _ens.iteration = _i; _hist.append(_st)
+    if _i % 5:
+        continue
+    _g = lambda k: _st.get(k, float("nan"))
+    print(f"{_i:>5} {(_st.get('train_score_mean') or 0):>6.2f} "
+          f"{_st['atualizacoes']:>5} {_g('politicas_ativas'):>4.0f} "
+          f"{_g('kl'):>7.4f} {_g('kl_max'):>7.4f} {_g('ent'):>6.3f} "
+          f"{_g('entropia_comportamento'):>6.3f} {_g('divergencia_populacao'):>6.2f} "
+          f"{_g('acordo_argmax'):>7.3f} {_g('competencia_pior_membro'):>6.2f} "
+          f"{_g('ganho_da_mistura'):>6.2f}")
+
+_upd = float(np.mean([h["atualizacoes"] for h in _hist[5:]]))
+_teto = cfg.epochs * cfg.minibatches
+# `nan` enquanto o bandit nao junta `mab_min_puxadas` episodios por braco -- normal nas
+# primeiras iteracoes, e por isso a media so olha o que ja e finito
+_media = lambda vs: float(np.mean(vs)) if len(vs) else float("nan")
+_pior = _media([v for v in (h.get("competencia_pior_membro", np.nan) for h in _hist[10:])
+                if np.isfinite(v)])
+_mist = _media([v for v in (h.get("ganho_da_mistura", np.nan) for h in _hist[10:])
+                if np.isfinite(v)])
+_div = float(_hist[-1].get("divergencia_populacao", float("nan")))
+_hmu = float(np.mean([h["entropia_comportamento"] for h in _hist[5:]]))
+
+print()
+print(f"orcamento de gradiente: {_upd:.0f} de {_teto} por iteracao "
+      f"({100*_upd/_teto:.0f}%)  ->  ~{_upd*cfg.total_steps/(cfg.num_envs*cfg.rollout):,.0f} "
+      f"atualizacoes na execucao inteira (o PPO faz 38.374)")
+
+_avisos = []
+if _upd < 0.35 * _teto:
+    _avisos.append(f"PARE: {_upd:.0f}/{_teto} atualizacoes por iteracao. E o mesmo regime "
+                   "que deixou as tres execucoes anteriores subtreinadas. Rode "
+                   "`bala_kl_medio` para ver se a contabilidade do KL e a culpada, ou "
+                   "baixe `lr_start`.")
+elif _upd < 0.7 * _teto:
+    _avisos.append(f"atencao: {_upd:.0f}/{_teto} atualizacoes por iteracao. Vai treinar, "
+                   "mas com menos gradiente que o PPO -- leia a curva com isso em mente.")
+if np.isfinite(_pior) and _pior < 0.25:
+    _avisos.append(f"PARE: competencia_pior_membro = {_pior:.2f}. Uma politica da "
+                   "populacao esta nascendo morta, como a pi2 do H_shaping (2,03 pontos, "
+                   "99% de fome). Ela vai assinar 1/P de cada acao a execucao inteira.")
+if np.isfinite(_mist) and _mist < 0.75:
+    _avisos.append(f"atencao: ganho_da_mistura = {_mist:.2f}. Misturar esta custando em "
+                   "vez de render -- e o resultado que o braco `pop1` existe para medir.")
+if np.isfinite(_div) and _div > 10:
+    _avisos.append(f"atencao: divergencia_populacao = {_div:.1f} nats ja no ensaio. As "
+                   "cabecas estao irreconciliaveis e o tronco compartilhado paga por isso.")
+if _hmu < 0.15:
+    _avisos.append(f"PARE: entropia do comportamento = {_hmu:.3f}. O espaco de "
+                   "comportamento degenerou num ponto (docs/LBC.md 2.6).")
+
+print()
+if _avisos:
+    for _a in _avisos:
+        print(f"  * {_a}")
+else:
+    print("  nada acusou. Pode gastar a hora.")
+
+del _ens
+'''
+
+
 #: `param_braco` do spec aponta para uma destas entradas. Cada uma e a lista do
 #: `@param`, o braco pre-selecionado e o dicionario que a celula de parametros carrega.
 #: A conferencia em `monta_notebook` garante que a lista e o dicionario nao divirjam.
@@ -1728,6 +1849,8 @@ NOTEBOOKS = [
         "agente": "LBC",
         "config": "LBCConfig",
         "param_braco": "lbc",
+        "celulas_extra": [{"md": ENSAIO_LBC_MD, "codigo": ENSAIO_LBC_CODE,
+                           "titulo": "Ensaio"}],
         "resumo":
             "Não é aqui que se roda o LBC — o agente oficial é o `10_lbc`. Aqui se mede a "
             "peça de que ele mais depende e que três execuções seguidas mostraram ser a "
