@@ -602,6 +602,13 @@ class LBC(AgentBase):
         `load_all` agrupa por `(algo, variant, seed)`: sem isto, a execução com seleção
         aleatória — que é uma ablação, não o algoritmo — dividiria identidade com a
         oficial e as duas virariam uma curva só na arena.
+
+        **O que não entra aqui:** botão de otimizador — `lr_start`, `minibatches`,
+        `epochs`. Eles mudam o orçamento de gradiente, não o algoritmo, e o repositório já
+        os separa pelo `sufixo_variante` (é assim que o `96_ppo_orcamento_esparso` convive
+        com o `01_ppo`). Marcá-los aqui também faria toda configuração de teste rápido —
+        que usa `minibatches=4` para caber na suíte — nascer com uma variante decorada, e
+        a identidade deixaria de significar "que algoritmo é este".
         """
         marcas = []
         if cfg.selecao != "ucb":

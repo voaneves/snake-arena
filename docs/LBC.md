@@ -643,6 +643,64 @@ misturar destrói a coerência do plano*. Seria o quarto resultado independente 
 para lá — as três execuções, as duas medições de mistura, e o bandit escolhendo "só π1"
 sozinho, todas as vezes.
 
+## 2.14 O ensaio da bala de prata — a população curou, o orçamento não
+
+O ensaio da `bala_de_prata` na configuração real (30 iterações, ~500 mil passos):
+
+```
+ iter  score   upd  pol      kl   klmax    ent  H(mu)    div  acordo   pior   mist
+    5   6.33   128    3  0.0149  0.0176  0.706  0.494   0.10   0.643   0.21   1.31
+   10  15.10   128    1  0.0245  0.0315  0.379  0.399   0.75   0.436   1.00   1.08
+   15  14.70    54    0  0.0253  0.0442  0.257  0.383   1.48   0.369   1.00   1.08
+   30  13.58    42    0  0.0421  0.0645  0.155  0.401   3.45   0.326   1.00   0.94
+```
+
+**As duas correções principais funcionaram.** `competencia_pior_membro` = 1,00 do passo 10
+em diante: nenhuma cabeça morta, contra a π2 do `H_shaping` que valia 2,03 pontos com 99%
+de fome. `ganho_da_mistura` fica em torno de 1 — misturar deixou de ser veneno. E a
+contabilidade por política dobrou o orçamento, de 25% para **49%**.
+
+**O que não fechou.** 49% ainda é metade, e `politicas_ativas` cai para **zero** já no
+passo 15: as três cabeças estouram o próprio KL dentro de toda atualização. O freio
+continua sendo quem decide quando o treino para.
+
+### Os dois caminhos, e por que eles não são equivalentes
+
+**(a) passo menor** — `lr_start` 1e-4 → 7e-5, para que as 128 atualizações de minilote 512
+caibam dentro do KL.
+
+**(b) lote maior** — `minibatches` 32 → 8: 32 atualizações de minilote 2.048. Parece de
+graça, porque **o freio conta atualizações, não amostras**: 32 é menos que as ~62 que ele
+já deixava passar, então ele deixaria de morder, e a vazão bateria exatamente a do PPO
+(305 × 32 × 2.048 = 20,0 M contra 19,6 M).
+
+O (b) parecia o achado elegante. Não é, e o próprio repositório já tinha a medição:
+
+| | amostras-gradiente | minilote | score |
+|---|---|---|---|
+| `01_ppo` | 19,6 M | **512** | **81,51** |
+| `96_ppo_orcamento_esparso` | 14,7 M | 6.144 | 64,56 |
+
+Mesma ordem de amostras, 17 pontos de diferença, e quem ganha é o **lote pequeno**.
+Confirmado em bancada com o LBC, com as amostras-gradiente igualadas em 20,0 M:
+
+| minilote | 128 | 512 | 1.024 |
+|---|---|---|---|
+| score | **14,56** | 9,16 | 7,19 |
+
+Monotônico. Trocar atualizações por amostras recupera a contabilidade e perde o regime — e
+o regime é onde o PPO ganha os 17 pontos.
+
+Por isso o braço padrão é o **(a)**, `bala_lr_menor`. É a mesma resposta que já funcionou
+uma vez: em bancada, `lr` 3e-4 dava 15 atualizações por iteração e score 9,23; `lr` 1e-4
+dava 125 e 10,70. Passo menor comprou passos. `bala_lote_grande` fica na lista como o (b),
+para a comparação existir — e vira a única saída se nem com passo menor as 128 couberem.
+
+**A moeda mudou.** Até aqui o registro comparava `atualizacoes` com as 38.374 do PPO. O
+número certo é **amostras-gradiente** (`atualizações × minilote`), e o `96` é a prova: ele
+faz 6% das atualizações do `01_ppo` e mesmo assim marca 64,56, porque processa 75% das
+amostras. O ensaio passou a reportar os dois.
+
 ---
 
 ## 3. O que comparar com o quê

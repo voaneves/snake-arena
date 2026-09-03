@@ -592,7 +592,8 @@ Nada é gravado em `runs/` nem nos checkpoints; o agente do ensaio é descartado
 
 | sinal | saudável | o que significa se sair errado |
 |---|---|---|
-| `upd` (atualizações por iteração) | **acima de 90 de 128** | é o número que matou as três execuções anteriores: 9.523 contra 38.374 do PPO. Abaixo de ~40 aqui, o braço vai terminar subtreinado e a curva vai subir até o último passo |
+| `upd` (atualizações por iteração) | **acima de 70% do teto** | é o número que matou as três execuções anteriores. O teto é `epochs × minibatches`, então ele muda com o braço: 128 na maioria, **32** no `bala_lote_grande` |
+| amostras-gradiente (no rodapé) | **acima de ~15 M** | é a moeda que importa, não a contagem de atualizações: o `96_ppo_orcamento_esparso` processa 14,7 M em só 2.400 atualizações de lote 6.144 e marca 64,56, enquanto o `10_lbc` processava 1,8 M em 3.524 de lote 512 e marcava 38,82 |
 | `pol` (políticas ativas) | igual a `n_politicas` | abaixo disso alguma cabeça gasta a região de confiança muito mais rápido que as outras |
 | `kl` / `klmax` | próximos, `klmax` < 0,045 | muito separados = uma cabeça agitada arrastando as outras |
 | `pior` (`competencia_pior_membro`) | acima de ~0,4 | **perto de zero é uma membro morta** — foi ela que estragou o `H_shaping` (π2 valia 2,03 com 99% de fome). Sai `nan` nas primeiras iterações, até o bandit juntar `mab_min_puxadas` episódios por braço |
@@ -659,9 +660,21 @@ _div = float(_hist[-1].get("divergencia_populacao", float("nan")))
 _hmu = float(np.mean([h["entropia_comportamento"] for h in _hist[5:]]))
 
 print()
-print(f"orcamento de gradiente: {_upd:.0f} de {_teto} por iteracao "
-      f"({100*_upd/_teto:.0f}%)  ->  ~{_upd*cfg.total_steps/(cfg.num_envs*cfg.rollout):,.0f} "
-      f"atualizacoes na execucao inteira (o PPO faz 38.374)")
+_lote = cfg.num_envs * cfg.rollout
+_mb = max(1, _lote // cfg.minibatches)
+_iters = cfg.total_steps / _lote
+_amostras = _upd * _mb * _iters
+print(f"orcamento de gradiente: {_upd:.0f} de {_teto} atualizacoes por iteracao "
+      f"({100*_upd/_teto:.0f}%), minilote {_mb:,}")
+print(f"  -> {_upd*_iters:,.0f} atualizacoes e {_amostras/1e6:.1f} M amostras-gradiente "
+      f"na execucao inteira")
+print(f"  -> o PPO faz 38.374 atualizacoes de 512 = 19,6 M amostras-gradiente")
+# a moeda que importa e amostras-gradiente, nao atualizacoes: o
+# `96_ppo_orcamento_esparso` faz 2.400 atualizacoes de lote 6.144 (14,7 M) e marca 64,56,
+# enquanto o `10_lbc` fazia 3.524 de lote 512 (1,8 M) e marcava 38,82
+if _amostras < 12e6:
+    print(f"  -> {_amostras/19.6e6:.0%} do PPO. Mesmo o braco esparso do PPO processa "
+          "14,7 M e marca 64,56.")
 
 _avisos = []
 if _upd < 0.35 * _teto:
@@ -1206,15 +1219,81 @@ print(f"   rollout = {ACKTRConfig.rollout}  (default restaurado; era 5 ate 01/09
 # LBC — a populacao. O `10_lbc` mede o algoritmo; este mede se a POPULACAO vale o que
 # custa, e com que eixo de `H`. Ver `docs/LBC.md` §2.12.
 BRACOS_LBC = [
-    "bala_de_prata", "bala_sem_concentracao", "bala_kl_medio", "bala_aleatoria",
-    "membro_morto", "pop1",
+    "bala_lr_menor", "bala_de_prata", "bala_lote_grande", "bala_sem_concentracao",
+    "bala_kl_medio", "bala_aleatoria", "membro_morto", "pop1",
 ]
 
-#: A `bala_de_prata` junta as tres correcoes que a autopsia do `H_shaping` produziu.
-#: Os bracos seguintes removem uma de cada vez, para atribuir o que valeu o que.
-BRACO_PADRAO_LBC = "bala_de_prata"
+#: `bala_lr_menor` e a `bala_de_prata` mais a unica correcao que o ensaio dela pediu:
+#: passo menor, para que as 128 atualizacoes caibam dentro do KL em vez de 62. Ver
+#: `_PRE_CFG_LBC` e `docs/LBC.md` 2.14.
+BRACO_PADRAO_LBC = "bala_lr_menor"
 
 _PRE_CFG_LBC = """BRACOS = {
+    # =====================================================================
+    # O BRACO PADRAO -- a bala de prata mais a correcao que o ensaio dela pediu.
+    # =====================================================================
+    #
+    # O ensaio da `bala_de_prata` na configuracao real deu duas boas noticias e uma ma:
+    #
+    #   iter  score   upd  pol      kl   klmax    ent  H(mu)    div  acordo   pior   mist
+    #      5   6.33   128    3  0.0149  0.0176  0.706  0.494   0.10   0.643   0.21   1.31
+    #     10  15.10   128    1  0.0245  0.0315  0.379  0.399   0.75   0.436   1.00   1.08
+    #     15  14.70    54    0  0.0253  0.0442  0.257  0.383   1.48   0.369   1.00   1.08
+    #     30  13.58    42    0  0.0421  0.0645  0.155  0.401   3.45   0.326   1.00   0.94
+    #
+    # BOA 1: a populacao esta CURADA. `pior` = 1,00 do passo 10 em diante -- nenhuma
+    #        cabeca morta, contra a pi2 do H_shaping que valia 2,03 pontos com 99% de
+    #        fome. `mist` fica em torno de 1: misturar deixou de ser veneno.
+    # BOA 2: a contabilidade por politica dobrou o orcamento: 25% -> 49%.
+    # MA:    49% ainda e metade, e `pol` cai para ZERO ja no passo 15 -- as tres cabecas
+    #        estouram o proprio KL dentro de toda atualizacao.
+    #
+    # Restam dois jeitos de fechar os 51% que faltam, e eles NAO sao equivalentes.
+    #
+    #   (a) passo menor  -> as 128 atualizacoes de minilote 512 cabem dentro do KL
+    #   (b) lote maior   -> menos atualizacoes, cada uma com mais amostras
+    #
+    # O (b) parece de graca, porque o freio conta ATUALIZACOES e nao amostras: com
+    # `minibatches=8` sao 32 atualizacoes de minilote 2.048, e 32 e menos que as ~62 que
+    # o freio ja deixava passar -- ele deixaria de morder e a vazao bateria exatamente a
+    # do PPO (305 x 32 x 2.048 = 20,0 M contra 19,6 M).
+    #
+    # So que o repositorio ja mediu esse trade, e ele NAO e de graca. O
+    # `96_ppo_orcamento_esparso` processa 14,7 M amostras-gradiente em 2.400 atualizacoes
+    # de lote 6.144 e marca 64,56; o `01_ppo` processa 19,6 M em 38.374 de lote 512 e
+    # marca 81,51. Mesma ordem de amostras, 17 pontos de diferenca, e quem ganha e o lote
+    # PEQUENO. Em bancada com o LBC, com as amostras-gradiente igualadas em 20,0 M:
+    #
+    #     minilote  128 -> score 14,56      minilote  512 -> 9,16      minilote 1.024 -> 7,19
+    #
+    # Entao o padrao e (a): `lr_start` 1e-4 -> 7e-5. Passo menor por atualizacao, mesmo
+    # minilote de 512, e a aposta e que as 128 caibam. E a mesma resposta que ja tinha
+    # funcionado uma vez: em bancada, `lr` 3e-4 dava 15 atualizacoes por iteracao e score
+    # 9,23; `lr` 1e-4 dava 125 e score 10,70. Passo menor comprou passos.
+    #
+    # `bala_lote_grande` fica na lista como o (b), para a comparacao existir de verdade.
+    "bala_lr_menor": {
+        "gammas": (0.99, 0.995, 0.997),
+        "shapings": (1.0, 0.5, 0.35),
+        "shaping_fracs": (1.0, 0.25, 0.7),
+        "indice_alvo": 1,
+        "concentracao_omega": 49.0,
+        "lr_start": 7e-5,
+        "lr_end": 2e-5,
+    },
+
+    # O caminho (b): mesma vazao de amostras, um quarto das atualizacoes. Roda se o
+    # ensaio do `bala_lr_menor` mostrar que nem com passo menor as 128 cabem -- ai lote
+    # grande deixa de ser escolha e vira a unica saida.
+    "bala_lote_grande": {
+        "gammas": (0.99, 0.995, 0.997),
+        "shapings": (1.0, 0.5, 0.35),
+        "shaping_fracs": (1.0, 0.25, 0.7),
+        "indice_alvo": 1,
+        "concentracao_omega": 49.0,
+        "minibatches": 8,
+    },
+
     # =====================================================================
     # A BALA DE PRATA -- as tres correcoes que sairam da autopsia do H_shaping.
     # Medicoes em `docs/LBC.md` 2.13.
@@ -1308,11 +1387,43 @@ for _k, _v in sorted(BRACOS[BRACO].items()):
 """
 
 
+BRACOS_OURO = [
+    "bala_de_ouro",
+]
+
+BRACO_PADRAO_OURO = "bala_de_ouro"
+
+_PRE_CFG_OURO = """BRACOS = {
+    # =====================================================================
+    # A BALA DE OURO -- Otimizacao para atingir 90+
+    # =====================================================================
+    # 1. Alvo paciente (gamma=0.999) para ver o final do jogo
+    # 2. Shaping de 0.25 durando 80% do treino, para nao morrer de fome
+    # 3. Entropia relaxada (0.05) para permitir determinismo no end-game
+    "bala_de_ouro": {
+        "gammas": (0.99, 0.995, 0.999),
+        "shapings": (1.0, 0.5, 0.25),
+        "shaping_fracs": (1.0, 0.25, 0.8),
+        "indice_alvo": 2,
+        "concentracao_omega": 49.0,
+        "lr_start": 7e-5,
+        "lr_end": 2e-5,
+        "ent_alvo": 0.05,
+    },
+}
+print(f"braco: {BRACO}  (configuracao otimizada 90+)")
+for _k, _v in sorted(BRACOS[BRACO].items()):
+    print(f"   {_k} = {_v!r}")
+
+"""
+
 ABLACOES = {
+
     "alphazero": (BRACOS_ABLACAO, BRACO_PADRAO, _PRE_CFG_ABLACAO),
     "muzero": (BRACOS_MUZERO, BRACO_PADRAO_MUZERO, _PRE_CFG_MUZERO),
     "acktr": (BRACOS_ACKTR, BRACO_PADRAO_ACKTR, _PRE_CFG_ACKTR),
     "lbc": (BRACOS_LBC, BRACO_PADRAO_LBC, _PRE_CFG_LBC),
+    "lbc_ouro": (BRACOS_OURO, BRACO_PADRAO_OURO, _PRE_CFG_OURO),
 }
 
 #: Braços que a célula de diagnóstico curta **não** roda, por ablação. Só o ACKTR tem —
@@ -1842,6 +1953,19 @@ NOTEBOOKS = [
                   "Ver `docs/LBC.md` para os três desvios declarados em relação ao paper.",
     },
     {
+        "arquivo": "89_lbc_bala_de_ouro.ipynb",
+        "titulo": "LBC — A Bala de Ouro (Rumo aos 90+)",
+        "modulos": ["snakeai/bandit.py", "snakeai/agents/ppo.py",
+                    "snakeai/agents/lbc.py"],
+        "agente": "LBC",
+        "config": "LBCConfig",
+        "param_braco": "lbc_ouro",
+        "celulas_extra": [{"md": ENSAIO_LBC_MD, "codigo": ENSAIO_LBC_CODE,
+                           "titulo": "Ensaio"}],
+        "resumo": "Neste notebook, aplicamos o algoritmo 'Bala de Ouro' que ajusta a "
+                  "política para ser mais paciente no endgame, com entropia relaxada."
+    },
+    {
         "arquivo": "90_lbc_populacao.ipynb",
         "titulo": "LBC — a população vale o que custa?",
         "modulos": ["snakeai/bandit.py", "snakeai/agents/ppo.py",
@@ -1917,6 +2041,13 @@ NOTEBOOKS = [
             "### Como ler o resultado\n\n"
             "| se… | a leitura é… |\n"
             "|---|---|\n"
+            "| `bala_lr_menor` recupera o orçamento e ganha | passo menor comprou passos, "
+            "como já tinha acontecido de 3e-4 para 1e-4 |\n"
+            "| `bala_lr_menor` **não** recupera o orçamento | o passo não é o gargalo; "
+            "rode `bala_lote_grande`, que troca atualizações por amostras — mas leia o "
+            "aviso: com as amostras-gradiente igualadas, minilote pequeno ganhou em todas "
+            "as medições (`01_ppo` 81,51 contra `96_ppo_orcamento_esparso` 64,56; e no "
+            "LBC em bancada, 14,56 / 9,16 / 7,19 para minilote 128 / 512 / 1.024) |\n"
             "| `bala_de_prata` > `H_shaping` | a autópsia acertou; veja qual braço de "
             "atribuição perde para saber qual das três correções carregou |\n"
             "| `bala_sem_concentracao` ≈ `bala_de_prata` | o `ω` não era o gargalo |\n"
